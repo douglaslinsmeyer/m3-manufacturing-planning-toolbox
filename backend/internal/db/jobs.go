@@ -9,25 +9,30 @@ import (
 
 // RefreshJob represents a data refresh job
 type RefreshJob struct {
-	ID                string
-	Environment       string
-	UserID            sql.NullString
-	Status            string
-	CurrentStep       sql.NullString
-	TotalSteps        int
-	CompletedSteps    int
-	ProgressPct       int
-	COLinesProcessed  int
-	MOsProcessed      int
-	MOPsProcessed     int
-	StartedAt         sql.NullTime
-	CompletedAt       sql.NullTime
-	DurationSeconds   sql.NullInt32
-	ErrorMessage      sql.NullString
-	RetryCount        int
-	MaxRetries        int
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                        string
+	Environment               string
+	UserID                    sql.NullString
+	Status                    string
+	CurrentStep               sql.NullString
+	TotalSteps                int
+	CompletedSteps            int
+	ProgressPct               int
+	COLinesProcessed          int
+	MOsProcessed              int
+	MOPsProcessed             int
+	RecordsPerSecond          sql.NullFloat64
+	EstimatedSecondsRemaining sql.NullInt32
+	CurrentOperation          sql.NullString
+	CurrentBatch              sql.NullInt32
+	TotalBatches              sql.NullInt32
+	StartedAt                 sql.NullTime
+	CompletedAt               sql.NullTime
+	DurationSeconds           sql.NullInt32
+	ErrorMessage              sql.NullString
+	RetryCount                int
+	MaxRetries                int
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
 }
 
 // CreateRefreshJob creates a new refresh job
@@ -83,6 +88,22 @@ func (q *Queries) UpdateJobRecordCounts(ctx context.Context, jobID string, coLin
 		WHERE id = $4
 	`
 	_, err := q.db.ExecContext(ctx, query, coLines, mos, mops, jobID)
+	return err
+}
+
+// UpdateJobExtendedProgress updates extended progress information
+func (q *Queries) UpdateJobExtendedProgress(ctx context.Context, jobID, currentOperation string, recordsPerSecond float64, estimatedSecondsRemaining, currentBatch, totalBatches int) error {
+	query := `
+		UPDATE refresh_jobs
+		SET current_operation = $1,
+		    records_per_second = $2,
+		    estimated_seconds_remaining = $3,
+		    current_batch = $4,
+		    total_batches = $5,
+		    updated_at = NOW()
+		WHERE id = $6
+	`
+	_, err := q.db.ExecContext(ctx, query, currentOperation, recordsPerSecond, estimatedSecondsRemaining, currentBatch, totalBatches, jobID)
 	return err
 }
 
@@ -148,6 +169,8 @@ func (q *Queries) GetRefreshJob(ctx context.Context, jobID string) (*RefreshJob,
 			id, environment, user_id, status,
 			current_step, total_steps, completed_steps, progress_percentage,
 			co_lines_processed, mos_processed, mops_processed,
+			records_per_second, estimated_seconds_remaining,
+			current_operation, current_batch, total_batches,
 			started_at, completed_at, duration_seconds,
 			error_message, retry_count, max_retries,
 			created_at, updated_at
@@ -160,6 +183,8 @@ func (q *Queries) GetRefreshJob(ctx context.Context, jobID string) (*RefreshJob,
 		&job.ID, &job.Environment, &job.UserID, &job.Status,
 		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
 		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
+		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
+		&job.CurrentOperation, &job.CurrentBatch, &job.TotalBatches,
 		&job.StartedAt, &job.CompletedAt, &job.DurationSeconds,
 		&job.ErrorMessage, &job.RetryCount, &job.MaxRetries,
 		&job.CreatedAt, &job.UpdatedAt,
@@ -182,6 +207,8 @@ func (q *Queries) GetLatestRefreshJob(ctx context.Context, environment string) (
 			id, environment, user_id, status,
 			current_step, total_steps, completed_steps, progress_percentage,
 			co_lines_processed, mos_processed, mops_processed,
+			records_per_second, estimated_seconds_remaining,
+			current_operation, current_batch, total_batches,
 			started_at, completed_at, duration_seconds,
 			error_message, retry_count, max_retries,
 			created_at, updated_at
@@ -196,6 +223,8 @@ func (q *Queries) GetLatestRefreshJob(ctx context.Context, environment string) (
 		&job.ID, &job.Environment, &job.UserID, &job.Status,
 		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
 		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
+		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
+		&job.CurrentOperation, &job.CurrentBatch, &job.TotalBatches,
 		&job.StartedAt, &job.CompletedAt, &job.DurationSeconds,
 		&job.ErrorMessage, &job.RetryCount, &job.MaxRetries,
 		&job.CreatedAt, &job.UpdatedAt,

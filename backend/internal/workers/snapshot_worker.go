@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/pinggolf/m3-planning-tools/internal/compass"
@@ -36,20 +37,27 @@ type SnapshotRefreshMessage struct {
 	Environment string `json:"environment"`
 	UserID      string `json:"userId,omitempty"`
 	AccessToken string `json:"accessToken"`
+	Company     string `json:"company"`
+	Facility    string `json:"facility"`
 }
 
 // ProgressUpdate represents a progress update message
 type ProgressUpdate struct {
-	JobID          string `json:"jobId"`
-	Status         string `json:"status"`
-	CurrentStep    string `json:"currentStep"`
-	CompletedSteps int    `json:"completedSteps"`
-	TotalSteps     int    `json:"totalSteps"`
-	ProgressPct    int    `json:"progressPercentage"`
-	COLines        int    `json:"coLinesProcessed,omitempty"`
-	MOs            int    `json:"mosProcessed,omitempty"`
-	MOPs           int    `json:"mopsProcessed,omitempty"`
-	Error          string `json:"error,omitempty"`
+	JobID                     string  `json:"jobId"`
+	Status                    string  `json:"status"`
+	Progress                  int     `json:"progress"`
+	CurrentStep               string  `json:"currentStep"`
+	CompletedSteps            int     `json:"completedSteps"`
+	TotalSteps                int     `json:"totalSteps"`
+	COLinesProcessed          int     `json:"coLinesProcessed,omitempty"`
+	MOsProcessed              int     `json:"mosProcessed,omitempty"`
+	MOPsProcessed             int     `json:"mopsProcessed,omitempty"`
+	RecordsPerSecond          float64 `json:"recordsPerSecond,omitempty"`
+	EstimatedSecondsRemaining int     `json:"estimatedTimeRemaining,omitempty"`
+	CurrentOperation          string  `json:"currentOperation,omitempty"`
+	CurrentBatch              int     `json:"currentBatch,omitempty"`
+	TotalBatches              int     `json:"totalBatches,omitempty"`
+	Error                     string  `json:"error,omitempty"`
 }
 
 // Start starts the snapshot worker and subscribes to NATS subjects
@@ -143,14 +151,20 @@ func (w *SnapshotWorker) processRefreshWithRetry(req SnapshotRefreshMessage) err
 // processRefresh performs the actual data refresh
 func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 	ctx := context.Background()
+	startTime := time.Now()
 
 	// Start the job
 	if err := w.db.StartJob(ctx, req.JobID); err != nil {
 		return fmt.Errorf("failed to start job: %w", err)
 	}
 
+	// Progress tracking variables
+	totalSteps := 4
+	var finalMopCount, finalMoCount, finalCoCount int
+
 	// Publish initial progress
-	w.publishProgress(req.JobID, "running", "Starting data refresh", 0, 4, 0, 0, 0, 0)
+	w.publishDetailedProgress(req.JobID, "running", "Starting data refresh", "Initializing refresh process",
+		0, totalSteps, 0, 0, 0, 0, 0, 0, 0, 0)
 
 	// Get environment config
 	envConfig, err := w.config.GetEnvironmentConfig(req.Environment)
@@ -166,39 +180,105 @@ func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 	}
 	compassClient := compass.NewClient(envConfig.CompassBaseURL, getToken)
 
-	// Create snapshot service
+	// Create snapshot service with progress callback
 	snapshotService := services.NewSnapshotService(compassClient, w.db)
 
-	// Execute the full refresh using the service (it handles all orchestration)
-	w.publishProgress(req.JobID, "running", "Loading production orders", 0, 3, 0, 0, 0, 0)
+	// Set up progress callback to track phases
+	snapshotService.SetProgressCallback(func(phase string, stepNum, total int, message string, mopCount, moCount, coCount int) {
+		// Store final counts
+		finalMopCount = mopCount
+		finalMoCount = moCount
+		finalCoCount = coCount
+		elapsed := time.Since(startTime).Seconds()
 
-	if err := snapshotService.RefreshAll(ctx); err != nil {
+		// Map phases to operations
+		var operation string
+		switch phase {
+		case "truncate":
+			operation = "Preparing database"
+		case "mops":
+			operation = message
+		case "mos":
+			operation = message
+		case "cos":
+			operation = message
+		case "finalize":
+			operation = "Finalizing data refresh"
+		case "complete":
+			operation = "Data refresh completed"
+		default:
+			operation = message
+		}
+
+		progressPct := (stepNum * 100) / totalSteps
+
+		// Calculate rate and ETA
+		totalRecords := mopCount + moCount + coCount
+		recordsPerSec := 0.0
+		estimatedRemaining := 0
+
+		if elapsed > 0 && totalRecords > 0 {
+			recordsPerSec = float64(totalRecords) / elapsed
+			remainingSteps := totalSteps - stepNum
+			if remainingSteps > 0 {
+				// Rough estimate: assume similar record counts per remaining step
+				avgRecordsPerStep := float64(totalRecords) / float64(stepNum+1)
+				remainingRecords := avgRecordsPerStep * float64(remainingSteps)
+				estimatedRemaining = int(remainingRecords / recordsPerSec)
+			}
+		}
+
+		// Publish detailed progress
+		w.publishDetailedProgress(req.JobID, "running",
+			operation, // Send operation description as currentStep
+			operation, // Keep same for currentOperation
+			stepNum, totalSteps, progressPct,
+			coCount, moCount, mopCount,
+			recordsPerSec, estimatedRemaining,
+			0, 0) // No batch tracking yet
+	})
+
+	// Execute the full refresh using the service (it handles all orchestration)
+	log.Printf("Starting refresh for company %s, facility %s", req.Company, req.Facility)
+
+	if err := snapshotService.RefreshAll(ctx, req.Company, req.Facility); err != nil {
 		w.db.FailJob(ctx, req.JobID, fmt.Sprintf("Refresh failed: %v", err))
 		w.publishError(req.JobID, err.Error())
 		return err
 	}
 
+	// Get final counts and calculate final metrics
+	elapsed := time.Since(startTime).Seconds()
+	totalRecords := finalMopCount + finalMoCount + finalCoCount
+	recordsPerSec := 0.0
+	if elapsed > 0 {
+		recordsPerSec = float64(totalRecords) / elapsed
+	}
+
 	// Complete the job
 	w.db.CompleteJob(ctx, req.JobID)
-	w.publishProgress(req.JobID, "completed", "Data refresh completed", 3, 3, 100, 0, 0, 0)
+	w.publishDetailedProgress(req.JobID, "completed", "Data refresh completed", "All data successfully loaded",
+		totalSteps, totalSteps, 100,
+		finalCoCount, finalMoCount, finalMopCount,
+		recordsPerSec, 0, 0, 0)
 	w.publishComplete(req.JobID)
 
-	log.Printf("Refresh job %s completed successfully", req.JobID)
+	log.Printf("Refresh job %s completed successfully in %.2f seconds", req.JobID, elapsed)
 	return nil
 }
 
 // publishProgress publishes a progress update to NATS
 func (w *SnapshotWorker) publishProgress(jobID, status, currentStep string, completedSteps, totalSteps, progressPct, coLines, mos, mops int) {
 	update := ProgressUpdate{
-		JobID:          jobID,
-		Status:         status,
-		CurrentStep:    currentStep,
-		CompletedSteps: completedSteps,
-		TotalSteps:     totalSteps,
-		ProgressPct:    progressPct,
-		COLines:        coLines,
-		MOs:            mos,
-		MOPs:           mops,
+		JobID:            jobID,
+		Status:           status,
+		Progress:         progressPct,
+		CurrentStep:      currentStep,
+		CompletedSteps:   completedSteps,
+		TotalSteps:       totalSteps,
+		COLinesProcessed: coLines,
+		MOsProcessed:     mos,
+		MOPsProcessed:    mops,
 	}
 
 	data, _ := json.Marshal(update)
@@ -207,6 +287,43 @@ func (w *SnapshotWorker) publishProgress(jobID, status, currentStep string, comp
 	if err := w.nats.Publish(subject, data); err != nil {
 		log.Printf("Failed to publish progress: %v", err)
 	}
+
+	// Also update database
+	ctx := context.Background()
+	w.db.UpdateJobProgress(ctx, jobID, currentStep, completedSteps, totalSteps)
+}
+
+// publishDetailedProgress publishes a detailed progress update with extended metrics
+func (w *SnapshotWorker) publishDetailedProgress(jobID, status, currentStep, currentOperation string, completedSteps, totalSteps, progressPct, coLines, mos, mops int, recordsPerSec float64, estimatedSecsRemaining, currentBatch, totalBatches int) {
+	update := ProgressUpdate{
+		JobID:                     jobID,
+		Status:                    status,
+		Progress:                  progressPct,
+		CurrentStep:               currentStep,
+		CompletedSteps:            completedSteps,
+		TotalSteps:                totalSteps,
+		COLinesProcessed:          coLines,
+		MOsProcessed:              mos,
+		MOPsProcessed:             mops,
+		RecordsPerSecond:          recordsPerSec,
+		EstimatedSecondsRemaining: estimatedSecsRemaining,
+		CurrentOperation:          currentOperation,
+		CurrentBatch:              currentBatch,
+		TotalBatches:              totalBatches,
+	}
+
+	data, _ := json.Marshal(update)
+	subject := queue.GetProgressSubject(jobID)
+
+	if err := w.nats.Publish(subject, data); err != nil {
+		log.Printf("Failed to publish progress: %v", err)
+	}
+
+	// Update database with extended progress
+	ctx := context.Background()
+	w.db.UpdateJobProgress(ctx, jobID, currentStep, completedSteps, totalSteps)
+	w.db.UpdateJobRecordCounts(ctx, jobID, coLines, mos, mops)
+	w.db.UpdateJobExtendedProgress(ctx, jobID, currentOperation, recordsPerSec, estimatedSecsRemaining, currentBatch, totalBatches)
 }
 
 // publishComplete publishes a completion message

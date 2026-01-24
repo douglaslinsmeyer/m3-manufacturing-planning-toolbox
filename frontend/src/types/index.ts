@@ -51,6 +51,7 @@ export interface EffectiveContext {
   warehouse: string;
   hasTemporaryOverrides: boolean;
   userDefaults: UserContext;
+  loadError?: string;
 }
 
 export interface TemporaryOverride {
@@ -235,10 +236,21 @@ export interface Inconsistency {
 
 // Snapshot types
 export interface SnapshotStatus {
+  jobId?: string;
   status: 'idle' | 'running' | 'completed' | 'failed';
   lastUpdate?: string;
   progress: number;
   currentStep?: string;
+  completedSteps?: number;
+  totalSteps?: number;
+  coLinesProcessed?: number;
+  mosProcessed?: number;
+  mopsProcessed?: number;
+  recordsPerSecond?: number;           // Processing rate
+  estimatedTimeRemaining?: number;     // Seconds remaining
+  currentOperation?: string;           // Detailed operation description
+  currentBatch?: number;               // Current batch number
+  totalBatches?: number;               // Total batches
   error?: string;
 }
 

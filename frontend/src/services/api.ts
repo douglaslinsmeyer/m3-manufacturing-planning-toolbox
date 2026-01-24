@@ -18,7 +18,7 @@ import type {
   M3Warehouse,
 } from '../types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8080';
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 class ApiService {
   private client: AxiosInstance;
@@ -83,6 +83,11 @@ class ApiService {
     return response.data;
   }
 
+  async retryLoadContext(): Promise<EffectiveContext> {
+    const response = await this.client.post('/context/retry-load');
+    return response.data;
+  }
+
   async setTemporaryOverride(override: TemporaryOverride): Promise<EffectiveContext> {
     const response = await this.client.post('/context/temporary', override);
     return response.data;
@@ -127,8 +132,9 @@ class ApiService {
   }
 
   // Snapshot Management
-  async refreshSnapshot(): Promise<void> {
-    await this.client.post('/snapshot/refresh');
+  async refreshSnapshot(): Promise<{ jobId: string; status: string; message: string }> {
+    const response = await this.client.post('/snapshot/refresh');
+    return response.data;
   }
 
   async getSnapshotStatus(): Promise<SnapshotStatus> {

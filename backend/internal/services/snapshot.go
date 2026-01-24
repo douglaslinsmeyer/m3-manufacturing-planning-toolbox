@@ -11,10 +11,19 @@ import (
 	"github.com/pinggolf/m3-planning-tools/internal/db"
 )
 
+// ProgressCallback is called to report progress during refresh operations
+// Parameters: phase, stepNum, totalSteps, message, mopCount, moCount, coCount
+type ProgressCallback func(phase string, stepNum, totalSteps int, message string, mopCount, moCount, coCount int)
+
 // SnapshotService handles data refresh operations
 type SnapshotService struct {
-	compassClient *compass.Client
-	db            *db.Queries
+	compassClient    *compass.Client
+	db               *db.Queries
+	progressCallback ProgressCallback
+	// Track counts for progress reporting
+	mopCount int
+	moCount  int
+	coCount  int
 }
 
 // NewSnapshotService creates a new snapshot service
@@ -25,40 +34,66 @@ func NewSnapshotService(compassClient *compass.Client, database *db.Queries) *Sn
 	}
 }
 
+// SetProgressCallback sets the callback function for progress updates
+func (s *SnapshotService) SetProgressCallback(callback ProgressCallback) {
+	s.progressCallback = callback
+}
+
+// reportProgress calls the progress callback if set
+func (s *SnapshotService) reportProgress(phase string, stepNum, totalSteps int, message string) {
+	if s.progressCallback != nil {
+		s.progressCallback(phase, stepNum, totalSteps, message, s.mopCount, s.moCount, s.coCount)
+	}
+}
+
 // RefreshAll performs a full data refresh from M3 with table truncation
 // Strategy: Clear all M3 snapshot data, then pull MOPs/MOs with MPREAL links, then all open CO lines
-func (s *SnapshotService) RefreshAll(ctx context.Context) error {
-	log.Println("Starting full data refresh from M3...")
+// Filtered by company and facility context
+func (s *SnapshotService) RefreshAll(ctx context.Context, company string, facility string) error {
+	log.Printf("Starting full data refresh from M3 for company '%s' and facility '%s'...", company, facility)
 	log.Println("Strategy: Truncate all M3 snapshot tables, load MOPs/MOs with MPREAL links, load all open CO lines")
 
 	// Phase 0: Truncate all M3 snapshot tables
+	s.reportProgress("truncate", 0, 4, "Preparing database for refresh")
 	log.Println("Phase 0: Truncating all M3 snapshot tables for full refresh...")
 	if err := s.db.TruncateAnalysisTables(ctx); err != nil {
 		return fmt.Errorf("failed to truncate analysis tables: %w", err)
 	}
 	log.Println("✓ M3 snapshot tables truncated successfully")
+	s.reportProgress("truncate", 1, 4, "Database prepared")
 
 	// Phase 1: Load MOPs with CO links
+	s.reportProgress("mops", 1, 4, "Loading planned manufacturing orders")
 	log.Println("Phase 1: Refreshing planned manufacturing orders (MOPs) with CO links...")
-	_, err := s.RefreshPlannedOrders(ctx)
+	mopRefs, err := s.RefreshPlannedOrders(ctx, company, facility)
 	if err != nil {
 		return fmt.Errorf("failed to refresh MOPs: %w", err)
 	}
+	s.mopCount = len(mopRefs)
+	s.reportProgress("mops", 1, 4, fmt.Sprintf("Loaded %d planned orders", s.mopCount))
 
 	// Phase 2: Load MOs with CO links
+	s.reportProgress("mos", 2, 4, "Loading manufacturing orders")
 	log.Println("Phase 2: Refreshing manufacturing orders (MOs) with CO links...")
-	_, err = s.RefreshManufacturingOrders(ctx)
+	moRefs, err := s.RefreshManufacturingOrders(ctx, company, facility)
 	if err != nil {
 		return fmt.Errorf("failed to refresh MOs: %w", err)
 	}
+	s.moCount = len(moRefs)
+	s.reportProgress("mos", 2, 4, fmt.Sprintf("Loaded %d manufacturing orders", s.moCount))
 
 	// Phase 3: Load all open CO lines (status < 30)
+	s.reportProgress("cos", 3, 4, "Loading customer order lines")
 	log.Println("Phase 3: Refreshing all open customer order lines (status < 30)...")
-	if err := s.RefreshOpenCustomerOrderLines(ctx); err != nil {
+	coCount, err := s.RefreshOpenCustomerOrderLines(ctx, company, facility)
+	if err != nil {
 		return fmt.Errorf("failed to refresh CO lines: %w", err)
 	}
+	s.coCount = coCount
+	s.reportProgress("cos", 3, 4, fmt.Sprintf("Loaded %d customer order lines", s.coCount))
 
 	// Phase 4: Update unified production_orders view
+	s.reportProgress("finalize", 4, 4, "Finalizing data refresh")
 	log.Println("Phase 4: Updating unified production orders view...")
 	if err := s.db.UpdateProductionOrdersFromMOPs(ctx); err != nil {
 		return fmt.Errorf("failed to update production orders from MOPs: %w", err)
@@ -67,31 +102,34 @@ func (s *SnapshotService) RefreshAll(ctx context.Context) error {
 		return fmt.Errorf("failed to update production orders from MOs: %w", err)
 	}
 
-	log.Println("✓ Full data refresh completed successfully")
+	s.reportProgress("complete", 4, 4, "Data refresh completed")
+	log.Printf("✓ Full data refresh completed successfully for company '%s' and facility '%s'", company, facility)
 	return nil
 }
 
 // RefreshOpenCustomerOrderLines refreshes all open CO lines (status < 30)
+// Filtered by company and facility context
 // This is more efficient than querying by specific order numbers when there are many orders
-func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context) error {
-	log.Println("Refreshing all open customer order lines (status < 30)...")
+// Returns the count of records processed
+func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, company string, facility string) (int, error) {
+	log.Printf("Refreshing all open customer order lines (status < 30) for company '%s' and facility '%s'...", company, facility)
 
-	// Build query for all open CO lines
-	qb := compass.NewQueryBuilder(0)
+	// Build query for all open CO lines with context filters
+	qb := compass.NewQueryBuilder(0, company, facility)
 	query := qb.BuildOpenCustomerOrderLinesQuery()
 
 	// Execute query
 	log.Println("Submitting Compass query for open CO lines...")
-	results, err := s.compassClient.ExecuteQuery(ctx, query, 100000)
+	results, err := s.compassClient.ExecuteQuery(ctx, query, 500)
 	if err != nil {
-		return fmt.Errorf("failed to execute query: %w", err)
+		return 0, fmt.Errorf("failed to execute query: %w", err)
 	}
 
 	// Parse results
 	log.Println("Parsing CO line results...")
 	resultSet, err := compass.ParseResults(results)
 	if err != nil {
-		return fmt.Errorf("failed to parse results: %w", err)
+		return 0, fmt.Errorf("failed to parse results: %w", err)
 	}
 
 	log.Printf("Received %d CO line records", len(resultSet.Records))
@@ -146,17 +184,17 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context) err
 	// Batch insert
 	log.Printf("Inserting %d CO line records into database...", len(dbRecords))
 	if err := s.db.BatchInsertCustomerOrderLines(ctx, dbRecords); err != nil {
-		return fmt.Errorf("failed to insert CO lines: %w", err)
+		return 0, fmt.Errorf("failed to insert CO lines: %w", err)
 	}
 
 	log.Printf("CO lines refresh completed - inserted %d records", len(dbRecords))
-	return nil
+	return len(dbRecords), nil
 }
 
 // RefreshCustomerOrderLinesByNumbers refreshes specific CO lines by order numbers
 // DEPRECATED: This can cause issues with Compass when there are many order numbers
 // Use RefreshOpenCustomerOrderLines instead
-func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context, orderNumbers []string) error {
+func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context, orderNumbers []string, company string, facility string) error {
 	if len(orderNumbers) == 0 {
 		log.Println("No CO numbers to refresh")
 		return nil
@@ -164,12 +202,14 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 	log.Printf("Refreshing %d specific customer order lines...", len(orderNumbers))
 
 	// Build targeted query (no lastSyncDate needed - we want all lines for these orders)
-	qb := compass.NewQueryBuilder(0)
+	// Note: This deprecated method doesn't filter by context in the query builder call
+	// because BuildCustomerOrderLinesByOrderNumbersQuery doesn't use context fields
+	qb := compass.NewQueryBuilder(0, company, facility)
 	query := qb.BuildCustomerOrderLinesByOrderNumbersQuery(orderNumbers)
 
 	// Execute query
 	log.Println("Submitting Compass query for CO lines...")
-	results, err := s.compassClient.ExecuteQuery(ctx, query, 100000)
+	results, err := s.compassClient.ExecuteQuery(ctx, query, 500)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -241,21 +281,22 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 }
 
 // RefreshManufacturingOrders refreshes MO data from Compass with MPREAL joins
+// Filtered by company and facility context
 // Returns list of unique CO numbers referenced by MOs
-func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context) ([]string, error) {
-	log.Println("Refreshing manufacturing orders...")
+func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, company string, facility string) ([]string, error) {
+	log.Printf("Refreshing manufacturing orders for company '%s' and facility '%s'...", company, facility)
 
 	// Use full refresh date - no incremental loading
 	fullRefreshDate := compass.GetFullRefreshDate()
 	log.Printf("Using full refresh date: %d", fullRefreshDate)
 
-	// Build query
-	qb := compass.NewQueryBuilder(fullRefreshDate)
+	// Build query with context filters
+	qb := compass.NewQueryBuilder(fullRefreshDate, company, facility)
 	query := qb.BuildManufacturingOrdersQuery()
 
 	// Execute query
 	log.Println("Submitting Compass query for MOs...")
-	results, err := s.compassClient.ExecuteQuery(ctx, query, 100000)
+	results, err := s.compassClient.ExecuteQuery(ctx, query, 500)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -348,21 +389,22 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context) ([]str
 }
 
 // RefreshPlannedOrders refreshes MOP data from Compass with MPREAL joins
+// Filtered by company and facility context
 // Returns list of unique CO numbers referenced by MOPs
-func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context) ([]string, error) {
-	log.Println("Refreshing planned manufacturing orders (with CO links via MPREAL)...")
+func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, company string, facility string) ([]string, error) {
+	log.Printf("Refreshing planned manufacturing orders (with CO links via MPREAL) for company '%s' and facility '%s'...", company, facility)
 
 	// Use full refresh date - no incremental loading
 	fullRefreshDate := compass.GetFullRefreshDate()
 	log.Printf("Using full refresh date: %d", fullRefreshDate)
 
-	// Build query with MPREAL join
-	qb := compass.NewQueryBuilder(fullRefreshDate)
+	// Build query with MPREAL join and context filters
+	qb := compass.NewQueryBuilder(fullRefreshDate, company, facility)
 	query := qb.BuildPlannedOrdersWithCOLinksQuery()
 
 	// Execute query
 	log.Println("Submitting Compass query for MOPs...")
-	results, err := s.compassClient.ExecuteQuery(ctx, query, 100000)
+	results, err := s.compassClient.ExecuteQuery(ctx, query, 500)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
 	}

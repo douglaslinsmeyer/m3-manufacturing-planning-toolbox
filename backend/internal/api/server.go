@@ -160,6 +160,7 @@ func (s *Server) setupRoutes() {
 	contextRouter.HandleFunc("/effective", s.handleGetEffectiveContext).Methods("GET")
 	contextRouter.HandleFunc("/temporary", s.handleSetTemporaryOverride).Methods("POST")
 	contextRouter.HandleFunc("/temporary", s.handleClearTemporaryOverrides).Methods("DELETE")
+	contextRouter.HandleFunc("/retry-load", s.handleRetryLoadContext).Methods("POST")
 	contextRouter.HandleFunc("/companies", s.handleListCompanies).Methods("GET")
 	contextRouter.HandleFunc("/divisions", s.handleListDivisions).Methods("GET")
 	contextRouter.HandleFunc("/facilities", s.handleListFacilities).Methods("GET")
@@ -169,6 +170,7 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/snapshot/refresh", s.handleSnapshotRefresh).Methods("POST")
 	protected.HandleFunc("/snapshot/status", s.handleSnapshotStatus).Methods("GET")
 	protected.HandleFunc("/snapshot/summary", s.handleSnapshotSummary).Methods("GET")
+	protected.HandleFunc("/snapshot/progress/{jobId}", s.handleSnapshotProgressSSE).Methods("GET")
 
 	// Production orders (unified MO/MOP view)
 	protected.HandleFunc("/production-orders", s.handleListProductionOrders).Methods("GET")
