@@ -29,13 +29,19 @@ func NewClient(baseURL string, getToken func() (string, error)) *Client {
 
 // M3Response represents a generic M3 API response
 type M3Response struct {
-	MIRecord []map[string]interface{} `json:"MIRecord"`
+	Results []M3TransactionResult `json:"results"`
+}
+
+// M3TransactionResult represents a single transaction result
+type M3TransactionResult struct {
+	Transaction string                   `json:"transaction"`
+	Records     []map[string]interface{} `json:"records"`
 }
 
 // Execute calls an M3 API transaction
 func (c *Client) Execute(ctx context.Context, program, transaction string, params map[string]string) (*M3Response, error) {
 	// Build URL: /M3/m3api-rest/v2/execute/{program}/{transaction}
-	url := fmt.Sprintf("%s/execute/%s/%s", c.baseURL, program, transaction)
+	url := fmt.Sprintf("%sM3/m3api-rest/v2/execute/%s/%s", c.baseURL, program, transaction)
 
 	// Create request
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
@@ -43,14 +49,21 @@ func (c *Client) Execute(ctx context.Context, program, transaction string, param
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 
-	// Add query parameters
+	// Add query parameters with defaults from M3 Shop Floor app
+	q := req.URL.Query()
+	q.Add("dateformat", "YMD8")
+	q.Add("excludeempty", "false")
+	q.Add("righttrim", "true")
+	q.Add("metadata", "false")
+	q.Add("returnSystemFields", "false")
+
+	// Add custom parameters (will override defaults if same key)
 	if len(params) > 0 {
-		q := req.URL.Query()
 		for key, value := range params {
-			q.Add(key, value)
+			q.Set(key, value)
 		}
-		req.URL.RawQuery = q.Encode()
 	}
+	req.URL.RawQuery = q.Encode()
 
 	// Add authentication
 	token, err := c.getToken()
@@ -78,11 +91,20 @@ func (c *Client) Execute(ctx context.Context, program, transaction string, param
 		return nil, fmt.Errorf("M3 API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	// Debug: Log raw response
+	fmt.Printf("DEBUG M3 API Response for %s/%s:\n%s\n", program, transaction, string(body))
+
 	// Parse response
 	var m3Resp M3Response
 	if err := json.Unmarshal(body, &m3Resp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
+
+	recordCount := 0
+	if len(m3Resp.Results) > 0 {
+		recordCount = len(m3Resp.Results[0].Records)
+	}
+	fmt.Printf("DEBUG M3 API Parsed: Found %d records\n", recordCount)
 
 	return &m3Resp, nil
 }
@@ -94,11 +116,16 @@ func (c *Client) GetSingleRecord(ctx context.Context, program, transaction strin
 		return nil, err
 	}
 
-	if len(resp.MIRecord) == 0 {
+	if len(resp.Results) == 0 {
+		return nil, fmt.Errorf("no results returned")
+	}
+
+	records := resp.Results[0].Records
+	if len(records) == 0 {
 		return nil, fmt.Errorf("no records returned")
 	}
 
-	return resp.MIRecord[0], nil
+	return records[0], nil
 }
 
 // GetMultipleRecords executes a transaction expecting multiple records
@@ -108,5 +135,9 @@ func (c *Client) GetMultipleRecords(ctx context.Context, program, transaction st
 		return nil, err
 	}
 
-	return resp.MIRecord, nil
+	if len(resp.Results) == 0 {
+		return nil, fmt.Errorf("no results returned")
+	}
+
+	return resp.Results[0].Records, nil
 }

@@ -166,10 +166,14 @@ func (s *Server) setupRoutes() {
 	contextRouter.HandleFunc("/facilities", s.handleListFacilities).Methods("GET")
 	contextRouter.HandleFunc("/warehouses", s.handleListWarehouses).Methods("GET")
 
+	// M3 Configuration (for deep linking)
+	protected.HandleFunc("/m3-config", s.handleGetM3Config).Methods("GET")
+
 	// Snapshot management
 	protected.HandleFunc("/snapshot/refresh", s.handleSnapshotRefresh).Methods("POST")
 	protected.HandleFunc("/snapshot/status", s.handleSnapshotStatus).Methods("GET")
 	protected.HandleFunc("/snapshot/summary", s.handleSnapshotSummary).Methods("GET")
+	protected.HandleFunc("/snapshot/active-job", s.handleGetActiveJob).Methods("GET")
 	protected.HandleFunc("/snapshot/progress/{jobId}", s.handleSnapshotProgressSSE).Methods("GET")
 
 	// Production orders (unified MO/MOP view)
@@ -193,6 +197,11 @@ func (s *Server) setupRoutes() {
 	// Analysis endpoints
 	protected.HandleFunc("/analysis/inconsistencies", s.handleListInconsistencies).Methods("GET")
 	protected.HandleFunc("/analysis/timeline", s.handleGetTimeline).Methods("GET")
+
+	// Issue detection endpoints
+	protected.HandleFunc("/issues", s.handleListIssues).Methods("GET")
+	protected.HandleFunc("/issues/summary", s.handleGetIssueSummary).Methods("GET")
+	protected.HandleFunc("/issues/{id}", s.handleGetIssueDetail).Methods("GET")
 }
 
 // authMiddleware checks if the user is authenticated

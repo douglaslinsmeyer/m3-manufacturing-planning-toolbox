@@ -18,6 +18,8 @@ type RefreshRequest struct {
 	JobID       string `json:"jobId"`
 	Environment string `json:"environment"`
 	AccessToken string `json:"accessToken"`
+	Company     string `json:"company"`
+	Facility    string `json:"facility"`
 }
 
 // handleSnapshotRefresh initiates a data refresh from M3 via NATS
@@ -32,10 +34,25 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DEBUG: Print token for manual testing
-	log.Printf("=== ACCESS TOKEN FOR MANUAL TESTING ===")
+	// Get effective context (respects temporary overrides)
+	effectiveContext := s.contextService.GetEffectiveContext(session)
+
+	// Validate that company and facility are set
+	if effectiveContext.Company == "" {
+		http.Error(w, "Company context is not set. Please select a company before refreshing data.", http.StatusBadRequest)
+		return
+	}
+	if effectiveContext.Facility == "" {
+		http.Error(w, "Facility context is not set. Please select a facility before refreshing data.", http.StatusBadRequest)
+		return
+	}
+
+	// DEBUG: Print token and context for manual testing
+	log.Printf("=== SNAPSHOT REFRESH REQUEST ===")
 	log.Printf("Token: %s", accessToken)
 	log.Printf("Environment: %s", environment)
+	log.Printf("Company: %s", effectiveContext.Company)
+	log.Printf("Facility: %s", effectiveContext.Facility)
 	log.Printf("=======================================")
 
 	// Generate job ID
@@ -58,6 +75,8 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 		JobID:       jobID,
 		Environment: environment,
 		AccessToken: accessToken,
+		Company:     effectiveContext.Company,
+		Facility:    effectiveContext.Facility,
 	}
 
 	msgData, _ := json.Marshal(refreshMsg)
@@ -148,6 +167,37 @@ func (s *Server) handleSnapshotStatus(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(response)
 }
 
+// handleGetActiveJob returns the currently active refresh job if one exists
+func (s *Server) handleGetActiveJob(w http.ResponseWriter, r *http.Request) {
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	ctx := r.Context()
+
+	// Get active job for this environment
+	job, err := s.db.GetActiveRefreshJob(ctx, environment)
+	if err != nil {
+		http.Error(w, "Failed to get active job", http.StatusInternalServerError)
+		return
+	}
+
+	// If no active job exists, return null
+	if job == nil {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"jobId": nil,
+		})
+		return
+	}
+
+	// Return job ID and basic status
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"jobId":  job.ID,
+		"status": job.Status,
+	})
+}
+
 // handleSnapshotSummary returns summary statistics of the current snapshot
 func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -171,6 +221,13 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 		lastRefresh = job.CompletedAt.Time
 	}
 
+	// Get inconsistency count from latest detection job
+	issueCount, err := s.db.GetIssueCountForLatestJob(ctx)
+	if err != nil {
+		log.Printf("Warning: failed to get issue count: %v", err)
+		issueCount = 0 // Graceful fallback
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"totalProductionOrders":    productionOrdersCount,
@@ -179,7 +236,7 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 		"totalCustomerOrders":      coLinesCount,
 		"totalDeliveries":          0,
 		"lastRefresh":              lastRefresh,
-		"inconsistenciesCount":     0,
+		"inconsistenciesCount":     issueCount,
 	})
 }
 

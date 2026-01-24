@@ -7,13 +7,17 @@ import (
 
 // QueryBuilder builds SQL queries for Compass Data Fabric
 type QueryBuilder struct {
-	lastSyncDate int // YYYYMMDD format
+	lastSyncDate int    // YYYYMMDD format
+	company      string // Company number (CONO)
+	facility     string // Facility (FACI)
 }
 
 // NewQueryBuilder creates a new query builder
-func NewQueryBuilder(lastSyncDate int) *QueryBuilder {
+func NewQueryBuilder(lastSyncDate int, company string, facility string) *QueryBuilder {
 	return &QueryBuilder{
 		lastSyncDate: lastSyncDate,
+		company:      company,
+		facility:     facility,
 	}
 }
 
@@ -108,6 +112,7 @@ ORDER BY LMDT, LMTS
 // BuildManufacturingOrdersQuery builds the query for MWOHED (Manufacturing Orders)
 // JOINs with MPREAL to get linked CO numbers directly
 // Only fetches MOs that are Released or Planned (not yet started: WHST <= '20')
+// Filtered by company and facility context
 // For full refresh, use GetFullRefreshDate() as the lastSyncDate parameter
 func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
 	// Select MO fields with mo. prefix
@@ -182,13 +187,16 @@ LEFT JOIN MPREAL mpreal
 WHERE mo.deleted = 'false'
   AND mo.LMDT >= %d
   AND mo.WHST <= '20'
+  AND mo.CONO = '%s'
+  AND mo.FACI = '%s'
 ORDER BY mo.STDT, mo.LMDT
-`, strings.Join(fields, ", "), qb.lastSyncDate)
+`, strings.Join(fields, ", "), qb.lastSyncDate, qb.company, qb.facility)
 
 	return strings.TrimSpace(query)
 }
 
 // BuildPlannedOrdersWithCOLinksQuery builds the query for MMOPLP with MPREAL joins
+// Filtered by company and facility context, only includes firmed planned orders (PSTS = '20')
 // For full refresh, use GetFullRefreshDate() as the lastSyncDate parameter
 func (qb *QueryBuilder) BuildPlannedOrdersWithCOLinksQuery() string {
 	fields := []string{
@@ -254,9 +262,11 @@ LEFT JOIN MPREAL mpreal
   AND mpreal.deleted = 'false'
 WHERE mop.deleted = 'false'
   AND mop.LMDT >= %d
-  AND mop.PSTS IN ('10', '20')
+  AND mop.PSTS = '20'
+  AND mop.CONO = '%s'
+  AND mop.FACI = '%s'
 ORDER BY mop.PLDT, mop.LMDT
-`, strings.Join(fields, ", "), qb.lastSyncDate)
+`, strings.Join(fields, ", "), qb.lastSyncDate, qb.company, qb.facility)
 
 	return strings.TrimSpace(query)
 }
@@ -374,31 +384,80 @@ ORDER BY ORNO, PONR, POSX
 }
 
 // BuildOpenCustomerOrderLinesQuery builds a query for all open CO lines
-// An open CO line is one that has not been fully allocated (status < 30)
+// An open CO line is Reserved (status >= 20 and < 30) - excludes quotations/preliminary
+// Filtered by company and facility context
 func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 	fields := []string{
+		// Core identifiers
 		"CONO", "DIVI", "ORNO", "PONR", "POSX",
-		"ITNO", "ITDS", "ORTY", "ORST",
+
+		// Item information (ALL)
+		"ITNO", "ITDS", "TEDS", "REPI",
+
+		// Status/Type
+		"ORST", "ORTY",
+
+		// Facility/Warehouse
 		"FACI", "WHLO",
+
+		// Quantities - Basic U/M
 		"ORQT", "RNQT", "ALQT", "DLQT", "IVQT",
+
+		// Quantities - Alternate U/M
 		"ORQA", "RNQA", "ALQA", "DLQA", "IVQA",
+
+		// Units
 		"ALUN", "COFA", "SPUN",
+
+		// Delivery Dates (critical for planning)
 		"DWDT", "DWHM", "CODT", "COHM", "PLDT", "FDED", "LDED",
+
+		// Pricing (basic)
 		"SAPR", "NEPR", "LNAM", "CUCD",
+
+		// Discounts (6 main ones)
 		"DIP1", "DIP2", "DIP3", "DIP4", "DIP5", "DIP6",
 		"DIA1", "DIA2", "DIA3", "DIA4", "DIA5", "DIA6",
+
+		// Reference Orders (critical for linking)
 		"RORC", "RORN", "RORL", "RORX",
+
+		// Customer References (ALL)
+		"CUNO", "CUOR", "CUPO", "CUSX",
+
+		// Product/Model (ALL)
+		"PRNO", "HDPR", "POPN", "ALWT", "ALWQ",
+
+		// Delivery/Route (ALL)
+		"ADID", "ROUT", "RODN", "DSDT", "DSHM", "MODL", "TEDL", "TEL2",
+
+		// Packaging (ALL)
+		"TEPA", "PACT", "CUPA",
+
+		// Partner/EDI (ALL)
+		"E0PA", "DSGP", "PUSN", "PUTP",
+
+		// Attributes (ATV1-ATV0)
 		"ATV1", "ATV2", "ATV3", "ATV4", "ATV5",
 		"ATV6", "ATV7", "ATV8", "ATV9", "ATV0",
+
+		// User-Defined Fields (often used for custom workflows)
 		"UCA1", "UCA2", "UCA3", "UCA4", "UCA5",
 		"UCA6", "UCA7", "UCA8", "UCA9", "UCA0",
 		"UDN1", "UDN2", "UDN3", "UDN4", "UDN5", "UDN6",
 		"UID1", "UID2", "UID3",
 		"UCT1",
-		"ATNR", "ATMO", "ATPR",
-		"CFIN",
-		"CUNO",
+
+		// Configuration (for configured products)
+		"ATNR", "ATMO", "ATPR", "CFIN",
+
+		// Project
+		"PROJ", "ELNO",
+
+		// M3 Audit
 		"RGDT", "RGTM", "LMDT", "CHNO", "CHID", "LMTS",
+
+		// Data Lake
 		"timestamp", "deleted",
 	}
 
@@ -406,9 +465,12 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 SELECT %s
 FROM OOLINE
 WHERE deleted = 'false'
+  AND ORST >= '20'
   AND ORST < '30'
+  AND CONO = '%s'
+  AND FACI = '%s'
 ORDER BY ORNO, PONR, POSX
-`, strings.Join(fields, ", "))
+`, strings.Join(fields, ", "), qb.company, qb.facility)
 
 	return strings.TrimSpace(query)
 }

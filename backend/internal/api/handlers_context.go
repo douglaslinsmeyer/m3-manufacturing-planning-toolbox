@@ -53,6 +53,7 @@ type EffectiveContextResponse struct {
 	Warehouse             string                `json:"warehouse"`
 	HasTemporaryOverrides bool                  `json:"hasTemporaryOverrides"`
 	UserDefaults          *UserContextResponse  `json:"userDefaults"`
+	LoadError             string                `json:"loadError,omitempty"`
 }
 
 // TemporaryOverrideRequest represents a temporary override update
@@ -72,6 +73,12 @@ func (s *Server) handleGetEffectiveContext(w http.ResponseWriter, r *http.Reques
 	userDefaults := s.contextService.GetUserDefaults(session)
 	hasOverrides := s.contextService.HasTemporaryOverrides(session)
 
+	// Get load error if any
+	loadError := ""
+	if err, ok := session.Values["context_load_error"].(string); ok {
+		loadError = err
+	}
+
 	response := EffectiveContextResponse{
 		Company:               effective.Company,
 		Division:              effective.Division,
@@ -84,6 +91,7 @@ func (s *Server) handleGetEffectiveContext(w http.ResponseWriter, r *http.Reques
 			Facility:  userDefaults.Facility,
 			Warehouse: userDefaults.Warehouse,
 		},
+		LoadError: loadError,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -137,6 +145,52 @@ func (s *Server) handleClearTemporaryOverrides(w http.ResponseWriter, r *http.Re
 
 	// Return updated effective context
 	s.handleGetEffectiveContext(w, r)
+}
+
+// handleRetryLoadContext retries loading user context from M3
+func (s *Server) handleRetryLoadContext(w http.ResponseWriter, r *http.Request) {
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to initialize M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	if err := s.contextService.LoadUserDefaults(r.Context(), session, m3Client); err != nil {
+		session.Values["context_load_error"] = err.Error()
+		session.Save(r, w)
+		http.Error(w, fmt.Sprintf("Failed to load context: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	delete(session.Values, "context_load_error")
+	session.Save(r, w)
+
+	// Prime cache in background
+	go s.primeContextCache(environment, m3Client)
+
+	// Return effective context
+	effective := s.contextService.GetEffectiveContext(session)
+	userDefaults := s.contextService.GetUserDefaults(session)
+
+	response := EffectiveContextResponse{
+		Company:               effective.Company,
+		Division:              effective.Division,
+		Facility:              effective.Facility,
+		Warehouse:             effective.Warehouse,
+		HasTemporaryOverrides: s.contextService.HasTemporaryOverrides(session),
+		UserDefaults: &UserContextResponse{
+			Company:   userDefaults.Company,
+			Division:  userDefaults.Division,
+			Facility:  userDefaults.Facility,
+			Warehouse: userDefaults.Warehouse,
+		},
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleListCompanies returns all available companies
@@ -316,4 +370,30 @@ func (s *Server) getContextRepositoryForRequest(r *http.Request, environment str
 
 	m3Client := m3api.NewClient(envConfig.APIBaseURL, getToken)
 	return services.NewContextRepository(s.db, m3Client, environment), nil
+}
+
+// handleGetM3Config returns M3 portal configuration for deep linking
+func (s *Server) handleGetM3Config(w http.ResponseWriter, r *http.Request) {
+	session, _ := s.sessionStore.Get(r, "m3-session")
+
+	environment, ok := session.Values["environment"].(string)
+	if !ok {
+		http.Error(w, "No environment in session", http.StatusBadRequest)
+		return
+	}
+
+	envConfig, err := s.config.GetEnvironmentConfig(environment)
+	if err != nil {
+		http.Error(w, "Failed to get environment config", http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"tenantId":    envConfig.TenantID,
+		"instanceId":  envConfig.InstanceID,
+		"environment": environment,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }

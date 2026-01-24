@@ -64,125 +64,255 @@ func ParseResults(rawJSON []byte) (*CompassResultSet, error) {
 
 // CustomerOrderLineRecord represents a parsed CO line record
 type CustomerOrderLineRecord struct {
-	// Core identifiers
-	CONO int
-	DIVI string
-	ORNO string
-	PONR int
-	POSX int
+	// M3 Core Identifiers (all strings)
+	CONO, DIVI, ORNO, PONR, POSX string
 
-	// Item
-	ITNO string
-	ITDS string
-	ORTY string
-	ORST string
+	// M3 Item Information
+	ITNO, ITDS, TEDS, REPI string
 
-	// Location
-	FACI string
-	WHLO string
+	// M3 Status/Type
+	ORST, ORTY string
 
-	// Quantities
-	ORQT float64
-	RNQT float64
-	ALQT float64
-	DLQT float64
-	IVQT float64
+	// M3 Facility/Warehouse
+	FACI, WHLO string
 
-	// Dates
-	DWDT int
-	CODT int
-	PLDT int
-	FDED int
-	LDED int
+	// M3 Quantities (all strings)
+	ORQT, RNQT, ALQT, DLQT, IVQT string
+	ORQA, RNQA, ALQA, DLQA, IVQA string
 
-	// Pricing
-	SAPR float64
-	NEPR float64
-	LNAM float64
-	CUCD string
+	// M3 Units
+	ALUN, COFA, SPUN string
 
-	// Reference orders
-	RORC int
-	RORN string
-	RORL int
-	RORX int
+	// M3 Delivery Dates (all strings)
+	DWDT, DWHM, CODT, COHM, PLDT, FDED, LDED string
 
-	// Attribute model
-	ATNR int64
-	ATMO string
+	// M3 Pricing
+	SAPR, NEPR, LNAM, CUCD string
 
-	// Attributes (will be built into JSONB)
-	Attributes map[string]interface{}
+	// M3 Discounts
+	DIP1, DIP2, DIP3, DIP4, DIP5, DIP6 string
+	DIA1, DIA2, DIA3, DIA4, DIA5, DIA6 string
 
-	// M3 metadata
-	RGDT int
-	LMDT int
-	LMTS int64
-	CHID string
+	// M3 Reference Orders
+	RORC, RORN, RORL, RORX string
 
-	// Customer
-	CUNO string
+	// M3 Customer References
+	CUNO, CUOR, CUPO, CUSX string
 
-	// Timestamps
-	M3Timestamp string
-	IsDeleted   bool
+	// M3 Product/Model
+	PRNO, HDPR, POPN, ALWT, ALWQ string
+
+	// M3 Delivery/Route
+	ADID, ROUT, RODN, DSDT, DSHM, MODL, TEDL, TEL2 string
+
+	// M3 Packaging
+	TEPA, PACT, CUPA string
+
+	// M3 Partner/EDI
+	E0PA, DSGP, PUSN, PUTP string
+
+	// M3 Attributes (ATV1-ATV0)
+	ATV1, ATV2, ATV3, ATV4, ATV5 string
+	ATV6, ATV7, ATV8, ATV9, ATV0 string
+
+	// M3 User-Defined Alpha (UCA1-UCA0)
+	UCA1, UCA2, UCA3, UCA4, UCA5 string
+	UCA6, UCA7, UCA8, UCA9, UCA0 string
+
+	// M3 User-Defined Numeric (UDN1-UDN6)
+	UDN1, UDN2, UDN3, UDN4, UDN5, UDN6 string
+
+	// M3 User-Defined Date (UID1-UID3)
+	UID1, UID2, UID3 string
+
+	// M3 User-Defined Text
+	UCT1 string
+
+	// M3 Configuration
+	ATNR, ATMO, ATPR, CFIN string
+
+	// M3 Project
+	PROJ, ELNO string
+
+	// M3 Audit
+	RGDT, RGTM, LMDT, CHNO, CHID, LMTS string
+
+	// Metadata
+	Timestamp string
+	Deleted   string
 }
 
 // ParseCustomerOrderLine converts a Compass record to a CustomerOrderLineRecord
+// All fields extracted as strings to match Data Fabric source format
 func ParseCustomerOrderLine(record map[string]interface{}) (*CustomerOrderLineRecord, error) {
 	col := &CustomerOrderLineRecord{
-		CONO: getInt(record, "CONO"),
+		// Core Identifiers
+		CONO: getStringFromAny(record, "CONO"),
 		DIVI: getString(record, "DIVI"),
 		ORNO: getString(record, "ORNO"),
-		PONR: getInt(record, "PONR"),
-		POSX: getInt(record, "POSX"),
+		PONR: getStringFromAny(record, "PONR"),
+		POSX: getStringFromAny(record, "POSX"),
 
+		// Item Information
 		ITNO: getString(record, "ITNO"),
 		ITDS: getString(record, "ITDS"),
-		ORTY: getString(record, "ORTY"),
-		ORST: getString(record, "ORST"),
+		TEDS: getString(record, "TEDS"),
+		REPI: getString(record, "REPI"),
 
+		// Status/Type
+		ORST: getString(record, "ORST"),
+		ORTY: getString(record, "ORTY"),
+
+		// Facility/Warehouse
 		FACI: getString(record, "FACI"),
 		WHLO: getString(record, "WHLO"),
 
-		ORQT: getFloat(record, "ORQT"),
-		RNQT: getFloat(record, "RNQT"),
-		ALQT: getFloat(record, "ALQT"),
-		DLQT: getFloat(record, "DLQT"),
-		IVQT: getFloat(record, "IVQT"),
+		// Quantities
+		ORQT: getStringFromAny(record, "ORQT"),
+		RNQT: getStringFromAny(record, "RNQT"),
+		ALQT: getStringFromAny(record, "ALQT"),
+		DLQT: getStringFromAny(record, "DLQT"),
+		IVQT: getStringFromAny(record, "IVQT"),
+		ORQA: getStringFromAny(record, "ORQA"),
+		RNQA: getStringFromAny(record, "RNQA"),
+		ALQA: getStringFromAny(record, "ALQA"),
+		DLQA: getStringFromAny(record, "DLQA"),
+		IVQA: getStringFromAny(record, "IVQA"),
 
-		DWDT: getInt(record, "DWDT"),
-		CODT: getInt(record, "CODT"),
-		PLDT: getInt(record, "PLDT"),
-		FDED: getInt(record, "FDED"),
-		LDED: getInt(record, "LDED"),
+		// Units
+		ALUN: getString(record, "ALUN"),
+		COFA: getStringFromAny(record, "COFA"),
+		SPUN: getString(record, "SPUN"),
 
-		SAPR: getFloat(record, "SAPR"),
-		NEPR: getFloat(record, "NEPR"),
-		LNAM: getFloat(record, "LNAM"),
+		// Delivery Dates
+		DWDT: getStringFromAny(record, "DWDT"),
+		DWHM: getStringFromAny(record, "DWHM"),
+		CODT: getStringFromAny(record, "CODT"),
+		COHM: getStringFromAny(record, "COHM"),
+		PLDT: getStringFromAny(record, "PLDT"),
+		FDED: getStringFromAny(record, "FDED"),
+		LDED: getStringFromAny(record, "LDED"),
+
+		// Pricing
+		SAPR: getStringFromAny(record, "SAPR"),
+		NEPR: getStringFromAny(record, "NEPR"),
+		LNAM: getStringFromAny(record, "LNAM"),
 		CUCD: getString(record, "CUCD"),
 
-		RORC: getInt(record, "RORC"),
+		// Discounts
+		DIP1: getStringFromAny(record, "DIP1"),
+		DIP2: getStringFromAny(record, "DIP2"),
+		DIP3: getStringFromAny(record, "DIP3"),
+		DIP4: getStringFromAny(record, "DIP4"),
+		DIP5: getStringFromAny(record, "DIP5"),
+		DIP6: getStringFromAny(record, "DIP6"),
+		DIA1: getStringFromAny(record, "DIA1"),
+		DIA2: getStringFromAny(record, "DIA2"),
+		DIA3: getStringFromAny(record, "DIA3"),
+		DIA4: getStringFromAny(record, "DIA4"),
+		DIA5: getStringFromAny(record, "DIA5"),
+		DIA6: getStringFromAny(record, "DIA6"),
+
+		// Reference Orders
+		RORC: getStringFromAny(record, "RORC"),
 		RORN: getString(record, "RORN"),
-		RORL: getInt(record, "RORL"),
-		RORX: getInt(record, "RORX"),
+		RORL: getStringFromAny(record, "RORL"),
+		RORX: getStringFromAny(record, "RORX"),
 
-		ATNR: getInt64(record, "ATNR"),
-		ATMO: getString(record, "ATMO"),
-
+		// Customer References
 		CUNO: getString(record, "CUNO"),
+		CUOR: getString(record, "CUOR"),
+		CUPO: getStringFromAny(record, "CUPO"),
+		CUSX: getStringFromAny(record, "CUSX"),
 
-		RGDT: getInt(record, "RGDT"),
-		LMDT: getInt(record, "LMDT"),
-		LMTS: getInt64(record, "LMTS"),
-		CHID: getString(record, "CHID"),
+		// Product/Model
+		PRNO: getString(record, "PRNO"),
+		HDPR: getString(record, "HDPR"),
+		POPN: getString(record, "POPN"),
+		ALWT: getStringFromAny(record, "ALWT"),
+		ALWQ: getString(record, "ALWQ"),
 
-		M3Timestamp: getString(record, "timestamp"),
-		IsDeleted:   getString(record, "deleted") == "true",
+		// Delivery/Route
+		ADID: getString(record, "ADID"),
+		ROUT: getString(record, "ROUT"),
+		RODN: getStringFromAny(record, "RODN"),
+		DSDT: getStringFromAny(record, "DSDT"),
+		DSHM: getStringFromAny(record, "DSHM"),
+		MODL: getString(record, "MODL"),
+		TEDL: getString(record, "TEDL"),
+		TEL2: getString(record, "TEL2"),
+
+		// Packaging
+		TEPA: getString(record, "TEPA"),
+		PACT: getString(record, "PACT"),
+		CUPA: getString(record, "CUPA"),
+
+		// Partner/EDI
+		E0PA: getString(record, "E0PA"),
+		DSGP: getString(record, "DSGP"),
+		PUSN: getString(record, "PUSN"),
+		PUTP: getStringFromAny(record, "PUTP"),
+
+		// Attributes (ATV1-ATV0)
+		ATV1: getStringFromAny(record, "ATV1"),
+		ATV2: getStringFromAny(record, "ATV2"),
+		ATV3: getStringFromAny(record, "ATV3"),
+		ATV4: getStringFromAny(record, "ATV4"),
+		ATV5: getStringFromAny(record, "ATV5"),
+		ATV6: getString(record, "ATV6"),
+		ATV7: getString(record, "ATV7"),
+		ATV8: getString(record, "ATV8"),
+		ATV9: getString(record, "ATV9"),
+		ATV0: getString(record, "ATV0"),
+
+		// User-Defined Alpha (UCA1-UCA0)
+		UCA1: getString(record, "UCA1"),
+		UCA2: getString(record, "UCA2"),
+		UCA3: getString(record, "UCA3"),
+		UCA4: getString(record, "UCA4"),
+		UCA5: getString(record, "UCA5"),
+		UCA6: getString(record, "UCA6"),
+		UCA7: getString(record, "UCA7"),
+		UCA8: getString(record, "UCA8"),
+		UCA9: getString(record, "UCA9"),
+		UCA0: getString(record, "UCA0"),
+
+		// User-Defined Numeric (UDN1-UDN6)
+		UDN1: getStringFromAny(record, "UDN1"),
+		UDN2: getStringFromAny(record, "UDN2"),
+		UDN3: getStringFromAny(record, "UDN3"),
+		UDN4: getStringFromAny(record, "UDN4"),
+		UDN5: getStringFromAny(record, "UDN5"),
+		UDN6: getStringFromAny(record, "UDN6"),
+
+		// User-Defined Date (UID1-UID3)
+		UID1: getStringFromAny(record, "UID1"),
+		UID2: getStringFromAny(record, "UID2"),
+		UID3: getStringFromAny(record, "UID3"),
+
+		// User-Defined Text
+		UCT1: getString(record, "UCT1"),
+
+		// Configuration
+		ATNR: getStringFromAny(record, "ATNR"),
+		ATMO: getString(record, "ATMO"),
+		ATPR: getString(record, "ATPR"),
+		CFIN: getStringFromAny(record, "CFIN"),
+
+		// Project
+		PROJ: getString(record, "PROJ"),
+		ELNO: getString(record, "ELNO"),
+
+		// Audit
+		RGDT:      getStringFromAny(record, "RGDT"),
+		RGTM:      getStringFromAny(record, "RGTM"),
+		LMDT:      getStringFromAny(record, "LMDT"),
+		CHNO:      getStringFromAny(record, "CHNO"),
+		CHID:      getString(record, "CHID"),
+		LMTS:      getStringFromAny(record, "LMTS"),
+		Timestamp: getString(record, "timestamp"),
+		Deleted:   getString(record, "deleted"),
 	}
-
-	// Build attributes JSONB
-	col.Attributes = buildCOLineAttributes(record)
 
 	return col, nil
 }
@@ -319,13 +449,25 @@ type ManufacturingOrderRecord struct {
 	// Dates
 	STDT int
 	FIDT int
+	MSTI int
+	MFTI int
+	FSTD int
+	FFID int
 	RSDT int
 	REFD int
+	RPDT int
 
 	// Planning
 	PRIO int
 	RESP string
 	PLGR string
+	WCLN string
+	PRDY int
+
+	// Warehouse/Location
+	WHLO string
+	WHSL string
+	BANO string
 
 	// Reference orders
 	RORC int
@@ -344,18 +486,37 @@ type ManufacturingOrderRecord struct {
 	CFIN int64
 	ATNR int64
 
+	// Material/BOM
+	BDCD string
+	SCEX string
+	STRT string
+	ECVE string
+
+	// Routing
+	AOID string
+	NUOP int
+	NUFO int
+
+	// Action/Text
+	ACTP string
+	TXT1 string
+	TXT2 string
+
 	// Project
 	PROJ string
 	ELNO string
 
 	// M3 metadata
 	RGDT int
+	RGTM int
 	LMDT int
+	CHNO int
+	CHID string
 	LMTS int64
 
 	// Timestamps
-	M3Timestamp string
-	IsDeleted   bool
+	Timestamp int64
+	Deleted   string
 
 	// Additional fields stored in attributes JSONB
 	Attributes map[string]interface{}
@@ -388,12 +549,23 @@ func ParseManufacturingOrder(record map[string]interface{}) (*ManufacturingOrder
 
 		STDT: getInt(record, "STDT"),
 		FIDT: getInt(record, "FIDT"),
+		MSTI: getInt(record, "MSTI"),
+		MFTI: getInt(record, "MFTI"),
+		FSTD: getInt(record, "FSTD"),
+		FFID: getInt(record, "FFID"),
 		RSDT: getInt(record, "RSDT"),
 		REFD: getInt(record, "REFD"),
+		RPDT: getInt(record, "RPDT"),
 
 		PRIO: getInt(record, "PRIO"),
 		RESP: getString(record, "RESP"),
 		PLGR: getString(record, "PLGR"),
+		WCLN: getString(record, "WCLN"),
+		PRDY: getInt(record, "PRDY"),
+
+		WHLO: getString(record, "WHLO"),
+		WHSL: getString(record, "WHSL"),
+		BANO: getString(record, "BANO"),
 
 		RORC: getInt(record, "RORC"),
 		RORN: getString(record, "RORN"),
@@ -409,15 +581,31 @@ func ParseManufacturingOrder(record map[string]interface{}) (*ManufacturingOrder
 		CFIN: getInt64(record, "CFIN"),
 		ATNR: getInt64(record, "ATNR"),
 
+		BDCD: getString(record, "BDCD"),
+		SCEX: getString(record, "SCEX"),
+		STRT: getString(record, "STRT"),
+		ECVE: getString(record, "ECVE"),
+
+		AOID: getString(record, "AOID"),
+		NUOP: getInt(record, "NUOP"),
+		NUFO: getInt(record, "NUFO"),
+
+		ACTP: getString(record, "ACTP"),
+		TXT1: getString(record, "TXT1"),
+		TXT2: getString(record, "TXT2"),
+
 		PROJ: getString(record, "PROJ"),
 		ELNO: getString(record, "ELNO"),
 
 		RGDT: getInt(record, "RGDT"),
+		RGTM: getInt(record, "RGTM"),
 		LMDT: getInt(record, "LMDT"),
+		CHNO: getInt(record, "CHNO"),
+		CHID: getString(record, "CHID"),
 		LMTS: getInt64(record, "LMTS"),
 
-		M3Timestamp: getString(record, "timestamp"),
-		IsDeleted:   getString(record, "deleted") == "true",
+		Timestamp: getInt64(record, "timestamp"),
+		Deleted:   getString(record, "deleted"),
 	}
 
 	// Build attributes JSONB for additional fields
@@ -507,6 +695,7 @@ type PlannedOrderRecord struct {
 
 	// Type
 	ORTY string
+	GETY string
 
 	// Quantities
 	PPQT float64
@@ -516,22 +705,34 @@ type PlannedOrderRecord struct {
 	RELD int
 	STDT int
 	FIDT int
+	MSTI int
+	MFTI int
 	PLDT int
 
 	// Planning
 	RESP string
-	PRIP string
+	PRIP int
 	PLGR string
+	WCLN string
+	PRDY int
+
+	// Warehouse
+	WHLO string
 
 	// Reference orders
 	RORC int
 	RORN string
 	RORL int
 	RORX int
+	RORH string
 
 	// Hierarchy
-	PLLO int64
-	PLHL int64
+	PLLO string
+	PLHL string
+
+	// Planning parameters
+	NUAU int
+	ORDP string
 
 	// Configuration
 	ATNR int64
@@ -546,12 +747,15 @@ type PlannedOrderRecord struct {
 
 	// M3 metadata
 	RGDT int
+	RGTM int
 	LMDT int
+	CHNO int
+	CHID string
 	LMTS int64
 
 	// Timestamps
-	M3Timestamp string
-	IsDeleted   bool
+	Timestamp int64
+	Deleted   string
 
 	// Additional fields stored in attributes
 	Attributes map[string]interface{}
@@ -573,6 +777,7 @@ func ParsePlannedOrder(record map[string]interface{}) (*PlannedOrderRecord, erro
 		ACTP: getString(record, "ACTP"),
 
 		ORTY: getString(record, "ORTY"),
+		GETY: getString(record, "GETY"),
 
 		PPQT: getFloat(record, "PPQT"),
 		ORQA: getFloat(record, "ORQA"),
@@ -580,19 +785,29 @@ func ParsePlannedOrder(record map[string]interface{}) (*PlannedOrderRecord, erro
 		RELD: getInt(record, "RELD"),
 		STDT: getInt(record, "STDT"),
 		FIDT: getInt(record, "FIDT"),
+		MSTI: getInt(record, "MSTI"),
+		MFTI: getInt(record, "MFTI"),
 		PLDT: getInt(record, "PLDT"),
 
 		RESP: getString(record, "RESP"),
-		PRIP: getString(record, "PRIP"),
+		PRIP: getInt(record, "PRIP"),
 		PLGR: getString(record, "PLGR"),
+		WCLN: getString(record, "WCLN"),
+		PRDY: getInt(record, "PRDY"),
+
+		WHLO: getString(record, "WHLO"),
 
 		RORC: getInt(record, "RORC"),
 		RORN: getString(record, "RORN"),
 		RORL: getInt(record, "RORL"),
 		RORX: getInt(record, "RORX"),
+		RORH: getString(record, "RORH"),
 
-		PLLO: getInt64(record, "PLLO"),
-		PLHL: getInt64(record, "PLHL"),
+		PLLO: getString(record, "PLLO"),
+		PLHL: getString(record, "PLHL"),
+
+		NUAU: getInt(record, "NUAU"),
+		ORDP: getString(record, "ORDP"),
 
 		ATNR: getInt64(record, "ATNR"),
 		CFIN: getInt64(record, "CFIN"),
@@ -601,11 +816,14 @@ func ParsePlannedOrder(record map[string]interface{}) (*PlannedOrderRecord, erro
 		ELNO: getString(record, "ELNO"),
 
 		RGDT: getInt(record, "RGDT"),
+		RGTM: getInt(record, "RGTM"),
 		LMDT: getInt(record, "LMDT"),
+		CHNO: getInt(record, "CHNO"),
+		CHID: getString(record, "CHID"),
 		LMTS: getInt64(record, "LMTS"),
 
-		M3Timestamp: getString(record, "timestamp"),
-		IsDeleted:   getString(record, "deleted") == "true",
+		Timestamp: getInt64(record, "timestamp"),
+		Deleted:   getString(record, "deleted"),
 	}
 
 	// Build messages JSONB
@@ -665,6 +883,36 @@ func getString(record map[string]interface{}, key string) string {
 	if val, ok := record[key]; ok && val != nil {
 		if str, ok := val.(string); ok {
 			return str
+		}
+	}
+	return ""
+}
+
+// getStringFromAny converts any value to string (handles int, float, string from Data Fabric)
+func getStringFromAny(record map[string]interface{}, key string) string {
+	if val, ok := record[key]; ok && val != nil {
+		switch v := val.(type) {
+		case string:
+			return v
+		case float64:
+			if v == 0 {
+				return ""
+			}
+			// Remove decimal if it's a whole number
+			if v == float64(int64(v)) {
+				return strconv.FormatInt(int64(v), 10)
+			}
+			return strconv.FormatFloat(v, 'f', -1, 64)
+		case int:
+			if v == 0 {
+				return ""
+			}
+			return strconv.Itoa(v)
+		case int64:
+			if v == 0 {
+				return ""
+			}
+			return strconv.FormatInt(v, 10)
 		}
 	}
 	return ""

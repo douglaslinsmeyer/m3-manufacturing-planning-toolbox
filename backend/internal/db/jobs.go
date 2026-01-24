@@ -239,3 +239,45 @@ func (q *Queries) GetLatestRefreshJob(ctx context.Context, environment string) (
 
 	return job, nil
 }
+
+// GetActiveRefreshJob gets the currently running or pending refresh job for an environment
+// Returns nil if no active job exists
+func (q *Queries) GetActiveRefreshJob(ctx context.Context, environment string) (*RefreshJob, error) {
+	query := `
+		SELECT
+			id, environment, user_id, status,
+			current_step, total_steps, completed_steps, progress_percentage,
+			co_lines_processed, mos_processed, mops_processed,
+			records_per_second, estimated_seconds_remaining,
+			current_operation, current_batch, total_batches,
+			started_at, completed_at, duration_seconds,
+			error_message, retry_count, max_retries,
+			created_at, updated_at
+		FROM refresh_jobs
+		WHERE environment = $1
+		  AND status IN ('pending', 'running')
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	job := &RefreshJob{}
+	err := q.db.QueryRowContext(ctx, query, environment).Scan(
+		&job.ID, &job.Environment, &job.UserID, &job.Status,
+		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
+		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
+		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
+		&job.CurrentOperation, &job.CurrentBatch, &job.TotalBatches,
+		&job.StartedAt, &job.CompletedAt, &job.DurationSeconds,
+		&job.ErrorMessage, &job.RetryCount, &job.MaxRetries,
+		&job.CreatedAt, &job.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // No active job
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get active job: %w", err)
+	}
+
+	return job, nil
+}

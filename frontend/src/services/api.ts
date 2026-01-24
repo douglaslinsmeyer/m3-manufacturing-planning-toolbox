@@ -18,6 +18,15 @@ import type {
   M3Warehouse,
 } from '../types';
 
+// IssueSummary represents aggregated issue counts from the backend
+export interface IssueSummary {
+  total: number;
+  by_detector: Record<string, number>;
+  by_facility: Record<string, number>;
+  by_warehouse: Record<string, number>;
+  by_facility_warehouse_detector: Record<string, Record<string, Record<string, number>>>;
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
 class ApiService {
@@ -147,6 +156,11 @@ class ApiService {
     return response.data;
   }
 
+  async getActiveJob(): Promise<{ jobId: string | null; status?: string }> {
+    const response = await this.client.get('/snapshot/active-job');
+    return response.data;
+  }
+
   // Production Orders
   async listProductionOrders(params?: {
     facility?: string;
@@ -208,7 +222,12 @@ class ApiService {
     return response.data;
   }
 
-  // Analysis
+  // Issues / Inconsistencies
+  async getIssueSummary(): Promise<IssueSummary> {
+    const response = await this.client.get('/issues/summary');
+    return response.data;
+  }
+
   async listInconsistencies(params?: {
     severity?: string;
     type?: string;

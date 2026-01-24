@@ -1,0 +1,9 @@
+-- Migration 017 DOWN: Revert discount field sizes back to VARCHAR(10)
+
+ALTER TABLE customer_order_lines
+    ALTER COLUMN dip1 TYPE VARCHAR(10),
+    ALTER COLUMN dip2 TYPE VARCHAR(10),
+    ALTER COLUMN dip3 TYPE VARCHAR(10),
+    ALTER COLUMN dip4 TYPE VARCHAR(10),
+    ALTER COLUMN dip5 TYPE VARCHAR(10),
+    ALTER COLUMN dip6 TYPE VARCHAR(10);

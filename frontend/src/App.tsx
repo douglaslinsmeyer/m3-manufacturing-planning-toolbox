@@ -2,6 +2,7 @@ import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider } from './contexts/AuthContext';
 import { useAuth } from './contexts/AuthContext';
+import { ContextManagementProvider } from './contexts/ContextManagementContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ProductionOrders from './pages/ProductionOrders';
@@ -10,7 +11,6 @@ import PlannedOrderDetail from './pages/PlannedOrderDetail';
 import CustomerOrders from './pages/CustomerOrders';
 import Deliveries from './pages/Deliveries';
 import Inconsistencies from './pages/Inconsistencies';
-import './App.css';
 
 // Protected route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -19,13 +19,7 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   // Don't render anything until auth check completes
   if (loading) {
     return (
-      <div style={{
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center',
-        height: '100vh',
-        fontSize: '18px'
-      }}>
+      <div className="flex justify-center items-center h-screen text-lg">
         Loading...
       </div>
     );
@@ -39,9 +33,10 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
 function App() {
   return (
     <AuthProvider>
-      <Router>
-        <Routes>
-          <Route path="/login" element={<Login />} />
+      <ContextManagementProvider>
+        <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+          <Routes>
+            <Route path="/login" element={<Login />} />
           <Route
             path="/"
             element={
@@ -98,8 +93,9 @@ function App() {
               </ProtectedRoute>
             }
           />
-        </Routes>
-      </Router>
+          </Routes>
+        </Router>
+      </ContextManagementProvider>
     </AuthProvider>
   );
 }

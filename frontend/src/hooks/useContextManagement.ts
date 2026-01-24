@@ -131,6 +131,21 @@ export const useContextManagement = () => {
     }
   }, []);
 
+  // Retry loading context
+  const retryLoadContext = useCallback(async () => {
+    try {
+      setLoading(true);
+      const context = await api.retryLoadContext();
+      setEffectiveContext(context);
+      setError(null);
+    } catch (err) {
+      setError('Failed to load context. Please try again.');
+      console.error('Failed to retry load context:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   return {
     effectiveContext,
     companies,
@@ -146,5 +161,6 @@ export const useContextManagement = () => {
     loadWarehouses,
     setTemporaryOverride,
     clearTemporaryOverrides,
+    retryLoadContext,
   };
 };

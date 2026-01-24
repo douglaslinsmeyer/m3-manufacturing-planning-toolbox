@@ -1,11 +1,15 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gorilla/sessions"
+	"github.com/pinggolf/m3-planning-tools/internal/m3api"
+	"github.com/pinggolf/m3-planning-tools/internal/services"
 )
 
 // LoginRequest represents the login request payload
@@ -108,12 +112,22 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	// Get M3 API client to load user defaults
 	m3Client, err := s.getM3APIClient(r)
 	if err != nil {
-		fmt.Printf("Warning: Failed to initialize M3 API client: %v\n", err)
+		log.Printf("ERROR: Failed to initialize M3 API client during auth: %v\n", err)
+		session.Values["context_load_error"] = err.Error()
 	} else {
-		// Load user defaults from M3
+		// ALWAYS prime the cache in the background - this populates companies/divisions/facilities/warehouses
+		// so users can select them even if LoadUserDefaults fails
+		go s.primeContextCache(environment, m3Client)
+
+		// Try to load user defaults from M3 (this may fail but shouldn't block login)
 		if err := s.contextService.LoadUserDefaults(r.Context(), session, m3Client); err != nil {
-			// Log error but don't fail login
-			fmt.Printf("Warning: Failed to load user defaults: %v\n", err)
+			// Log error but don't fail login - user can select context manually
+			log.Printf("WARNING: Failed to load user defaults from M3 (user can select manually): %v\n", err)
+			session.Values["context_load_error"] = err.Error()
+		} else {
+			// Success - clear any previous errors
+			delete(session.Values, "context_load_error")
+			log.Printf("INFO: Successfully loaded user defaults for environment %s\n", environment)
 		}
 	}
 
@@ -244,4 +258,55 @@ func getSessionString(session *sessions.Session, key string) string {
 		return val
 	}
 	return ""
+}
+
+// primeContextCache populates the M3 context cache after login
+func (s *Server) primeContextCache(environment string, m3Client *m3api.Client) {
+	ctx := context.Background()
+	repo := services.NewContextRepository(s.db, m3Client, environment)
+
+	fmt.Printf("Priming context cache for %s environment...\n", environment)
+
+	// Prime companies cache
+	companies, err := repo.GetCompanies(ctx, false) // Use cache if available
+	if err != nil {
+		fmt.Printf("Warning: Failed to prime companies cache: %v\n", err)
+		return
+	}
+	fmt.Printf("Cached %d companies for %s\n", len(companies), environment)
+
+	// Prime facilities cache
+	facilities, err := repo.GetFacilities(ctx, false)
+	if err != nil {
+		fmt.Printf("Warning: Failed to prime facilities cache: %v\n", err)
+	} else {
+		fmt.Printf("Cached %d facilities for %s\n", len(facilities), environment)
+	}
+
+	// Prime divisions and warehouses for each company (limit to first 3 companies to avoid long delays)
+	maxCompanies := 3
+	if len(companies) > maxCompanies {
+		companies = companies[:maxCompanies]
+	}
+
+	for _, company := range companies {
+		// Prime divisions
+		divisions, err := repo.GetDivisions(ctx, company.CompanyNumber, false)
+		if err != nil {
+			fmt.Printf("Warning: Failed to prime divisions cache for company %s: %v\n", company.CompanyNumber, err)
+			continue
+		}
+
+		// Prime warehouses
+		warehouses, err := repo.GetFilteredWarehouses(ctx, company.CompanyNumber, nil, nil)
+		if err != nil {
+			fmt.Printf("Warning: Failed to prime warehouses cache for company %s: %v\n", company.CompanyNumber, err)
+			continue
+		}
+
+		fmt.Printf("Cached %d divisions and %d warehouses for company %s\n",
+			len(divisions), len(warehouses), company.CompanyNumber)
+	}
+
+	fmt.Printf("Context cache priming completed for %s\n", environment)
 }

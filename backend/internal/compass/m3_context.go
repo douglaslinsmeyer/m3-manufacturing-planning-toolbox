@@ -68,28 +68,29 @@ func GetUserInfo(ctx context.Context, m3Client *m3api.Client) (*UserInfo, error)
 	// Parse response
 	userInfo := &UserInfo{}
 
-	if val, ok := record["USID"].(string); ok {
+	// Note: M3 GetUserInfo returns fields with ZZ or ZD prefixes
+	if val, ok := record["ZZUSID"].(string); ok {
 		userInfo.UserID = strings.TrimSpace(val)
 	}
-	if val, ok := record["CONO"].(string); ok {
+	if val, ok := record["ZDCONO"].(string); ok {
 		userInfo.Company = strings.TrimSpace(val)
 	}
-	if val, ok := record["DIVI"].(string); ok {
+	if val, ok := record["ZDDIVI"].(string); ok {
 		userInfo.Division = strings.TrimSpace(val)
 	}
-	if val, ok := record["FACI"].(string); ok {
+	if val, ok := record["ZDFACI"].(string); ok {
 		userInfo.Facility = strings.TrimSpace(val)
 	}
-	if val, ok := record["WHLO"].(string); ok {
+	if val, ok := record["ZZWHLO"].(string); ok {
 		userInfo.Warehouse = strings.TrimSpace(val)
 	}
-	if val, ok := record["NAME"].(string); ok {
+	if val, ok := record["USFN"].(string); ok {
 		userInfo.FullName = strings.TrimSpace(val)
 	}
-	if val, ok := record["LANC"].(string); ok {
+	if val, ok := record["ZDLANC"].(string); ok {
 		userInfo.Language = strings.TrimSpace(val)
 	}
-	if val, ok := record["DTFM"].(string); ok {
+	if val, ok := record["ZDDTFM"].(string); ok {
 		userInfo.DateFormat = strings.TrimSpace(val)
 	}
 	if val, ok := record["TIZO"].(string); ok {

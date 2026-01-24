@@ -2,10 +2,10 @@ package services
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 
 	"github.com/pinggolf/m3-planning-tools/internal/compass"
 	"github.com/pinggolf/m3-planning-tools/internal/db"
@@ -54,46 +54,46 @@ func (s *SnapshotService) RefreshAll(ctx context.Context, company string, facili
 	log.Println("Strategy: Truncate all M3 snapshot tables, load MOPs/MOs with MPREAL links, load all open CO lines")
 
 	// Phase 0: Truncate all M3 snapshot tables
-	s.reportProgress("truncate", 0, 4, "Preparing database for refresh")
+	s.reportProgress("truncate", 0, 5, "Preparing database for refresh")
 	log.Println("Phase 0: Truncating all M3 snapshot tables for full refresh...")
 	if err := s.db.TruncateAnalysisTables(ctx); err != nil {
 		return fmt.Errorf("failed to truncate analysis tables: %w", err)
 	}
 	log.Println("✓ M3 snapshot tables truncated successfully")
-	s.reportProgress("truncate", 1, 4, "Database prepared")
+	s.reportProgress("truncate", 1, 5, "Database prepared")
 
 	// Phase 1: Load MOPs with CO links
-	s.reportProgress("mops", 1, 4, "Loading planned manufacturing orders")
+	s.reportProgress("mops", 1, 5, "Loading planned manufacturing orders")
 	log.Println("Phase 1: Refreshing planned manufacturing orders (MOPs) with CO links...")
 	mopRefs, err := s.RefreshPlannedOrders(ctx, company, facility)
 	if err != nil {
 		return fmt.Errorf("failed to refresh MOPs: %w", err)
 	}
 	s.mopCount = len(mopRefs)
-	s.reportProgress("mops", 1, 4, fmt.Sprintf("Loaded %d planned orders", s.mopCount))
+	s.reportProgress("mops", 1, 5, fmt.Sprintf("Loaded %d planned orders", s.mopCount))
 
 	// Phase 2: Load MOs with CO links
-	s.reportProgress("mos", 2, 4, "Loading manufacturing orders")
+	s.reportProgress("mos", 2, 5, "Loading manufacturing orders")
 	log.Println("Phase 2: Refreshing manufacturing orders (MOs) with CO links...")
 	moRefs, err := s.RefreshManufacturingOrders(ctx, company, facility)
 	if err != nil {
 		return fmt.Errorf("failed to refresh MOs: %w", err)
 	}
 	s.moCount = len(moRefs)
-	s.reportProgress("mos", 2, 4, fmt.Sprintf("Loaded %d manufacturing orders", s.moCount))
+	s.reportProgress("mos", 2, 5, fmt.Sprintf("Loaded %d manufacturing orders", s.moCount))
 
 	// Phase 3: Load all open CO lines (status < 30)
-	s.reportProgress("cos", 3, 4, "Loading customer order lines")
+	s.reportProgress("cos", 3, 5, "Loading customer order lines")
 	log.Println("Phase 3: Refreshing all open customer order lines (status < 30)...")
 	coCount, err := s.RefreshOpenCustomerOrderLines(ctx, company, facility)
 	if err != nil {
 		return fmt.Errorf("failed to refresh CO lines: %w", err)
 	}
 	s.coCount = coCount
-	s.reportProgress("cos", 3, 4, fmt.Sprintf("Loaded %d customer order lines", s.coCount))
+	s.reportProgress("cos", 3, 5, fmt.Sprintf("Loaded %d customer order lines", s.coCount))
 
 	// Phase 4: Update unified production_orders view
-	s.reportProgress("finalize", 4, 4, "Finalizing data refresh")
+	s.reportProgress("finalize", 4, 5, "Finalizing data refresh")
 	log.Println("Phase 4: Updating unified production orders view...")
 	if err := s.db.UpdateProductionOrdersFromMOPs(ctx); err != nil {
 		return fmt.Errorf("failed to update production orders from MOPs: %w", err)
@@ -102,8 +102,27 @@ func (s *SnapshotService) RefreshAll(ctx context.Context, company string, facili
 		return fmt.Errorf("failed to update production orders from MOs: %w", err)
 	}
 
-	s.reportProgress("complete", 4, 4, "Data refresh completed")
-	log.Printf("✓ Full data refresh completed successfully for company '%s' and facility '%s'", company, facility)
+	// Phase 5: Run issue detection
+	s.reportProgress("detection", 5, 5, "Running issue detectors")
+	log.Println("Phase 5: Running issue detectors...")
+
+	detectionService := NewDetectionService(s.db)
+	detectionService.SetProgressCallback(s.progressCallback)
+
+	// Get current job ID
+	jobID, err := s.db.GetLatestRefreshJobID(ctx)
+	if err != nil {
+		log.Printf("Warning: Could not get job ID for detection: %v", err)
+		// Continue without detection rather than failing the entire refresh
+	} else {
+		if err := detectionService.RunAllDetectors(ctx, jobID, company, facility); err != nil {
+			log.Printf("Warning: Issue detection failed: %v", err)
+			// Don't fail the entire refresh if detection fails
+		}
+	}
+
+	s.reportProgress("complete", 5, 5, "Data refresh and detection completed")
+	log.Printf("✓ Full data refresh and detection completed successfully for company '%s' and facility '%s'", company, facility)
 	return nil
 }
 
@@ -143,39 +162,128 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, com
 			continue
 		}
 
-		// Convert to database record
-		attributesJSON, _ := json.Marshal(coLine.Attributes)
-
+		// Map all fields directly - all stored as strings
 		dbRecord := &db.CustomerOrderLine{
-			CONO:         coLine.CONO,
-			DIVI:         coLine.DIVI,
-			OrderNumber:  coLine.ORNO,
-			LineNumber:   fmt.Sprintf("%d", coLine.PONR),
-			LineSuffix:   fmt.Sprintf("%d", coLine.POSX),
-			ItemNumber:   coLine.ITNO,
-			ItemDesc:     coLine.ITDS,
-			Status:       coLine.ORST,
-			RORC:         coLine.RORC,
-			RORN:         coLine.RORN,
-			RORL:         coLine.RORL,
-			RORX:         coLine.RORX,
-			OrderedQty:   coLine.ORQT,
-			DeliveredQty: coLine.DLQT,
-			Attributes:   attributesJSON,
-		}
-
-		// Set dates if valid
-		if coLine.DWDT != 0 {
-			dbRecord.DWDT = sql.NullInt32{Int32: int32(coLine.DWDT), Valid: true}
-		}
-		if coLine.CODT != 0 {
-			dbRecord.CODT = sql.NullInt32{Int32: int32(coLine.CODT), Valid: true}
-		}
-		if coLine.PLDT != 0 {
-			dbRecord.PLDT = sql.NullInt32{Int32: int32(coLine.PLDT), Valid: true}
-		}
-		if coLine.LMDT != 0 {
-			dbRecord.LMDT = sql.NullInt32{Int32: int32(coLine.LMDT), Valid: true}
+			CONO: coLine.CONO,
+			DIVI: coLine.DIVI,
+			ORNO: coLine.ORNO,
+			PONR: coLine.PONR,
+			POSX: coLine.POSX,
+			ITNO: coLine.ITNO,
+			ITDS: coLine.ITDS,
+			TEDS: coLine.TEDS,
+			REPI: coLine.REPI,
+			ORST: coLine.ORST,
+			ORTY: coLine.ORTY,
+			FACI: coLine.FACI,
+			WHLO: coLine.WHLO,
+			ORQT: coLine.ORQT,
+			RNQT: coLine.RNQT,
+			ALQT: coLine.ALQT,
+			DLQT: coLine.DLQT,
+			IVQT: coLine.IVQT,
+			ORQA: coLine.ORQA,
+			RNQA: coLine.RNQA,
+			ALQA: coLine.ALQA,
+			DLQA: coLine.DLQA,
+			IVQA: coLine.IVQA,
+			ALUN: coLine.ALUN,
+			COFA: coLine.COFA,
+			SPUN: coLine.SPUN,
+			DWDT: coLine.DWDT,
+			DWHM: coLine.DWHM,
+			CODT: coLine.CODT,
+			COHM: coLine.COHM,
+			PLDT: coLine.PLDT,
+			FDED: coLine.FDED,
+			LDED: coLine.LDED,
+			SAPR: coLine.SAPR,
+			NEPR: coLine.NEPR,
+			LNAM: coLine.LNAM,
+			CUCD: coLine.CUCD,
+			DIP1: coLine.DIP1,
+			DIP2: coLine.DIP2,
+			DIP3: coLine.DIP3,
+			DIP4: coLine.DIP4,
+			DIP5: coLine.DIP5,
+			DIP6: coLine.DIP6,
+			DIA1: coLine.DIA1,
+			DIA2: coLine.DIA2,
+			DIA3: coLine.DIA3,
+			DIA4: coLine.DIA4,
+			DIA5: coLine.DIA5,
+			DIA6: coLine.DIA6,
+			RORC: coLine.RORC,
+			RORN: coLine.RORN,
+			RORL: coLine.RORL,
+			RORX: coLine.RORX,
+			CUNO: coLine.CUNO,
+			CUOR: coLine.CUOR,
+			CUPO: coLine.CUPO,
+			CUSX: coLine.CUSX,
+			PRNO: coLine.PRNO,
+			HDPR: coLine.HDPR,
+			POPN: coLine.POPN,
+			ALWT: coLine.ALWT,
+			ALWQ: coLine.ALWQ,
+			ADID: coLine.ADID,
+			ROUT: coLine.ROUT,
+			RODN: coLine.RODN,
+			DSDT: coLine.DSDT,
+			DSHM: coLine.DSHM,
+			MODL: coLine.MODL,
+			TEDL: coLine.TEDL,
+			TEL2: coLine.TEL2,
+			TEPA: coLine.TEPA,
+			PACT: coLine.PACT,
+			CUPA: coLine.CUPA,
+			E0PA: coLine.E0PA,
+			DSGP: coLine.DSGP,
+			PUSN: coLine.PUSN,
+			PUTP: coLine.PUTP,
+			ATV1: coLine.ATV1,
+			ATV2: coLine.ATV2,
+			ATV3: coLine.ATV3,
+			ATV4: coLine.ATV4,
+			ATV5: coLine.ATV5,
+			ATV6: coLine.ATV6,
+			ATV7: coLine.ATV7,
+			ATV8: coLine.ATV8,
+			ATV9: coLine.ATV9,
+			ATV0: coLine.ATV0,
+			UCA1: coLine.UCA1,
+			UCA2: coLine.UCA2,
+			UCA3: coLine.UCA3,
+			UCA4: coLine.UCA4,
+			UCA5: coLine.UCA5,
+			UCA6: coLine.UCA6,
+			UCA7: coLine.UCA7,
+			UCA8: coLine.UCA8,
+			UCA9: coLine.UCA9,
+			UCA0: coLine.UCA0,
+			UDN1: coLine.UDN1,
+			UDN2: coLine.UDN2,
+			UDN3: coLine.UDN3,
+			UDN4: coLine.UDN4,
+			UDN5: coLine.UDN5,
+			UDN6: coLine.UDN6,
+			UID1: coLine.UID1,
+			UID2: coLine.UID2,
+			UID3: coLine.UID3,
+			UCT1: coLine.UCT1,
+			ATNR: coLine.ATNR,
+			ATMO: coLine.ATMO,
+			ATPR: coLine.ATPR,
+			CFIN: coLine.CFIN,
+			PROJ: coLine.PROJ,
+			ELNO: coLine.ELNO,
+			RGDT: coLine.RGDT,
+			RGTM: coLine.RGTM,
+			LMDT: coLine.LMDT,
+			CHNO: coLine.CHNO,
+			CHID: coLine.CHID,
+			LMTS: coLine.LMTS,
+			M3Timestamp: coLine.Timestamp,
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
@@ -232,39 +340,128 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 			continue
 		}
 
-		// Convert to database record
-		attributesJSON, _ := json.Marshal(coLine.Attributes)
-
+		// Map all fields directly - all stored as strings
 		dbRecord := &db.CustomerOrderLine{
-			CONO:         coLine.CONO,
-			DIVI:         coLine.DIVI,
-			OrderNumber:  coLine.ORNO,
-			LineNumber:   fmt.Sprintf("%d", coLine.PONR),
-			LineSuffix:   fmt.Sprintf("%d", coLine.POSX),
-			ItemNumber:   coLine.ITNO,
-			ItemDesc:     coLine.ITDS,
-			Status:       coLine.ORST,
-			RORC:         coLine.RORC,
-			RORN:         coLine.RORN,
-			RORL:         coLine.RORL,
-			RORX:         coLine.RORX,
-			OrderedQty:   coLine.ORQT,
-			DeliveredQty: coLine.DLQT,
-			Attributes:   attributesJSON,
-		}
-
-		// Set dates if valid
-		if coLine.DWDT != 0 {
-			dbRecord.DWDT = sql.NullInt32{Int32: int32(coLine.DWDT), Valid: true}
-		}
-		if coLine.CODT != 0 {
-			dbRecord.CODT = sql.NullInt32{Int32: int32(coLine.CODT), Valid: true}
-		}
-		if coLine.PLDT != 0 {
-			dbRecord.PLDT = sql.NullInt32{Int32: int32(coLine.PLDT), Valid: true}
-		}
-		if coLine.LMDT != 0 {
-			dbRecord.LMDT = sql.NullInt32{Int32: int32(coLine.LMDT), Valid: true}
+			CONO: coLine.CONO,
+			DIVI: coLine.DIVI,
+			ORNO: coLine.ORNO,
+			PONR: coLine.PONR,
+			POSX: coLine.POSX,
+			ITNO: coLine.ITNO,
+			ITDS: coLine.ITDS,
+			TEDS: coLine.TEDS,
+			REPI: coLine.REPI,
+			ORST: coLine.ORST,
+			ORTY: coLine.ORTY,
+			FACI: coLine.FACI,
+			WHLO: coLine.WHLO,
+			ORQT: coLine.ORQT,
+			RNQT: coLine.RNQT,
+			ALQT: coLine.ALQT,
+			DLQT: coLine.DLQT,
+			IVQT: coLine.IVQT,
+			ORQA: coLine.ORQA,
+			RNQA: coLine.RNQA,
+			ALQA: coLine.ALQA,
+			DLQA: coLine.DLQA,
+			IVQA: coLine.IVQA,
+			ALUN: coLine.ALUN,
+			COFA: coLine.COFA,
+			SPUN: coLine.SPUN,
+			DWDT: coLine.DWDT,
+			DWHM: coLine.DWHM,
+			CODT: coLine.CODT,
+			COHM: coLine.COHM,
+			PLDT: coLine.PLDT,
+			FDED: coLine.FDED,
+			LDED: coLine.LDED,
+			SAPR: coLine.SAPR,
+			NEPR: coLine.NEPR,
+			LNAM: coLine.LNAM,
+			CUCD: coLine.CUCD,
+			DIP1: coLine.DIP1,
+			DIP2: coLine.DIP2,
+			DIP3: coLine.DIP3,
+			DIP4: coLine.DIP4,
+			DIP5: coLine.DIP5,
+			DIP6: coLine.DIP6,
+			DIA1: coLine.DIA1,
+			DIA2: coLine.DIA2,
+			DIA3: coLine.DIA3,
+			DIA4: coLine.DIA4,
+			DIA5: coLine.DIA5,
+			DIA6: coLine.DIA6,
+			RORC: coLine.RORC,
+			RORN: coLine.RORN,
+			RORL: coLine.RORL,
+			RORX: coLine.RORX,
+			CUNO: coLine.CUNO,
+			CUOR: coLine.CUOR,
+			CUPO: coLine.CUPO,
+			CUSX: coLine.CUSX,
+			PRNO: coLine.PRNO,
+			HDPR: coLine.HDPR,
+			POPN: coLine.POPN,
+			ALWT: coLine.ALWT,
+			ALWQ: coLine.ALWQ,
+			ADID: coLine.ADID,
+			ROUT: coLine.ROUT,
+			RODN: coLine.RODN,
+			DSDT: coLine.DSDT,
+			DSHM: coLine.DSHM,
+			MODL: coLine.MODL,
+			TEDL: coLine.TEDL,
+			TEL2: coLine.TEL2,
+			TEPA: coLine.TEPA,
+			PACT: coLine.PACT,
+			CUPA: coLine.CUPA,
+			E0PA: coLine.E0PA,
+			DSGP: coLine.DSGP,
+			PUSN: coLine.PUSN,
+			PUTP: coLine.PUTP,
+			ATV1: coLine.ATV1,
+			ATV2: coLine.ATV2,
+			ATV3: coLine.ATV3,
+			ATV4: coLine.ATV4,
+			ATV5: coLine.ATV5,
+			ATV6: coLine.ATV6,
+			ATV7: coLine.ATV7,
+			ATV8: coLine.ATV8,
+			ATV9: coLine.ATV9,
+			ATV0: coLine.ATV0,
+			UCA1: coLine.UCA1,
+			UCA2: coLine.UCA2,
+			UCA3: coLine.UCA3,
+			UCA4: coLine.UCA4,
+			UCA5: coLine.UCA5,
+			UCA6: coLine.UCA6,
+			UCA7: coLine.UCA7,
+			UCA8: coLine.UCA8,
+			UCA9: coLine.UCA9,
+			UCA0: coLine.UCA0,
+			UDN1: coLine.UDN1,
+			UDN2: coLine.UDN2,
+			UDN3: coLine.UDN3,
+			UDN4: coLine.UDN4,
+			UDN5: coLine.UDN5,
+			UDN6: coLine.UDN6,
+			UID1: coLine.UID1,
+			UID2: coLine.UID2,
+			UID3: coLine.UID3,
+			UCT1: coLine.UCT1,
+			ATNR: coLine.ATNR,
+			ATMO: coLine.ATMO,
+			ATPR: coLine.ATPR,
+			CFIN: coLine.CFIN,
+			PROJ: coLine.PROJ,
+			ELNO: coLine.ELNO,
+			RGDT: coLine.RGDT,
+			RGTM: coLine.RGTM,
+			LMDT: coLine.LMDT,
+			CHNO: coLine.CHNO,
+			CHID: coLine.CHID,
+			LMTS: coLine.LMTS,
+			M3Timestamp: coLine.Timestamp,
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
@@ -319,47 +516,116 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, compan
 			continue
 		}
 
-		// Convert to database record
-		attributesJSON, _ := json.Marshal(mo.Attributes)
+		// Extract CO link fields from MPREAL join (all returned as strings)
+		linkedCONumber := getRecordString(record, "linked_co_number")
+		linkedCOLine := getRecordString(record, "linked_co_line")
+		linkedCOSuffix := getRecordString(record, "linked_co_suffix")
+		allocatedQty := getRecordString(record, "allocated_qty")
 
+		// Create database record - all M3 fields stored as strings
 		dbRecord := &db.ManufacturingOrder{
-			CONO:            mo.CONO,
-			DIVI:            mo.DIVI,
-			Facility:        mo.FACI,
-			MONumber:        mo.MFNO,
-			ProductNumber:   mo.PRNO,
-			ItemNumber:      mo.ITNO,
-			Status:          mo.WHST,
-			WHHS:            mo.WHHS,
-			WMST:            mo.WMST,
-			MOHS:            mo.MOHS,
-			OrderedQty:      mo.ORQT,
-			ManufacturedQty: mo.MAQT,
-			RORC:            mo.RORC,
-			RORN:            mo.RORN,
-			RORL:            mo.RORL,
-			RORX:            mo.RORX,
-			PRHL:            mo.PRHL,
-			MFHL:            mo.MFHL,
-			LEVL:            mo.LEVL,
-			Attributes:      attributesJSON,
-		}
+			// Core Identifiers
+			CONO:          intToString(mo.CONO),
+			DIVI:          mo.DIVI,
+			FACI:          mo.FACI,
+			MFNO:          mo.MFNO,
+			PRNO:          mo.PRNO,
+			ITNO:          mo.ITNO,
 
-		// Set dates if valid
-		if mo.STDT != 0 {
-			dbRecord.STDT = sql.NullInt32{Int32: int32(mo.STDT), Valid: true}
-		}
-		if mo.FIDT != 0 {
-			dbRecord.FIDT = sql.NullInt32{Int32: int32(mo.FIDT), Valid: true}
-		}
-		if mo.RSDT != 0 {
-			dbRecord.RSDT = sql.NullInt32{Int32: int32(mo.RSDT), Valid: true}
-		}
-		if mo.REFD != 0 {
-			dbRecord.REFD = sql.NullInt32{Int32: int32(mo.REFD), Valid: true}
-		}
-		if mo.LMDT != 0 {
-			dbRecord.LMDT = sql.NullInt32{Int32: int32(mo.LMDT), Valid: true}
+			// Status
+			WHST:          mo.WHST,
+			WHHS:          mo.WHHS,
+			WMST:          mo.WMST,
+			MOHS:          mo.MOHS,
+
+			// Quantities
+			ORQT:          floatToString(mo.ORQT),
+			MAQT:          floatToString(mo.MAQT),
+			ORQA:          floatToString(mo.ORQA),
+			RVQT:          floatToString(mo.RVQT),
+			RVQA:          floatToString(mo.RVQA),
+			MAQA:          floatToString(mo.MAQA),
+
+			// Dates
+			STDT:          intToString(mo.STDT),
+			FIDT:          intToString(mo.FIDT),
+			MSTI:          intToString(mo.MSTI),
+			MFTI:          intToString(mo.MFTI),
+			FSTD:          intToString(mo.FSTD),
+			FFID:          intToString(mo.FFID),
+			RSDT:          intToString(mo.RSDT),
+			REFD:          intToString(mo.REFD),
+			RPDT:          intToString(mo.RPDT),
+
+			// Planning
+			PRIO:          intToString(mo.PRIO),
+			RESP:          mo.RESP,
+			PLGR:          mo.PLGR,
+			WCLN:          mo.WCLN,
+			PRDY:          intToString(mo.PRDY),
+
+			// Warehouse/Location
+			WHLO:          mo.WHLO,
+			WHSL:          mo.WHSL,
+			BANO:          mo.BANO,
+
+			// Reference Orders
+			RORC:          intToString(mo.RORC),
+			RORN:          mo.RORN,
+			RORL:          intToString(mo.RORL),
+			RORX:          intToString(mo.RORX),
+
+			// Hierarchy
+			PRHL:          mo.PRHL,
+			MFHL:          mo.MFHL,
+			PRLO:          mo.PRLO,
+			MFLO:          mo.MFLO,
+			LEVL:          intToString(mo.LEVL),
+
+			// Configuration
+			CFIN:          int64ToString(mo.CFIN),
+			ATNR:          int64ToString(mo.ATNR),
+
+			// Order Type
+			ORTY:          mo.ORTY,
+			GETP:          mo.GETP,
+
+			// Material/BOM
+			BDCD:          mo.BDCD,
+			SCEX:          mo.SCEX,
+			STRT:          mo.STRT,
+			ECVE:          mo.ECVE,
+
+			// Routing
+			AOID:          mo.AOID,
+			NUOP:          intToString(mo.NUOP),
+			NUFO:          intToString(mo.NUFO),
+
+			// Action/Text
+			ACTP:          mo.ACTP,
+			TXT1:          mo.TXT1,
+			TXT2:          mo.TXT2,
+
+			// Project
+			PROJ:          mo.PROJ,
+			ELNO:          mo.ELNO,
+
+			// M3 Audit
+			RGDT:          intToString(mo.RGDT),
+			RGTM:          intToString(mo.RGTM),
+			LMDT:          intToString(mo.LMDT),
+			LMTS:          int64ToString(mo.LMTS),
+			CHNO:          intToString(mo.CHNO),
+			CHID:          mo.CHID,
+
+			// Metadata
+			M3Timestamp:   int64ToString(mo.Timestamp),
+
+			// CO Link
+			LinkedCONumber: linkedCONumber,
+			LinkedCOLine:   linkedCOLine,
+			LinkedCOSuffix: linkedCOSuffix,
+			AllocatedQty:   allocatedQty,
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
@@ -436,41 +702,99 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, company stri
 			continue
 		}
 
-		// Convert to database record
+		// Build messages JSONB
 		messagesJSON, _ := json.Marshal(mop.Messages)
-		attributesJSON, _ := json.Marshal(mop.Attributes)
 
+		// Extract CO link fields from MPREAL join (all strings)
+		linkedCONumber := getRecordString(record, "linked_co_number")
+		linkedCOLine := getRecordString(record, "linked_co_line")
+		linkedCOSuffix := getRecordString(record, "linked_co_suffix")
+		allocatedQty := getRecordString(record, "allocated_qty")
+
+		// Create database record - all M3 fields stored as strings
 		dbRecord := &db.PlannedManufacturingOrder{
-			CONO:       mop.CONO,
-			DIVI:       mop.DIVI,
-			MOPNumber:  fmt.Sprintf("%d", mop.PLPN),
-			PLPS:       mop.PLPS,
-			Facility:   mop.FACI,
-			ItemNumber: mop.ITNO,
-			Status:     mop.WHST,
-			PSTS:       mop.PSTS,
-			WHST:       mop.WHST,
-			PlannedQty: mop.PPQT,
-			RORC:       mop.RORC,
-			RORN:       mop.RORN,
-			RORL:       mop.RORL,
-			RORX:       mop.RORX,
-			Messages:   messagesJSON,
-			Attributes: attributesJSON,
-		}
+			// Core Identifiers
+			CONO:          intToString(mop.CONO),
+			DIVI:          mop.DIVI,
+			FACI:          mop.FACI,
+			PLPN:          int64ToString(mop.PLPN),
+			PLPS:          intToString(mop.PLPS),
+			PRNO:          mop.PRNO,
+			ITNO:          mop.ITNO,
 
-		// Set dates if valid
-		if mop.STDT != 0 {
-			dbRecord.STDT = sql.NullInt32{Int32: int32(mop.STDT), Valid: true}
-		}
-		if mop.FIDT != 0 {
-			dbRecord.FIDT = sql.NullInt32{Int32: int32(mop.FIDT), Valid: true}
-		}
-		if mop.PLDT != 0 {
-			dbRecord.PLDT = sql.NullInt32{Int32: int32(mop.PLDT), Valid: true}
-		}
-		if mop.LMDT != 0 {
-			dbRecord.LMDT = sql.NullInt32{Int32: int32(mop.LMDT), Valid: true}
+			// Status
+			PSTS:          mop.PSTS,
+			WHST:          mop.WHST,
+			ACTP:          mop.ACTP,
+
+			// Order Type
+			ORTY:          mop.ORTY,
+			GETY:          mop.GETY,
+
+			// Quantities
+			PPQT:          floatToString(mop.PPQT),
+			ORQA:          floatToString(mop.ORQA),
+
+			// Dates
+			RELD:          intToString(mop.RELD),
+			STDT:          intToString(mop.STDT),
+			FIDT:          intToString(mop.FIDT),
+			MSTI:          intToString(mop.MSTI),
+			MFTI:          intToString(mop.MFTI),
+			PLDT:          intToString(mop.PLDT),
+
+			// Planning
+			RESP:          mop.RESP,
+			PRIP:          intToString(mop.PRIP),
+			PLGR:          mop.PLGR,
+			WCLN:          mop.WCLN,
+			PRDY:          intToString(mop.PRDY),
+
+			// Warehouse
+			WHLO:          mop.WHLO,
+
+			// Reference Orders
+			RORC:          intToString(mop.RORC),
+			RORN:          mop.RORN,
+			RORL:          intToString(mop.RORL),
+			RORX:          intToString(mop.RORX),
+			RORH:          mop.RORH,
+
+			// Hierarchy
+			PLLO:          mop.PLLO,
+			PLHL:          mop.PLHL,
+
+			// Configuration
+			ATNR:          int64ToString(mop.ATNR),
+			CFIN:          int64ToString(mop.CFIN),
+
+			// Project
+			PROJ:          mop.PROJ,
+			ELNO:          mop.ELNO,
+
+			// Messages
+			Messages:      messagesJSON,
+
+			// Planning Parameters
+			NUAU:          intToString(mop.NUAU),
+			ORDP:          mop.ORDP,
+
+			// M3 Audit
+			RGDT:          intToString(mop.RGDT),
+			RGTM:          intToString(mop.RGTM),
+			LMDT:          intToString(mop.LMDT),
+			LMTS:          int64ToString(mop.LMTS),
+			CHNO:          intToString(mop.CHNO),
+			CHID:          mop.CHID,
+
+			// Metadata
+			M3Timestamp:   int64ToString(mop.Timestamp),
+
+			// CO Link
+			LinkedCONumber: linkedCONumber,
+			LinkedCOLine:   linkedCOLine,
+			LinkedCOSuffix: linkedCOSuffix,
+			AllocatedQty:   allocatedQty,
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
@@ -498,4 +822,70 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, company stri
 
 	log.Printf("MOP refresh completed - found %d unique CO references", len(coNumberList))
 	return coNumberList, nil
+}
+
+// Helper functions to convert parser types to strings for storage
+
+func intToString(val int) string {
+	if val == 0 {
+		return ""
+	}
+	return strconv.Itoa(val)
+}
+
+func int64ToString(val int64) string {
+	if val == 0 {
+		return ""
+	}
+	return strconv.FormatInt(val, 10)
+}
+
+func floatToString(val float64) string {
+	if val == 0 {
+		return ""
+	}
+	return strconv.FormatFloat(val, 'f', -1, 64)
+}
+
+// Helper functions to extract join fields that may be strings or numbers from Compass
+
+func getRecordString(record map[string]interface{}, key string) string {
+	if val, ok := record[key]; ok && val != nil {
+		if str, ok := val.(string); ok {
+			return str
+		}
+	}
+	return ""
+}
+
+func getRecordInt(record map[string]interface{}, key string) int {
+	if val, ok := record[key]; ok && val != nil {
+		switch v := val.(type) {
+		case float64:
+			return int(v)
+		case int:
+			return v
+		case string:
+			if parsed, err := strconv.Atoi(v); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
+}
+
+func getRecordFloat(record map[string]interface{}, key string) float64 {
+	if val, ok := record[key]; ok && val != nil {
+		switch v := val.(type) {
+		case float64:
+			return v
+		case int:
+			return float64(v)
+		case string:
+			if parsed, err := strconv.ParseFloat(v, 64); err == nil {
+				return parsed
+			}
+		}
+	}
+	return 0
 }

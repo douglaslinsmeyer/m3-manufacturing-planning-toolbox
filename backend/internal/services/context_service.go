@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/gorilla/sessions"
 	"github.com/pinggolf/m3-planning-tools/internal/compass"
@@ -35,6 +36,14 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 		return err
 	}
 
+	// Debug: Log what we received from M3
+	fmt.Printf("DEBUG LoadUserDefaults: Received from M3 GetUserInfo:\n")
+	fmt.Printf("  Company: '%s'\n", userInfo.Company)
+	fmt.Printf("  Division: '%s'\n", userInfo.Division)
+	fmt.Printf("  Facility: '%s'\n", userInfo.Facility)
+	fmt.Printf("  Warehouse: '%s'\n", userInfo.Warehouse)
+	fmt.Printf("  FullName: '%s'\n", userInfo.FullName)
+
 	// Store in session as user defaults
 	session.Values["user_company"] = userInfo.Company
 	session.Values["user_division"] = userInfo.Division
@@ -42,18 +51,35 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 	session.Values["user_warehouse"] = userInfo.Warehouse
 	session.Values["user_full_name"] = userInfo.FullName
 
+	// Debug: Verify what was stored
+	fmt.Printf("DEBUG LoadUserDefaults: Stored in session:\n")
+	fmt.Printf("  user_company: '%v'\n", session.Values["user_company"])
+	fmt.Printf("  user_division: '%v'\n", session.Values["user_division"])
+	fmt.Printf("  user_facility: '%v'\n", session.Values["user_facility"])
+	fmt.Printf("  user_warehouse: '%v'\n", session.Values["user_warehouse"])
+
 	return nil
 }
 
 // GetEffectiveContext calculates the effective context (temporary overrides → user defaults)
 func (s *ContextService) GetEffectiveContext(session *sessions.Session) EffectiveContext {
+	// Debug: Log session contents
+	fmt.Printf("DEBUG GetEffectiveContext: Session values:\n")
+	for k, v := range session.Values {
+		fmt.Printf("  %v: %v\n", k, v)
+	}
+
 	effective := EffectiveContext{}
 
 	// Company: temporary override or user default
 	if temp, ok := session.Values["temp_company"].(string); ok && temp != "" {
 		effective.Company = temp
+		fmt.Printf("DEBUG GetEffectiveContext: Using temp_company: '%s'\n", temp)
 	} else if user, ok := session.Values["user_company"].(string); ok {
 		effective.Company = user
+		fmt.Printf("DEBUG GetEffectiveContext: Using user_company: '%s'\n", user)
+	} else {
+		fmt.Printf("DEBUG GetEffectiveContext: No company found in session\n")
 	}
 
 	// Division: temporary override or user default
@@ -77,6 +103,7 @@ func (s *ContextService) GetEffectiveContext(session *sessions.Session) Effectiv
 		effective.Warehouse = user
 	}
 
+	fmt.Printf("DEBUG GetEffectiveContext: Returning effective context: %+v\n", effective)
 	return effective
 }
 

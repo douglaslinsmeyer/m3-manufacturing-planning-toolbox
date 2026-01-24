@@ -22,6 +22,7 @@ type Config struct {
 
 	// M3 TRN Environment
 	TRNTenantID         string
+	TRNInstanceID       string
 	TRNClientID         string
 	TRNClientSecret     string
 	TRNAuthEndpoint     string
@@ -31,6 +32,7 @@ type Config struct {
 
 	// M3 PRD Environment
 	PRDTenantID         string
+	PRDInstanceID       string
 	PRDClientID         string
 	PRDClientSecret     string
 	PRDAuthEndpoint     string
@@ -65,6 +67,7 @@ type Config struct {
 // M3Environment represents TRN or PRD environment configuration
 type M3Environment struct {
 	TenantID        string
+	InstanceID      string
 	ClientID        string
 	ClientSecret    string
 	AuthEndpoint    string
@@ -86,6 +89,7 @@ func Load() (*Config, error) {
 		DatabaseConnectionLifetime: getEnvAsDuration("DATABASE_CONNECTION_LIFETIME", 5*time.Minute),
 
 		TRNTenantID:       getEnv("TRN_TENANT_ID", ""),
+		TRNInstanceID:     getEnv("TRN_INSTANCE_ID", ""),
 		TRNClientID:       getEnv("TRN_CLIENT_ID", ""),
 		TRNClientSecret:   getEnv("TRN_CLIENT_SECRET", ""),
 		TRNAuthEndpoint:   getEnv("TRN_AUTH_ENDPOINT", ""),
@@ -94,6 +98,7 @@ func Load() (*Config, error) {
 		TRNCompassBaseURL: getEnv("TRN_COMPASS_BASE_URL", ""),
 
 		PRDTenantID:       getEnv("PRD_TENANT_ID", ""),
+		PRDInstanceID:     getEnv("PRD_INSTANCE_ID", ""),
 		PRDClientID:       getEnv("PRD_CLIENT_ID", ""),
 		PRDClientSecret:   getEnv("PRD_CLIENT_SECRET", ""),
 		PRDAuthEndpoint:   getEnv("PRD_AUTH_ENDPOINT", ""),
@@ -151,6 +156,7 @@ func (c *Config) GetEnvironmentConfig(env string) (*M3Environment, error) {
 	case "TRN":
 		return &M3Environment{
 			TenantID:       c.TRNTenantID,
+			InstanceID:     c.TRNInstanceID,
 			ClientID:       c.TRNClientID,
 			ClientSecret:   c.TRNClientSecret,
 			AuthEndpoint:   c.TRNAuthEndpoint,
@@ -161,6 +167,7 @@ func (c *Config) GetEnvironmentConfig(env string) (*M3Environment, error) {
 	case "PRD":
 		return &M3Environment{
 			TenantID:       c.PRDTenantID,
+			InstanceID:     c.PRDInstanceID,
 			ClientID:       c.PRDClientID,
 			ClientSecret:   c.PRDClientSecret,
 			AuthEndpoint:   c.PRDAuthEndpoint,

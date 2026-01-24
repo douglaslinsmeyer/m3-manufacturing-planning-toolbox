@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { api } from '../services/api';
+import { api, IssueSummary } from '../services/api';
 import { AppLayout } from '../components/AppLayout';
 import { useSnapshotProgress } from '../hooks/useSnapshotProgress';
+import { IssueBreakdownHierarchy } from '../components/IssueBreakdownHierarchy';
 import type { SnapshotSummary, SnapshotStatus } from '../types';
 
 function ArrowPathIcon({ className }: { className?: string }) {
@@ -54,6 +55,14 @@ function ArrowTrendingUpIcon({ className }: { className?: string }) {
   );
 }
 
+function ChevronDownIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+    </svg>
+  );
+}
+
 const stats = [
   { name: 'Production Orders', key: 'totalProductionOrders', href: '/production-orders', icon: ClipboardDocumentListIcon, color: 'primary' },
   { name: 'Customer Orders', key: 'totalCustomerOrders', href: '/customer-orders', icon: ShoppingCartIcon, color: 'info' },
@@ -67,6 +76,9 @@ const Dashboard: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const [recovering, setRecovering] = useState(false);
+  const [issueSummary, setIssueSummary] = useState<IssueSummary | null>(null);
+  const [showIssueBreakdown, setShowIssueBreakdown] = useState(false);
 
   // Use SSE hook for real-time progress updates
   const { status: sseStatus, isConnected, error: sseError } = useSnapshotProgress(currentJobId);
@@ -74,6 +86,32 @@ const Dashboard: React.FC = () => {
   // Combine SSE status with fallback to API polling for initial state
   const [fallbackStatus, setFallbackStatus] = useState<SnapshotStatus | null>(null);
   const snapshotStatus = sseStatus || fallbackStatus;
+
+  // Check for in-progress refresh on page load
+  useEffect(() => {
+    if (authLoading || !isAuthenticated) {
+      return;
+    }
+
+    const checkForActiveJob = async () => {
+      try {
+        setRecovering(true);
+        const { jobId } = await api.getActiveJob();
+
+        if (jobId) {
+          console.log('Reconnecting to in-progress refresh:', jobId);
+          setCurrentJobId(jobId);
+        }
+      } catch (error) {
+        console.error('Failed to check for active job:', error);
+        // Non-fatal error - continue normal page load
+      } finally {
+        setRecovering(false);
+      }
+    };
+
+    checkForActiveJob();
+  }, [isAuthenticated, authLoading]);
 
   useEffect(() => {
     if (authLoading || !isAuthenticated) {
@@ -94,12 +132,14 @@ const Dashboard: React.FC = () => {
 
   const loadDashboardData = async () => {
     try {
-      const [summaryData, statusData] = await Promise.all([
+      const [summaryData, statusData, issueData] = await Promise.all([
         api.getSnapshotSummary(),
         api.getSnapshotStatus(),
+        api.getIssueSummary(),
       ]);
       setSummary(summaryData);
       setFallbackStatus(statusData);
+      setIssueSummary(issueData);
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
     } finally {
@@ -128,6 +168,10 @@ const Dashboard: React.FC = () => {
 
   const getStatValue = (key: string): number => {
     if (!summary) return 0;
+    // Use real count from issue summary for inconsistencies
+    if (key === 'inconsistenciesCount' && issueSummary) {
+      return issueSummary.total;
+    }
     return (summary as any)[key] || 0;
   };
 
@@ -176,6 +220,18 @@ const Dashboard: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {/* Reconnection indicator */}
+        {recovering && (
+          <div className="mb-6 lg:mb-10 rounded-lg bg-blue-50 p-4 shadow-sm ring-1 ring-blue-200">
+            <div className="flex items-center gap-3">
+              <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
+              <span className="text-sm font-medium text-blue-900">
+                Checking for in-progress refresh...
+              </span>
+            </div>
+          </div>
+        )}
 
         {/* Refresh Progress */}
         {snapshotStatus?.status === 'running' && (
@@ -311,6 +367,35 @@ const Dashboard: React.FC = () => {
             );
           })}
         </div>
+
+        {/* Issue Breakdown - Facility > Warehouse > Detector */}
+        {issueSummary && issueSummary.total > 0 && (
+          <div className="mb-6 lg:mb-10">
+            <button
+              onClick={() => setShowIssueBreakdown(!showIssueBreakdown)}
+              className="w-full rounded-t-xl bg-white px-6 py-4 shadow-sm ring-1 ring-slate-200
+                         flex items-center justify-between hover:bg-slate-50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <ExclamationTriangleIcon className="h-5 w-5 text-warning-600" />
+                <h2 className="text-base font-semibold text-slate-900">
+                  Issue Breakdown
+                </h2>
+                <span className="text-sm text-slate-500">
+                  ({issueSummary.total} {issueSummary.total === 1 ? 'issue' : 'issues'})
+                </span>
+              </div>
+              <ChevronDownIcon className={`h-5 w-5 text-slate-400 transition-transform
+                                           ${showIssueBreakdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showIssueBreakdown && (
+              <div className="rounded-b-xl bg-white p-6 shadow-sm ring-1 ring-t-0 ring-slate-200">
+                <IssueBreakdownHierarchy summary={issueSummary} />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Secondary Content */}
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-8">
