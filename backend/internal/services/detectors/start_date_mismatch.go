@@ -37,7 +37,8 @@ func (d *StartDateMismatchDetector) Detect(ctx context.Context, queries *db.Quer
 				whlo,
 				itno,
 				cono,
-				prno
+				prno,
+				orty
 			FROM manufacturing_orders
 			WHERE cono = $1
 			  AND faci = $2
@@ -45,6 +46,7 @@ func (d *StartDateMismatchDetector) Detect(ctx context.Context, queries *db.Quer
 			  AND linked_co_number != ''
 			  AND stdt IS NOT NULL
 			  AND stdt != ''
+			  AND deleted_remotely = false
 
 			UNION ALL
 
@@ -59,7 +61,8 @@ func (d *StartDateMismatchDetector) Detect(ctx context.Context, queries *db.Quer
 				whlo,
 				itno,
 				cono,
-				prno
+				prno,
+				orty
 			FROM planned_manufacturing_orders
 			WHERE cono = $1
 			  AND faci = $2
@@ -67,6 +70,7 @@ func (d *StartDateMismatchDetector) Detect(ctx context.Context, queries *db.Quer
 			  AND linked_co_number != ''
 			  AND stdt IS NOT NULL
 			  AND stdt != ''
+			  AND deleted_remotely = false
 		),
 		mismatched_groups AS (
 			SELECT
@@ -82,7 +86,8 @@ func (d *StartDateMismatchDetector) Detect(ctx context.Context, queries *db.Quer
 					'number', order_number,
 					'type', order_type,
 					'date', stdt,
-					'product_number', prno
+					'product_number', prno,
+					'mo_type', orty
 				) ORDER BY order_type, order_number) as orders
 			FROM combined_orders
 			GROUP BY linked_co_number, linked_co_line, linked_co_suffix, faci, whlo, itno, cono

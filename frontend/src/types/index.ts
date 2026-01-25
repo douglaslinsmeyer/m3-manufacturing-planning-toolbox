@@ -232,6 +232,7 @@ export interface Inconsistency {
   delivery?: Delivery;
   details: Record<string, any>;
   createdAt: string;
+  isIgnored?: boolean;
 }
 
 // Snapshot types

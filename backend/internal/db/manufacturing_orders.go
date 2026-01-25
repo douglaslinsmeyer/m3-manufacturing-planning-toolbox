@@ -288,6 +288,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			project_number, element_number,
 			lmdt, lmts,
 			linked_co_number, linked_co_line, linked_co_suffix, allocated_qty,
+			orty,
 			mo_id, sync_timestamp
 		)
 		SELECT DISTINCT ON (mo.mfno)
@@ -307,6 +308,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			mo.proj, mo.elno,
 			mo.lmdt, mo.lmts,
 			mo.linked_co_number, mo.linked_co_line, mo.linked_co_suffix, mo.allocated_qty,
+			mo.orty,
 			mo.id, NOW()
 		FROM manufacturing_orders mo
 		ORDER BY mo.mfno,
@@ -340,6 +342,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			linked_co_line = EXCLUDED.linked_co_line,
 			linked_co_suffix = EXCLUDED.linked_co_suffix,
 			allocated_qty = EXCLUDED.allocated_qty,
+			orty = EXCLUDED.orty,
 			sync_timestamp = NOW(),
 			updated_at = NOW()
 	`

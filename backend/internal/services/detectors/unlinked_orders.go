@@ -2,6 +2,7 @@ package detectors
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -37,11 +38,13 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			stdt,
 			fidt,
 			prno,
-			cono
+			cono,
+			orty
 		FROM manufacturing_orders
 		WHERE cono = $1
 		  AND faci = $2
 		  AND (linked_co_number IS NULL OR linked_co_number = '')
+		  AND deleted_remotely = false
 	`
 
 	moRows, err := queries.DB().QueryContext(ctx, moQuery, company, facility)
@@ -52,8 +55,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 
 	for moRows.Next() {
 		var orderNumber, orderType, faci, whlo, itno, orderedQty, stdt, fidt, prno, cono string
+		var orty sql.NullString
 
-		if err := moRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &prno, &cono); err != nil {
+		if err := moRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &prno, &cono, &orty); err != nil {
 			log.Printf("Error scanning MO row: %v", err)
 			continue
 		}
@@ -67,6 +71,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			"warehouse":        whlo,
 			"product_number":   prno,
 			"company":          cono,
+		}
+		if orty.Valid {
+			issueData["mo_type"] = orty.String
 		}
 
 		if err := d.insertIssue(ctx, queries, orderNumber, orderType, faci, whlo, issueData); err != nil {
@@ -88,11 +95,14 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			ppqt as ordered_qty,
 			stdt,
 			fidt,
-			cono
+			cono,
+			orty,
+			prno
 		FROM planned_manufacturing_orders
 		WHERE cono = $1
 		  AND faci = $2
 		  AND (linked_co_number IS NULL OR linked_co_number = '')
+		  AND deleted_remotely = false
 	`
 
 	mopRows, err := queries.DB().QueryContext(ctx, mopQuery, company, facility)
@@ -103,8 +113,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 
 	for mopRows.Next() {
 		var orderNumber, orderType, faci, whlo, itno, orderedQty, stdt, fidt, cono string
+		var orty, prno sql.NullString
 
-		if err := mopRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &cono); err != nil {
+		if err := mopRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &cono, &orty, &prno); err != nil {
 			log.Printf("Error scanning MOP row: %v", err)
 			continue
 		}
@@ -116,6 +127,12 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			"finish_date":      fidt,
 			"warehouse":        whlo,
 			"company":          cono,
+		}
+		if orty.Valid {
+			issueData["mo_type"] = orty.String
+		}
+		if prno.Valid {
+			issueData["product_number"] = prno.String
 		}
 
 		if err := d.insertIssue(ctx, queries, orderNumber, orderType, faci, whlo, issueData); err != nil {

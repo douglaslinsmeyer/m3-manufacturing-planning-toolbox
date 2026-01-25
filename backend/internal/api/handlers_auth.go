@@ -304,8 +304,20 @@ func (s *Server) primeContextCache(environment string, m3Client *m3api.Client) {
 			continue
 		}
 
-		fmt.Printf("Cached %d divisions and %d warehouses for company %s\n",
-			len(divisions), len(warehouses), company.CompanyNumber)
+		// Prime manufacturing order types
+		mfgOrderTypes, err := repo.GetManufacturingOrderTypes(ctx, company.CompanyNumber, false)
+		if err != nil {
+			fmt.Printf("Warning: Failed to prime manufacturing order types cache for company %s: %v\n", company.CompanyNumber, err)
+		}
+
+		// Prime customer order types
+		coOrderTypes, err := repo.GetCustomerOrderTypes(ctx, company.CompanyNumber, false)
+		if err != nil {
+			fmt.Printf("Warning: Failed to prime customer order types cache for company %s: %v\n", company.CompanyNumber, err)
+		}
+
+		fmt.Printf("Cached %d divisions, %d warehouses, %d manufacturing order types, and %d customer order types for company %s\n",
+			len(divisions), len(warehouses), len(mfgOrderTypes), len(coOrderTypes), company.CompanyNumber)
 	}
 
 	fmt.Printf("Context cache priming completed for %s\n", environment)

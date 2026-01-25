@@ -223,16 +223,38 @@ class ApiService {
   }
 
   // Issues / Inconsistencies
-  async getIssueSummary(): Promise<IssueSummary> {
-    const response = await this.client.get('/issues/summary');
+  async getIssueSummary(includeIgnored: boolean = false): Promise<IssueSummary> {
+    const params = includeIgnored ? { include_ignored: 'true' } : {};
+    const response = await this.client.get('/issues/summary', { params });
     return response.data;
   }
 
   async listInconsistencies(params?: {
     severity?: string;
     type?: string;
+    warehouse?: string;
+    includeIgnored?: boolean;
   }): Promise<Inconsistency[]> {
-    const response = await this.client.get('/analysis/inconsistencies', { params });
+    const queryParams: any = {};
+    if (params?.severity) queryParams.severity = params.severity;
+    if (params?.type) queryParams.detector_type = params.type;
+    if (params?.warehouse) queryParams.warehouse = params.warehouse;
+    if (params?.includeIgnored) queryParams.include_ignored = 'true';
+
+    const response = await this.client.get('/issues', { params: queryParams });
+    return response.data;
+  }
+
+  async ignoreIssue(issueId: number, notes?: string): Promise<void> {
+    await this.client.post(`/issues/${issueId}/ignore`, { notes });
+  }
+
+  async unignoreIssue(issueId: number): Promise<void> {
+    await this.client.post(`/issues/${issueId}/unignore`);
+  }
+
+  async deletePlannedMO(issueId: number): Promise<{ success: boolean; m3_response?: any }> {
+    const response = await this.client.post(`/issues/${issueId}/delete-mop`);
     return response.data;
   }
 

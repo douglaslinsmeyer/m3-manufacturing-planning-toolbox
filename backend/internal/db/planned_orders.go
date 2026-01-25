@@ -247,7 +247,8 @@ func (q *Queries) UpdateProductionOrdersFromMOPs(ctx context.Context) error {
 			project_number, element_number,
 			lmdt, lmts,
 			linked_co_number, linked_co_line, linked_co_suffix, allocated_qty,
-			mop_id, sync_timestamp
+			orty,
+			mop_id, sync_timestamp, deleted_remotely
 		)
 		SELECT DISTINCT ON (mop.plpn)
 			'MOP',
@@ -266,7 +267,8 @@ func (q *Queries) UpdateProductionOrdersFromMOPs(ctx context.Context) error {
 			mop.proj, mop.elno,
 			mop.lmdt, mop.lmts,
 			mop.linked_co_number, mop.linked_co_line, mop.linked_co_suffix, mop.allocated_qty,
-			mop.id, NOW()
+			mop.orty,
+			mop.id, NOW(), mop.deleted_remotely
 		FROM planned_manufacturing_orders mop
 		ORDER BY mop.plpn,
 		         CASE WHEN mop.lmdt = '' THEN '99999999' ELSE mop.lmdt END DESC,
@@ -296,10 +298,22 @@ func (q *Queries) UpdateProductionOrdersFromMOPs(ctx context.Context) error {
 			linked_co_line = EXCLUDED.linked_co_line,
 			linked_co_suffix = EXCLUDED.linked_co_suffix,
 			allocated_qty = EXCLUDED.allocated_qty,
+			deleted_remotely = EXCLUDED.deleted_remotely,
 			sync_timestamp = NOW(),
 			updated_at = NOW()
 	`
 
 	_, err := q.db.ExecContext(ctx, query)
+	return err
+}
+
+// MarkMOPAsDeletedRemotely marks a planned MO as deleted from M3
+func (q *Queries) MarkMOPAsDeletedRemotely(ctx context.Context, plpn int64, facility string) error {
+	query := `
+		UPDATE planned_manufacturing_orders
+		SET deleted_remotely = true
+		WHERE plpn = $1 AND faci = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, fmt.Sprintf("%d", plpn), facility)
 	return err
 }

@@ -56,6 +56,24 @@ type M3Warehouse struct {
 	Facility      string `json:"FACI"`
 }
 
+// M3ManufacturingOrderType from PMS120MI/LstOrderType
+// Represents manufacturing order types (ORTY from MWOHED/MMOPLP)
+type M3ManufacturingOrderType struct {
+	CompanyNumber        string `json:"CONO"`
+	OrderType            string `json:"ORTY"`
+	OrderTypeDescription string `json:"TX40"`
+	LanguageCode         string `json:"LNCD"`
+}
+
+// M3CustomerOrderType from OIS100MI/LstOrderTypes
+// Represents customer order types (ORTY from OOLINE/OOHEAD)
+type M3CustomerOrderType struct {
+	CompanyNumber        string `json:"CONO"`
+	OrderType            string `json:"ORTY"`
+	OrderTypeDescription string `json:"TX40"`
+	LanguageCode         string `json:"LNCD"`
+}
+
 // GetUserInfo retrieves authenticated user's default context from MMS060MI/GetUserInfo
 // Note: This requires an M3 API client, not Compass
 func GetUserInfo(ctx context.Context, m3Client *m3api.Client) (*UserInfo, error) {
@@ -246,4 +264,84 @@ func ListWarehouses(ctx context.Context, m3Client *m3api.Client, companyNumber s
 	}
 
 	return warehouses, nil
+}
+
+// ListManufacturingOrderTypes retrieves manufacturing order types from PMS120MI/LstOrderType
+func ListManufacturingOrderTypes(ctx context.Context, m3Client *m3api.Client, companyNumber string) ([]M3ManufacturingOrderType, error) {
+	// Call PMS120MI/LstOrderType with optional CONO parameter
+	params := map[string]string{}
+	if companyNumber != "" {
+		params["CONO"] = companyNumber
+	}
+
+	records, err := m3Client.GetMultipleRecords(ctx, "PMS120MI", "LstOrderType", params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list manufacturing order types: %w", err)
+	}
+
+	orderTypes := make([]M3ManufacturingOrderType, 0, len(records))
+	for _, record := range records {
+		orderType := M3ManufacturingOrderType{}
+
+		if val, ok := record["CONO"].(string); ok {
+			orderType.CompanyNumber = strings.TrimSpace(val)
+		}
+		if val, ok := record["ORTY"].(string); ok {
+			orderType.OrderType = strings.TrimSpace(val)
+		}
+		if val, ok := record["TX40"].(string); ok {
+			orderType.OrderTypeDescription = strings.TrimSpace(val)
+		}
+		if val, ok := record["LNCD"].(string); ok {
+			orderType.LanguageCode = strings.TrimSpace(val)
+		} else {
+			orderType.LanguageCode = "GB" // Default to English
+		}
+
+		if orderType.OrderType != "" {
+			orderTypes = append(orderTypes, orderType)
+		}
+	}
+
+	return orderTypes, nil
+}
+
+// ListCustomerOrderTypes retrieves customer order types from OIS100MI/LstOrderTypes
+func ListCustomerOrderTypes(ctx context.Context, m3Client *m3api.Client, companyNumber string) ([]M3CustomerOrderType, error) {
+	// Call OIS100MI/LstOrderTypes with optional CONO parameter
+	params := map[string]string{}
+	if companyNumber != "" {
+		params["CONO"] = companyNumber
+	}
+
+	records, err := m3Client.GetMultipleRecords(ctx, "OIS100MI", "LstOrderTypes", params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list customer order types: %w", err)
+	}
+
+	orderTypes := make([]M3CustomerOrderType, 0, len(records))
+	for _, record := range records {
+		orderType := M3CustomerOrderType{}
+
+		if val, ok := record["CONO"].(string); ok {
+			orderType.CompanyNumber = strings.TrimSpace(val)
+		}
+		if val, ok := record["ORTY"].(string); ok {
+			orderType.OrderType = strings.TrimSpace(val)
+		}
+		if val, ok := record["TX40"].(string); ok {
+			orderType.OrderTypeDescription = strings.TrimSpace(val)
+		}
+		if val, ok := record["LNCD"].(string); ok {
+			orderType.LanguageCode = strings.TrimSpace(val)
+		} else {
+			orderType.LanguageCode = "GB" // Default to English
+		}
+
+		if orderType.OrderType != "" {
+			orderTypes = append(orderTypes, orderType)
+		}
+	}
+
+	return orderTypes, nil
 }

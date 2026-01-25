@@ -123,6 +123,66 @@ func (r *ContextRepository) GetFacilities(ctx context.Context, forceRefresh bool
 	return facilities, nil
 }
 
+// GetManufacturingOrderTypes returns cached manufacturing order types or fetches from M3
+func (r *ContextRepository) GetManufacturingOrderTypes(ctx context.Context, companyNumber string, forceRefresh bool) ([]compass.M3ManufacturingOrderType, error) {
+	// Check cache first unless forceRefresh is true
+	if !forceRefresh {
+		cached, err := r.getCachedManufacturingOrderTypes(ctx, companyNumber)
+		if err == nil && len(cached) > 0 && r.isCacheFresh(cached[0].CachedAt) {
+			return r.convertCachedManufacturingOrderTypes(cached), nil
+		}
+	}
+
+	// Fetch from M3 API
+	orderTypes, err := compass.ListManufacturingOrderTypes(ctx, r.m3Client, companyNumber)
+	if err != nil {
+		// Try cache as fallback even if stale
+		cached, cacheErr := r.getCachedManufacturingOrderTypes(ctx, companyNumber)
+		if cacheErr == nil && len(cached) > 0 {
+			fmt.Printf("Warning: M3 API failed, using stale cache: %v\n", err)
+			return r.convertCachedManufacturingOrderTypes(cached), nil
+		}
+		return nil, fmt.Errorf("failed to fetch manufacturing order types from M3 and no cache available: %w", err)
+	}
+
+	// Update cache
+	if err := r.cacheManufacturingOrderTypes(ctx, orderTypes); err != nil {
+		fmt.Printf("Warning: Failed to update manufacturing order types cache: %v\n", err)
+	}
+
+	return orderTypes, nil
+}
+
+// GetCustomerOrderTypes returns cached customer order types or fetches from M3
+func (r *ContextRepository) GetCustomerOrderTypes(ctx context.Context, companyNumber string, forceRefresh bool) ([]compass.M3CustomerOrderType, error) {
+	// Check cache first unless forceRefresh is true
+	if !forceRefresh {
+		cached, err := r.getCachedCustomerOrderTypes(ctx, companyNumber)
+		if err == nil && len(cached) > 0 && r.isCacheFresh(cached[0].CachedAt) {
+			return r.convertCachedCustomerOrderTypes(cached), nil
+		}
+	}
+
+	// Fetch from M3 API
+	orderTypes, err := compass.ListCustomerOrderTypes(ctx, r.m3Client, companyNumber)
+	if err != nil {
+		// Try cache as fallback even if stale
+		cached, cacheErr := r.getCachedCustomerOrderTypes(ctx, companyNumber)
+		if cacheErr == nil && len(cached) > 0 {
+			fmt.Printf("Warning: M3 API failed, using stale cache: %v\n", err)
+			return r.convertCachedCustomerOrderTypes(cached), nil
+		}
+		return nil, fmt.Errorf("failed to fetch customer order types from M3 and no cache available: %w", err)
+	}
+
+	// Update cache
+	if err := r.cacheCustomerOrderTypes(ctx, orderTypes); err != nil {
+		fmt.Printf("Warning: Failed to update customer order types cache: %v\n", err)
+	}
+
+	return orderTypes, nil
+}
+
 // GetFilteredWarehouses returns warehouses filtered by company/division/facility
 func (r *ContextRepository) GetFilteredWarehouses(ctx context.Context, companyNumber string, division, facility *string) ([]compass.M3Warehouse, error) {
 	// Get all warehouses for the company
@@ -216,6 +276,22 @@ type cachedWarehouse struct {
 	Division      string
 	Facility      string
 	CachedAt      time.Time
+}
+
+type cachedManufacturingOrderType struct {
+	CompanyNumber        string
+	OrderType            string
+	OrderTypeDescription string
+	LanguageCode         string
+	CachedAt             time.Time
+}
+
+type cachedCustomerOrderType struct {
+	CompanyNumber        string
+	OrderType            string
+	OrderTypeDescription string
+	LanguageCode         string
+	CachedAt             time.Time
 }
 
 // Database query methods
@@ -504,6 +580,148 @@ func (r *ContextRepository) convertCachedWarehouses(cached []cachedWarehouse) []
 			WarehouseName: w.WarehouseName,
 			Division:      w.Division,
 			Facility:      w.Facility,
+		}
+	}
+	return result
+}
+
+func (r *ContextRepository) getCachedManufacturingOrderTypes(ctx context.Context, companyNumber string) ([]cachedManufacturingOrderType, error) {
+	query := `SELECT company_number, order_type, order_type_description, language_code, cached_at
+	          FROM m3_manufacturing_order_types
+	          WHERE environment = $1 AND company_number = $2
+	          ORDER BY order_type`
+
+	rows, err := r.db.DB().QueryContext(ctx, query, r.environment, companyNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orderTypes []cachedManufacturingOrderType
+	for rows.Next() {
+		var ot cachedManufacturingOrderType
+		if err := rows.Scan(&ot.CompanyNumber, &ot.OrderType, &ot.OrderTypeDescription, &ot.LanguageCode, &ot.CachedAt); err != nil {
+			return nil, err
+		}
+		orderTypes = append(orderTypes, ot)
+	}
+
+	return orderTypes, rows.Err()
+}
+
+func (r *ContextRepository) cacheManufacturingOrderTypes(ctx context.Context, orderTypes []compass.M3ManufacturingOrderType) error {
+	tx, err := r.db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO m3_manufacturing_order_types (environment, company_number, order_type, order_type_description, language_code, cached_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (environment, company_number, order_type, language_code)
+		DO UPDATE SET
+			order_type_description = EXCLUDED.order_type_description,
+			cached_at = NOW()
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, ot := range orderTypes {
+		langCode := ot.LanguageCode
+		if langCode == "" {
+			langCode = "GB" // Default to English
+		}
+		_, err := stmt.ExecContext(ctx, r.environment, ot.CompanyNumber, ot.OrderType, ot.OrderTypeDescription, langCode)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (r *ContextRepository) getCachedCustomerOrderTypes(ctx context.Context, companyNumber string) ([]cachedCustomerOrderType, error) {
+	query := `SELECT company_number, order_type, order_type_description, language_code, cached_at
+	          FROM m3_customer_order_types
+	          WHERE environment = $1 AND company_number = $2
+	          ORDER BY order_type`
+
+	rows, err := r.db.DB().QueryContext(ctx, query, r.environment, companyNumber)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var orderTypes []cachedCustomerOrderType
+	for rows.Next() {
+		var ot cachedCustomerOrderType
+		if err := rows.Scan(&ot.CompanyNumber, &ot.OrderType, &ot.OrderTypeDescription, &ot.LanguageCode, &ot.CachedAt); err != nil {
+			return nil, err
+		}
+		orderTypes = append(orderTypes, ot)
+	}
+
+	return orderTypes, rows.Err()
+}
+
+func (r *ContextRepository) cacheCustomerOrderTypes(ctx context.Context, orderTypes []compass.M3CustomerOrderType) error {
+	tx, err := r.db.DB().BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.PrepareContext(ctx, `
+		INSERT INTO m3_customer_order_types (environment, company_number, order_type, order_type_description, language_code, cached_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
+		ON CONFLICT (environment, company_number, order_type, language_code)
+		DO UPDATE SET
+			order_type_description = EXCLUDED.order_type_description,
+			cached_at = NOW()
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, ot := range orderTypes {
+		langCode := ot.LanguageCode
+		if langCode == "" {
+			langCode = "GB" // Default to English
+		}
+		_, err := stmt.ExecContext(ctx, r.environment, ot.CompanyNumber, ot.OrderType, ot.OrderTypeDescription, langCode)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
+}
+
+func (r *ContextRepository) convertCachedManufacturingOrderTypes(cached []cachedManufacturingOrderType) []compass.M3ManufacturingOrderType {
+	result := make([]compass.M3ManufacturingOrderType, len(cached))
+	for i, ot := range cached {
+		result[i] = compass.M3ManufacturingOrderType{
+			CompanyNumber:        ot.CompanyNumber,
+			OrderType:            ot.OrderType,
+			OrderTypeDescription: ot.OrderTypeDescription,
+			LanguageCode:         ot.LanguageCode,
+		}
+	}
+	return result
+}
+
+func (r *ContextRepository) convertCachedCustomerOrderTypes(cached []cachedCustomerOrderType) []compass.M3CustomerOrderType {
+	result := make([]compass.M3CustomerOrderType, len(cached))
+	for i, ot := range cached {
+		result[i] = compass.M3CustomerOrderType{
+			CompanyNumber:        ot.CompanyNumber,
+			OrderType:            ot.OrderType,
+			OrderTypeDescription: ot.OrderTypeDescription,
+			LanguageCode:         ot.LanguageCode,
 		}
 	}
 	return result

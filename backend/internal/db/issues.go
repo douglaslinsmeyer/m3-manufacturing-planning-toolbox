@@ -40,6 +40,8 @@ type DetectedIssue struct {
 	COSuffix              sql.NullString
 	IssueData             string // JSONB
 	CreatedAt             sql.NullTime
+	IsIgnored             bool
+	MOTypeDescription     sql.NullString
 }
 
 // CreateIssueDetectionJob creates a new detection job
@@ -200,40 +202,63 @@ func (q *Queries) GetIssuesByFacility(ctx context.Context, facility string, limi
 }
 
 // GetIssuesFiltered gets issues with optional filters
-func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility, warehouse string, limit int) ([]*DetectedIssue, error) {
+func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility, warehouse string, includeIgnored bool, limit int) ([]*DetectedIssue, error) {
 	query := `
-		SELECT id, job_id, detector_type, detected_at, facility, warehouse,
-			   issue_key, production_order_number, production_order_type,
-			   co_number, co_line, co_suffix, issue_data, created_at
-		FROM detected_issues
-		WHERE job_id = (
+		SELECT di.id, di.job_id, di.detector_type, di.detected_at, di.facility, di.warehouse,
+			   di.issue_key, di.production_order_number, di.production_order_type,
+			   di.co_number, di.co_line, di.co_suffix, di.issue_data, di.created_at,
+			   ig.id IS NOT NULL as is_ignored,
+			   mot.order_type_description as mo_type_description
+		FROM detected_issues di
+		LEFT JOIN ignored_issues ig
+			ON di.facility = ig.facility
+			AND di.detector_type = ig.detector_type
+			AND di.issue_key = ig.issue_key
+			AND di.production_order_number = ig.production_order_number
+		LEFT JOIN m3_manufacturing_order_types mot
+			ON mot.order_type = di.issue_data->>'mo_type'
+			AND mot.company_number = di.issue_data->>'company'
+		LEFT JOIN planned_manufacturing_orders mop
+			ON di.production_order_type = 'MOP'
+			AND mop.plpn = di.production_order_number
+			AND mop.faci = di.facility
+		LEFT JOIN manufacturing_orders mo
+			ON di.production_order_type = 'MO'
+			AND mo.mfno = di.production_order_number
+			AND mo.faci = di.facility
+		WHERE di.job_id = (
 			SELECT id FROM refresh_jobs
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
+		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
 	`
 	args := make([]interface{}, 0)
 	argNum := 1
 
 	if detectorType != "" {
-		query += fmt.Sprintf(" AND detector_type = $%d", argNum)
+		query += fmt.Sprintf(" AND di.detector_type = $%d", argNum)
 		args = append(args, detectorType)
 		argNum++
 	}
 
 	if facility != "" {
-		query += fmt.Sprintf(" AND facility = $%d", argNum)
+		query += fmt.Sprintf(" AND di.facility = $%d", argNum)
 		args = append(args, facility)
 		argNum++
 	}
 
 	if warehouse != "" {
-		query += fmt.Sprintf(" AND warehouse = $%d", argNum)
+		query += fmt.Sprintf(" AND di.warehouse = $%d", argNum)
 		args = append(args, warehouse)
 		argNum++
 	}
 
-	query += fmt.Sprintf(" ORDER BY detected_at DESC LIMIT $%d", argNum)
+	if !includeIgnored {
+		query += " AND ig.id IS NULL"
+	}
+
+	query += fmt.Sprintf(" ORDER BY di.detected_at DESC LIMIT $%d", argNum)
 	args = append(args, limit)
 
 	rows, err := q.db.QueryContext(ctx, query, args...)
@@ -251,6 +276,8 @@ func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility,
 			&issue.ProductionOrderNumber, &issue.ProductionOrderType,
 			&issue.CONumber, &issue.COLine, &issue.COSuffix,
 			&issue.IssueData, &issue.CreatedAt,
+			&issue.IsIgnored,
+			&issue.MOTypeDescription,
 		)
 		if err != nil {
 			return nil, err
@@ -323,21 +350,42 @@ func (q *Queries) GetIssueCountForLatestJob(ctx context.Context) (int, error) {
 }
 
 // GetIssueSummary gets aggregated issue counts with warehouse grouping and nested hierarchy
-func (q *Queries) GetIssueSummary(ctx context.Context) (map[string]interface{}, error) {
+func (q *Queries) GetIssueSummary(ctx context.Context, includeIgnored bool) (map[string]interface{}, error) {
 	query := `
 		SELECT
-			detector_type,
-			facility,
-			COALESCE(warehouse, '') as warehouse,
+			di.detector_type,
+			di.facility,
+			COALESCE(di.warehouse, '') as warehouse,
 			COUNT(*) as issue_count
-		FROM detected_issues
-		WHERE job_id = (
+		FROM detected_issues di
+		LEFT JOIN ignored_issues ig
+			ON di.facility = ig.facility
+			AND di.detector_type = ig.detector_type
+			AND di.issue_key = ig.issue_key
+			AND di.production_order_number = ig.production_order_number
+		LEFT JOIN planned_manufacturing_orders mop
+			ON di.production_order_type = 'MOP'
+			AND mop.plpn = di.production_order_number
+			AND mop.faci = di.facility
+		LEFT JOIN manufacturing_orders mo
+			ON di.production_order_type = 'MO'
+			AND mo.mfno = di.production_order_number
+			AND mo.faci = di.facility
+		WHERE di.job_id = (
 			SELECT id FROM refresh_jobs
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
-		GROUP BY detector_type, facility, warehouse
-		ORDER BY facility, warehouse, detector_type
+		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
+	`
+
+	if !includeIgnored {
+		query += " AND ig.id IS NULL"
+	}
+
+	query += `
+		GROUP BY di.detector_type, di.facility, di.warehouse
+		ORDER BY di.facility, di.warehouse, di.detector_type
 	`
 
 	rows, err := q.db.QueryContext(ctx, query)
@@ -431,4 +479,71 @@ func (q *Queries) GetLatestRefreshJobID(ctx context.Context) (string, error) {
 	}
 
 	return jobID, err
+}
+
+// IgnoreIssue marks an issue as ignored
+func (q *Queries) IgnoreIssue(ctx context.Context, params IgnoreIssueParams) error {
+	query := `
+		INSERT INTO ignored_issues (
+			facility, detector_type, issue_key,
+			production_order_number, production_order_type,
+			co_number, co_line, notes, ignored_by
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (facility, detector_type, issue_key, production_order_number)
+		DO UPDATE SET
+			ignored_at = CURRENT_TIMESTAMP,
+			notes = EXCLUDED.notes,
+			ignored_by = EXCLUDED.ignored_by
+	`
+	_, err := q.db.ExecContext(ctx, query,
+		params.Facility,
+		params.DetectorType,
+		params.IssueKey,
+		params.ProductionOrderNumber,
+		params.ProductionOrderType,
+		params.CONumber,
+		params.COLine,
+		params.Notes,
+		params.IgnoredBy,
+	)
+	return err
+}
+
+// UnignoreIssue removes an issue from ignored list
+func (q *Queries) UnignoreIssue(ctx context.Context, params UnignoreIssueParams) error {
+	query := `
+		DELETE FROM ignored_issues
+		WHERE facility = $1
+		  AND detector_type = $2
+		  AND issue_key = $3
+		  AND production_order_number = $4
+	`
+	_, err := q.db.ExecContext(ctx, query,
+		params.Facility,
+		params.DetectorType,
+		params.IssueKey,
+		params.ProductionOrderNumber,
+	)
+	return err
+}
+
+// IsIssueIgnored checks if an issue is ignored
+func (q *Queries) IsIssueIgnored(ctx context.Context, params CheckIgnoredParams) (bool, error) {
+	query := `
+		SELECT EXISTS(
+			SELECT 1 FROM ignored_issues
+			WHERE facility = $1
+			  AND detector_type = $2
+			  AND issue_key = $3
+			  AND production_order_number = $4
+		)
+	`
+	var exists bool
+	err := q.db.QueryRowContext(ctx, query,
+		params.Facility,
+		params.DetectorType,
+		params.IssueKey,
+		params.ProductionOrderNumber,
+	).Scan(&exists)
+	return exists, err
 }

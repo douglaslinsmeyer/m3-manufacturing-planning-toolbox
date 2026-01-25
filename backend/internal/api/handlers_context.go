@@ -45,6 +45,22 @@ type M3WarehouseResponse struct {
 	Facility      string `json:"facility,omitempty"`
 }
 
+// M3ManufacturingOrderTypeResponse represents a manufacturing order type
+type M3ManufacturingOrderTypeResponse struct {
+	CompanyNumber        string `json:"companyNumber"`
+	OrderType            string `json:"orderType"`
+	OrderTypeDescription string `json:"orderTypeDescription"`
+	LanguageCode         string `json:"languageCode"`
+}
+
+// M3CustomerOrderTypeResponse represents a customer order type
+type M3CustomerOrderTypeResponse struct {
+	CompanyNumber        string `json:"companyNumber"`
+	OrderType            string `json:"orderType"`
+	OrderTypeDescription string `json:"orderTypeDescription"`
+	LanguageCode         string `json:"languageCode"`
+}
+
 // EffectiveContextResponse represents the effective context
 type EffectiveContextResponse struct {
 	Company               string                `json:"company"`
@@ -340,6 +356,82 @@ func (s *Server) handleListWarehouses(w http.ResponseWriter, r *http.Request) {
 			WarehouseName: wh.WarehouseName,
 			Division:      wh.Division,
 			Facility:      wh.Facility,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleListManufacturingOrderTypes returns manufacturing order types for a company
+func (s *Server) handleListManufacturingOrderTypes(w http.ResponseWriter, r *http.Request) {
+	companyNumber := r.URL.Query().Get("company")
+	if companyNumber == "" {
+		http.Error(w, "company parameter required", http.StatusBadRequest)
+		return
+	}
+
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	repo, err := s.getContextRepositoryForRequest(r, environment)
+	if err != nil {
+		http.Error(w, "Failed to get context repository", http.StatusInternalServerError)
+		return
+	}
+
+	orderTypes, err := repo.GetManufacturingOrderTypes(r.Context(), companyNumber, false)
+	if err != nil {
+		http.Error(w, "Failed to fetch manufacturing order types", http.StatusInternalServerError)
+		return
+	}
+
+	// Map to response format
+	response := make([]M3ManufacturingOrderTypeResponse, len(orderTypes))
+	for i, ot := range orderTypes {
+		response[i] = M3ManufacturingOrderTypeResponse{
+			CompanyNumber:        ot.CompanyNumber,
+			OrderType:            ot.OrderType,
+			OrderTypeDescription: ot.OrderTypeDescription,
+			LanguageCode:         ot.LanguageCode,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleListCustomerOrderTypes returns customer order types for a company
+func (s *Server) handleListCustomerOrderTypes(w http.ResponseWriter, r *http.Request) {
+	companyNumber := r.URL.Query().Get("company")
+	if companyNumber == "" {
+		http.Error(w, "company parameter required", http.StatusBadRequest)
+		return
+	}
+
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	repo, err := s.getContextRepositoryForRequest(r, environment)
+	if err != nil {
+		http.Error(w, "Failed to get context repository", http.StatusInternalServerError)
+		return
+	}
+
+	orderTypes, err := repo.GetCustomerOrderTypes(r.Context(), companyNumber, false)
+	if err != nil {
+		http.Error(w, "Failed to fetch customer order types", http.StatusInternalServerError)
+		return
+	}
+
+	// Map to response format
+	response := make([]M3CustomerOrderTypeResponse, len(orderTypes))
+	for i, ot := range orderTypes {
+		response[i] = M3CustomerOrderTypeResponse{
+			CompanyNumber:        ot.CompanyNumber,
+			OrderType:            ot.OrderType,
+			OrderTypeDescription: ot.OrderTypeDescription,
+			LanguageCode:         ot.LanguageCode,
 		}
 	}
 

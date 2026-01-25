@@ -2,6 +2,7 @@ package detectors
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -38,7 +39,8 @@ func (d *ProductionTimingDetector) Detect(ctx context.Context, queries *db.Queri
 			po.warehouse,
 			po.itno,
 			po.cono,
-			po.prno
+			po.prno,
+			po.orty
 		FROM production_orders po
 		INNER JOIN customer_order_lines col
 			ON col.orno = po.linked_co_number
@@ -49,6 +51,7 @@ func (d *ProductionTimingDetector) Detect(ctx context.Context, queries *db.Queri
 		  AND po.linked_co_number != ''
 		  AND po.planned_start_date IS NOT NULL AND po.planned_start_date != ''
 		  AND col.codt IS NOT NULL AND col.codt != ''
+		  AND po.deleted_remotely = false
 		  AND (
 			  -- Too early: starts 3+ days before delivery
 			  (TO_DATE(NULLIF(col.codt, ''), 'YYYYMMDD') - TO_DATE(NULLIF(po.planned_start_date, ''), 'YYYYMMDD')) >= 3
@@ -68,9 +71,10 @@ func (d *ProductionTimingDetector) Detect(ctx context.Context, queries *db.Queri
 
 	for rows.Next() {
 		var orderNumber, orderType, coNumber, coLine, coSuffix, startDate, deliveryDate, faci, whlo, itno, cono, prno string
+		var orty sql.NullString
 		var daysDifference int
 
-		if err := rows.Scan(&orderNumber, &orderType, &coNumber, &coLine, &coSuffix, &startDate, &deliveryDate, &daysDifference, &faci, &whlo, &itno, &cono, &prno); err != nil {
+		if err := rows.Scan(&orderNumber, &orderType, &coNumber, &coLine, &coSuffix, &startDate, &deliveryDate, &daysDifference, &faci, &whlo, &itno, &cono, &prno, &orty); err != nil {
 			log.Printf("Error scanning row: %v", err)
 			continue
 		}
@@ -95,6 +99,9 @@ func (d *ProductionTimingDetector) Detect(ctx context.Context, queries *db.Queri
 			"co_line":          coLine,
 			"company":          cono,
 			"product_number":   prno,
+		}
+		if orty.Valid {
+			issueData["mo_type"] = orty.String
 		}
 
 		if err := d.insertIssue(ctx, queries, orderNumber, orderType, coNumber, coLine, coSuffix, faci, whlo, issueData); err != nil {

@@ -115,8 +115,8 @@ func (w *ContextCacheWorker) refreshEnvironmentCache(ctx context.Context, enviro
 	}
 	fmt.Printf("  %s: Cached %d facilities\n", environment, len(facilities))
 
-	// Refresh divisions and warehouses for each company
-	var divCount, whCount int
+	// Refresh divisions, warehouses, and order types for each company
+	var divCount, whCount, motCount, cotCount int
 	for _, company := range companies {
 		// Refresh divisions
 		divisions, err := repo.GetDivisions(ctx, company.CompanyNumber, true)
@@ -133,9 +133,27 @@ func (w *ContextCacheWorker) refreshEnvironmentCache(ctx context.Context, enviro
 			continue
 		}
 		whCount += len(warehouses)
+
+		// Refresh manufacturing order types
+		mfgOrderTypes, err := repo.GetManufacturingOrderTypes(ctx, company.CompanyNumber, true)
+		if err != nil {
+			fmt.Printf("  Warning: Failed to refresh manufacturing order types for company %s in %s: %v\n", company.CompanyNumber, environment, err)
+			// Don't continue - try customer order types too
+		} else {
+			motCount += len(mfgOrderTypes)
+		}
+
+		// Refresh customer order types
+		coOrderTypes, err := repo.GetCustomerOrderTypes(ctx, company.CompanyNumber, true)
+		if err != nil {
+			fmt.Printf("  Warning: Failed to refresh customer order types for company %s in %s: %v\n", company.CompanyNumber, environment, err)
+			// Don't continue - still did other refreshes
+		} else {
+			cotCount += len(coOrderTypes)
+		}
 	}
 
-	fmt.Printf("  %s: Cached %d divisions and %d warehouses\n", environment, divCount, whCount)
+	fmt.Printf("  %s: Cached %d divisions, %d warehouses, %d manufacturing order types, and %d customer order types\n", environment, divCount, whCount, motCount, cotCount)
 	return nil
 }
 

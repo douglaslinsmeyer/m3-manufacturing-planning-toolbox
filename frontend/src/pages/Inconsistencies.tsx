@@ -1,6 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { AppLayout } from '../components/AppLayout';
 import { buildM3BookmarkURL, M3Config } from '../utils/m3Links';
+import { api } from '../services/api';
+import { ConfirmModal } from '../components/ConfirmModal';
+import { ToastContainer } from '../components/Toast';
+import { useToast } from '../hooks/useToast';
 
 interface Issue {
   id: number;
@@ -10,11 +14,13 @@ interface Issue {
   issueKey: string;
   productionOrderNumber?: string;
   productionOrderType?: string;
+  moTypeDescription?: string;
   coNumber?: string;
   coLine?: string;
   coSuffix?: string;
   detectedAt: string;
   issueData: Record<string, any>;
+  isIgnored?: boolean;
 }
 
 interface IssueSummary {
@@ -38,13 +44,70 @@ const DETECTOR_LABELS: Record<string, string> = {
   'production_timing': 'Production Timing Issues',
 };
 
+// Format M3 date (YYYYMMDD integer) to readable format
+function formatM3Date(dateStr: string | number): string {
+  if (!dateStr) return '';
+  const str = dateStr.toString();
+  if (str.length !== 8) return str;
+  const year = str.substring(0, 4);
+  const month = str.substring(4, 6);
+  const day = str.substring(6, 8);
+  return `${year}-${month}-${day}`;
+}
+
+// Format M3 date as relative time (e.g., "in 3 days", "2 days ago")
+function formatM3DateRelative(dateStr: string | number): { relative: string; absolute: string } {
+  if (!dateStr) return { relative: '', absolute: '' };
+
+  const str = dateStr.toString();
+  if (str.length !== 8) return { relative: str, absolute: str };
+
+  const year = parseInt(str.substring(0, 4));
+  const month = parseInt(str.substring(4, 6)) - 1; // JS months are 0-indexed
+  const day = parseInt(str.substring(6, 8));
+
+  const date = new Date(year, month, day);
+  const now = new Date();
+  now.setHours(0, 0, 0, 0); // Reset to start of day for fair comparison
+
+  const diffTime = date.getTime() - now.getTime();
+  const diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+  let relative = '';
+  if (diffDays === 0) {
+    relative = 'today';
+  } else if (diffDays === 1) {
+    relative = 'tomorrow';
+  } else if (diffDays === -1) {
+    relative = 'yesterday';
+  } else if (diffDays > 0) {
+    relative = `in ${diffDays} days`;
+  } else {
+    relative = `${Math.abs(diffDays)} days ago`;
+  }
+
+  const absolute = date.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric'
+  });
+
+  return { relative, absolute };
+}
+
 const Inconsistencies: React.FC = () => {
   const [summary, setSummary] = useState<IssueSummary | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDetector, setSelectedDetector] = useState<string>('');
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('');
+  const [showIgnored, setShowIgnored] = useState<boolean>(false);
   const [m3Config, setM3Config] = useState<M3Config | null>(null);
+  const [deleteModalOpen, setDeleteModalOpen] = useState(false);
+  const [issueToDelete, setIssueToDelete] = useState<Issue | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const toast = useToast();
 
   // Initialize filters from URL on mount and fetch data
   useEffect(() => {
@@ -58,11 +121,26 @@ const Inconsistencies: React.FC = () => {
     // Fetch config and summary once on mount
     fetchM3Config();
     fetchSummary();
+
+    // Mark as initialized to allow fetching
+    setIsInitialized(true);
   }, []);
 
-  // Fetch issues when filters change
+  // Fetch issues when filters change (only after initialization)
   useEffect(() => {
-    fetchIssues();
+    if (isInitialized) {
+      fetchIssues();
+    }
+  }, [selectedDetector, selectedWarehouse, showIgnored, isInitialized]);
+
+  // Sync URL with filter state
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (selectedDetector) params.set('detector', selectedDetector);
+    if (selectedWarehouse) params.set('warehouse', selectedWarehouse);
+
+    const newUrl = params.toString() ? `?${params.toString()}` : window.location.pathname;
+    window.history.replaceState(null, '', newUrl);
   }, [selectedDetector, selectedWarehouse]);
 
   const fetchM3Config = async () => {
@@ -79,10 +157,7 @@ const Inconsistencies: React.FC = () => {
 
   const fetchSummary = async () => {
     try {
-      const response = await fetch('/api/issues/summary', {
-        credentials: 'include',
-      });
-      const data = await response.json();
+      const data = await api.getIssueSummary(showIgnored);
       setSummary(data);
     } catch (error) {
       console.error('Failed to fetch issue summary:', error);
@@ -92,15 +167,11 @@ const Inconsistencies: React.FC = () => {
   const fetchIssues = async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams();
-      if (selectedDetector) params.append('detector_type', selectedDetector);
-      if (selectedWarehouse) params.append('warehouse', selectedWarehouse);
-      params.append('limit', '100');
-
-      const response = await fetch(`/api/issues?${params}`, {
-        credentials: 'include',
+      const data = await api.listInconsistencies({
+        type: selectedDetector || undefined,
+        warehouse: selectedWarehouse || undefined,
+        includeIgnored: showIgnored,
       });
-      const data = await response.json();
       setIssues(data);
     } catch (error) {
       console.error('Failed to fetch issues:', error);
@@ -109,8 +180,63 @@ const Inconsistencies: React.FC = () => {
     }
   };
 
+  const handleIgnore = async (issueId: number) => {
+    try {
+      await api.ignoreIssue(issueId);
+      // Refresh issue list and summary
+      await Promise.all([fetchIssues(), fetchSummary()]);
+      toast.success('Issue ignored successfully');
+    } catch (error) {
+      console.error('Failed to ignore issue:', error);
+      toast.error('Failed to ignore issue. Please try again.');
+    }
+  };
+
+  const handleUnignore = async (issueId: number) => {
+    try {
+      await api.unignoreIssue(issueId);
+      // Refresh issue list and summary
+      await Promise.all([fetchIssues(), fetchSummary()]);
+      toast.success('Issue unignored successfully');
+    } catch (error) {
+      console.error('Failed to unignore issue:', error);
+      toast.error('Failed to unignore issue. Please try again.');
+    }
+  };
+
+  const handleDeleteMOPClick = (issue: Issue) => {
+    setIssueToDelete(issue);
+    setDeleteModalOpen(true);
+  };
+
+  const handleDeleteMOPConfirm = async () => {
+    if (!issueToDelete) return;
+
+    setIsDeleting(true);
+    try {
+      await api.deletePlannedMO(issueToDelete.id);
+      const mopNumber = issueToDelete.productionOrderNumber;
+      setDeleteModalOpen(false);
+      setIssueToDelete(null);
+      // Refresh issue list and summary
+      await Promise.all([fetchIssues(), fetchSummary()]);
+      toast.success(`MOP ${mopNumber} deleted successfully from M3`);
+    } catch (error) {
+      console.error('Failed to delete MOP:', error);
+      toast.error('Failed to delete MOP from M3. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleDeleteMOPCancel = () => {
+    setDeleteModalOpen(false);
+    setIssueToDelete(null);
+  };
+
   return (
     <AppLayout>
+      <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
       <div className="px-4 py-6 sm:px-6 lg:px-12 lg:py-10">
         {/* Page Header */}
         <div className="mb-6 lg:mb-10">
@@ -148,7 +274,7 @@ const Inconsistencies: React.FC = () => {
 
         {/* Filters */}
         <div className="mb-6 rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
                 Issue Type
@@ -183,6 +309,18 @@ const Inconsistencies: React.FC = () => {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="flex items-end">
+              <label className="flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showIgnored}
+                  onChange={(e) => setShowIgnored(e.target.checked)}
+                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-slate-300 rounded"
+                />
+                <span className="ml-2 text-sm text-slate-700">Show Ignored Issues</span>
+              </label>
             </div>
           </div>
         </div>
@@ -220,13 +358,16 @@ const Inconsistencies: React.FC = () => {
                       Details
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                      Detected
+                      Actions
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200 bg-white">
                   {issues.map((issue) => (
-                    <tr key={issue.id} className="hover:bg-slate-50">
+                    <tr
+                      key={issue.id}
+                      className={issue.isIgnored ? 'bg-slate-100 opacity-75 hover:bg-slate-150' : 'hover:bg-slate-50'}
+                    >
                       <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-slate-900">
                         {DETECTOR_LABELS[issue.detectorType] || issue.detectorType}
                       </td>
@@ -255,6 +396,11 @@ const Inconsistencies: React.FC = () => {
                             <span className="ml-2 text-xs text-slate-400">
                               ({issue.productionOrderType})
                             </span>
+                            {issue.moTypeDescription && (
+                              <div className="text-xs text-slate-600 mt-0.5">
+                                {issue.moTypeDescription}
+                              </div>
+                            )}
                           </div>
                         )}
                         {issue.coNumber && (
@@ -268,10 +414,35 @@ const Inconsistencies: React.FC = () => {
                         {issue.warehouse && <div className="text-xs text-slate-400">{issue.warehouse}</div>}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-500">
-                        <IssueDetailsCell issueData={issue.issueData} detectorType={issue.detectorType} />
+                        <IssueDetailsCell issueData={issue.issueData} detectorType={issue.detectorType} productionOrderType={issue.productionOrderType} />
                       </td>
-                      <td className="whitespace-nowrap px-6 py-4 text-sm text-slate-500">
-                        {new Date(issue.detectedAt).toLocaleDateString()}
+                      <td className="whitespace-nowrap px-6 py-4 text-sm">
+                        <div className="flex items-center gap-2">
+                          {issue.isIgnored ? (
+                            <button
+                              onClick={() => handleUnignore(issue.id)}
+                              className="inline-flex items-center px-3 py-1.5 border border-primary-300 text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+                            >
+                              Unignore
+                            </button>
+                          ) : (
+                            <button
+                              onClick={() => handleIgnore(issue.id)}
+                              className="inline-flex items-center px-3 py-1.5 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500"
+                            >
+                              Ignore
+                            </button>
+                          )}
+                          {issue.detectorType === 'unlinked_production_orders' &&
+                           issue.productionOrderType === 'MOP' && (
+                            <button
+                              onClick={() => handleDeleteMOPClick(issue)}
+                              className="inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                            >
+                              Delete
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -280,17 +451,50 @@ const Inconsistencies: React.FC = () => {
             </div>
           )}
         </div>
+
+        {/* Delete MOP Confirmation Modal */}
+        <ConfirmModal
+          isOpen={deleteModalOpen}
+          title="Delete Manufacturing Order Proposal"
+          message={`Are you sure you want to delete MOP ${issueToDelete?.productionOrderNumber}? This action cannot be undone and will permanently delete the planned order from M3.`}
+          confirmLabel={isDeleting ? 'Deleting...' : 'Delete MOP'}
+          cancelLabel="Cancel"
+          onConfirm={handleDeleteMOPConfirm}
+          onCancel={handleDeleteMOPCancel}
+          isDestructive={true}
+        />
       </div>
     </AppLayout>
   );
 };
 
 // Helper component to display issue-specific details
-const IssueDetailsCell: React.FC<{ issueData: Record<string, any>; detectorType: string }> = ({ issueData, detectorType }) => {
+const IssueDetailsCell: React.FC<{ issueData: Record<string, any>; detectorType: string; productionOrderType?: string }> = ({ issueData, detectorType, productionOrderType }) => {
   if (detectorType === 'unlinked_production_orders') {
+    const startDate = issueData.start_date ? formatM3DateRelative(issueData.start_date) : null;
+
     return (
       <div className="text-xs">
-        <div>Item: {issueData.item_number}</div>
+        {/* Show product_number for MOPs, item_number for MOs */}
+        {productionOrderType === 'MOP' && issueData.product_number ? (
+          <div>Product: {issueData.product_number}</div>
+        ) : (
+          <div>Item: {issueData.item_number}</div>
+        )}
+        {startDate && (
+          <div>
+            Start:{' '}
+            <span
+              className="cursor-help border-b border-dotted border-slate-400"
+              title={startDate.absolute}
+            >
+              {startDate.relative}
+            </span>
+          </div>
+        )}
+        {issueData.mo_type && (
+          <div className="text-slate-400">Type: {issueData.mo_type}</div>
+        )}
       </div>
     );
   }
@@ -300,6 +504,9 @@ const IssueDetailsCell: React.FC<{ issueData: Record<string, any>; detectorType:
       <div className="text-xs">
         {issueData.dates && issueData.dates.length > 0 && (
           <div>Dates: {issueData.dates.join(', ')}</div>
+        )}
+        {issueData.orders && issueData.orders.length > 0 && issueData.orders[0].mo_type && (
+          <div className="text-slate-400">Type: {issueData.orders[0].mo_type}</div>
         )}
       </div>
     );
@@ -314,6 +521,9 @@ const IssueDetailsCell: React.FC<{ issueData: Record<string, any>; detectorType:
         <div>Start: {issueData.start_date}</div>
         <div>Delivery: {issueData.delivery_date}</div>
         <div>Difference: {issueData.days_difference} days</div>
+        {issueData.mo_type && (
+          <div className="text-slate-400">Type: {issueData.mo_type}</div>
+        )}
       </div>
     );
   }

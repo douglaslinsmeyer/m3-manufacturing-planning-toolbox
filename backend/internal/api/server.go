@@ -25,6 +25,7 @@ type Server struct {
 	authManager    *auth.Manager
 	natsManager    *queue.Manager
 	contextService *services.ContextService
+	auditService   *services.AuditService
 }
 
 // NewServer creates a new API server instance
@@ -47,6 +48,9 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 	// needs a Compass client with session-specific tokens
 	contextService := services.NewContextService(nil)
 
+	// Initialize audit service
+	auditService := services.NewAuditService(queries)
+
 	s := &Server{
 		config:         cfg,
 		db:             queries,
@@ -55,6 +59,7 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 		authManager:    authManager,
 		natsManager:    natsManager,
 		contextService: contextService,
+		auditService:   auditService,
 	}
 
 	s.setupRoutes()
@@ -165,6 +170,8 @@ func (s *Server) setupRoutes() {
 	contextRouter.HandleFunc("/divisions", s.handleListDivisions).Methods("GET")
 	contextRouter.HandleFunc("/facilities", s.handleListFacilities).Methods("GET")
 	contextRouter.HandleFunc("/warehouses", s.handleListWarehouses).Methods("GET")
+	contextRouter.HandleFunc("/manufacturing-order-types", s.handleListManufacturingOrderTypes).Methods("GET")
+	contextRouter.HandleFunc("/customer-order-types", s.handleListCustomerOrderTypes).Methods("GET")
 
 	// M3 Configuration (for deep linking)
 	protected.HandleFunc("/m3-config", s.handleGetM3Config).Methods("GET")
@@ -202,6 +209,9 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/issues", s.handleListIssues).Methods("GET")
 	protected.HandleFunc("/issues/summary", s.handleGetIssueSummary).Methods("GET")
 	protected.HandleFunc("/issues/{id}", s.handleGetIssueDetail).Methods("GET")
+	protected.HandleFunc("/issues/{id}/ignore", s.handleIgnoreIssue).Methods("POST")
+	protected.HandleFunc("/issues/{id}/unignore", s.handleUnignoreIssue).Methods("POST")
+	protected.HandleFunc("/issues/{id}/delete-mop", s.handleDeletePlannedMO).Methods("POST")
 }
 
 // authMiddleware checks if the user is authenticated
