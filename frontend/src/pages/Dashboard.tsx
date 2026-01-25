@@ -55,14 +55,6 @@ function ArrowTrendingUpIcon({ className }: { className?: string }) {
   );
 }
 
-function ChevronDownIcon({ className }: { className?: string }) {
-  return (
-    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-    </svg>
-  );
-}
-
 const stats = [
   { name: 'Production Orders', key: 'totalProductionOrders', href: '/production-orders', icon: ClipboardDocumentListIcon, color: 'primary' },
   { name: 'Customer Orders', key: 'totalCustomerOrders', href: '/customer-orders', icon: ShoppingCartIcon, color: 'info' },
@@ -78,7 +70,6 @@ const Dashboard: React.FC = () => {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [recovering, setRecovering] = useState(false);
   const [issueSummary, setIssueSummary] = useState<IssueSummary | null>(null);
-  const [showIssueBreakdown, setShowIssueBreakdown] = useState(false);
 
   // Use SSE hook for real-time progress updates
   const { status: sseStatus, isConnected, error: sseError } = useSnapshotProgress(currentJobId);
@@ -370,12 +361,8 @@ const Dashboard: React.FC = () => {
 
         {/* Issue Breakdown - Facility > Warehouse > Detector */}
         {issueSummary && issueSummary.total > 0 && (
-          <div className="mb-6 lg:mb-10">
-            <button
-              onClick={() => setShowIssueBreakdown(!showIssueBreakdown)}
-              className="w-full rounded-t-xl bg-white px-6 py-4 shadow-sm ring-1 ring-slate-200
-                         flex items-center justify-between hover:bg-slate-50 transition-colors"
-            >
+          <div className="mb-6 lg:mb-10 rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="px-6 py-4 border-b border-slate-200">
               <div className="flex items-center gap-3">
                 <ExclamationTriangleIcon className="h-5 w-5 text-warning-600" />
                 <h2 className="text-base font-semibold text-slate-900">
@@ -385,15 +372,10 @@ const Dashboard: React.FC = () => {
                   ({issueSummary.total} {issueSummary.total === 1 ? 'issue' : 'issues'})
                 </span>
               </div>
-              <ChevronDownIcon className={`h-5 w-5 text-slate-400 transition-transform
-                                           ${showIssueBreakdown ? 'rotate-180' : ''}`} />
-            </button>
-
-            {showIssueBreakdown && (
-              <div className="rounded-b-xl bg-white p-6 shadow-sm ring-1 ring-t-0 ring-slate-200">
-                <IssueBreakdownHierarchy summary={issueSummary} />
-              </div>
-            )}
+            </div>
+            <div className="p-6">
+              <IssueBreakdownHierarchy summary={issueSummary} />
+            </div>
           </div>
         )}
 

@@ -21,6 +21,7 @@ interface IssueSummary {
   total: number;
   by_detector: Record<string, number>;
   by_facility: Record<string, number>;
+  by_warehouse: Record<string, number>;
 }
 
 function ExclamationTriangleIcon({ className }: { className?: string }) {
@@ -42,14 +43,27 @@ const Inconsistencies: React.FC = () => {
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDetector, setSelectedDetector] = useState<string>('');
-  const [selectedFacility, setSelectedFacility] = useState<string>('');
+  const [selectedWarehouse, setSelectedWarehouse] = useState<string>('');
   const [m3Config, setM3Config] = useState<M3Config | null>(null);
 
+  // Initialize filters from URL on mount and fetch data
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const detector = params.get('detector');
+    const warehouse = params.get('warehouse');
+
+    if (detector) setSelectedDetector(detector);
+    if (warehouse) setSelectedWarehouse(warehouse);
+
+    // Fetch config and summary once on mount
     fetchM3Config();
     fetchSummary();
+  }, []);
+
+  // Fetch issues when filters change
+  useEffect(() => {
     fetchIssues();
-  }, [selectedDetector, selectedFacility]);
+  }, [selectedDetector, selectedWarehouse]);
 
   const fetchM3Config = async () => {
     try {
@@ -80,7 +94,7 @@ const Inconsistencies: React.FC = () => {
     try {
       const params = new URLSearchParams();
       if (selectedDetector) params.append('detector_type', selectedDetector);
-      if (selectedFacility) params.append('facility', selectedFacility);
+      if (selectedWarehouse) params.append('warehouse', selectedWarehouse);
       params.append('limit', '100');
 
       const response = await fetch(`/api/issues?${params}`, {
@@ -155,17 +169,17 @@ const Inconsistencies: React.FC = () => {
 
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-2">
-                Facility
+                Warehouse
               </label>
               <select
-                value={selectedFacility}
-                onChange={(e) => setSelectedFacility(e.target.value)}
+                value={selectedWarehouse}
+                onChange={(e) => setSelectedWarehouse(e.target.value)}
                 className="block w-full rounded-lg border-slate-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
               >
-                <option value="">All Facilities</option>
-                {summary && Object.keys(summary.by_facility).map((facility) => (
-                  <option key={facility} value={facility}>
-                    {facility} ({summary.by_facility[facility]})
+                <option value="">All Warehouses</option>
+                {summary && summary.by_warehouse && Object.keys(summary.by_warehouse).map((warehouse) => (
+                  <option key={warehouse} value={warehouse}>
+                    {warehouse} ({summary.by_warehouse[warehouse]})
                   </option>
                 ))}
               </select>

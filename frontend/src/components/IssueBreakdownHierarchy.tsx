@@ -15,6 +15,16 @@ interface Props {
 export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
   // Extract facility/warehouse/detector hierarchy
   const facilityData = summary.by_facility_warehouse_detector;
+
+  // Safety check for undefined/null data
+  if (!facilityData || typeof facilityData !== 'object') {
+    return (
+      <div className="text-center py-8 text-slate-500">
+        No breakdown data available.
+      </div>
+    );
+  }
+
   const facilities = Object.keys(facilityData);
 
   // If no data, show empty state
@@ -57,7 +67,7 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
                     <th className="px-4 py-3 text-left text-xs font-medium text-slate-700 uppercase tracking-wider">
                       Warehouse
                     </th>
-                    {Object.keys(summary.by_detector).map(detector => (
+                    {summary.by_detector && Object.keys(summary.by_detector).map(detector => (
                       <th key={detector} className="px-4 py-3 text-center text-xs font-medium text-slate-700 uppercase tracking-wider">
                         {DETECTOR_LABELS[detector] || detector}
                       </th>
@@ -77,13 +87,13 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
                         <td className="px-4 py-3 text-sm font-medium text-slate-900">
                           {warehouse}
                         </td>
-                        {Object.keys(summary.by_detector).map(detector => {
+                        {summary.by_detector && Object.keys(summary.by_detector).map(detector => {
                           const count = detectors[detector] || 0;
                           return (
                             <td key={detector} className="px-4 py-3 text-center">
                               {count > 0 ? (
                                 <Link
-                                  to={`/inconsistencies?facility=${facility}&warehouse=${warehouse}&detector=${detector}`}
+                                  to={`/inconsistencies?warehouse=${warehouse}&detector=${detector}`}
                                   className={`inline-block px-3 py-1 rounded-full text-sm font-medium transition-colors
                                              ${count > 10 ? 'bg-red-100 text-red-800 hover:bg-red-200' :
                                                count > 5 ? 'bg-orange-100 text-orange-800 hover:bg-orange-200' :

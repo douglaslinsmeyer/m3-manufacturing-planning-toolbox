@@ -122,7 +122,12 @@ func (q *Queries) GetIssuesByDetectorType(ctx context.Context, detectorType stri
 			   issue_key, production_order_number, production_order_type,
 			   co_number, co_line, co_suffix, issue_data, created_at
 		FROM detected_issues
-		WHERE detector_type = $1
+		WHERE job_id = (
+			SELECT id FROM refresh_jobs
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+		AND detector_type = $1
 		ORDER BY detected_at DESC
 		LIMIT $2
 	`
@@ -159,7 +164,12 @@ func (q *Queries) GetIssuesByFacility(ctx context.Context, facility string, limi
 			   issue_key, production_order_number, production_order_type,
 			   co_number, co_line, co_suffix, issue_data, created_at
 		FROM detected_issues
-		WHERE facility = $1
+		WHERE job_id = (
+			SELECT id FROM refresh_jobs
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+		AND facility = $1
 		ORDER BY detected_at DESC
 		LIMIT $2
 	`
@@ -189,6 +199,68 @@ func (q *Queries) GetIssuesByFacility(ctx context.Context, facility string, limi
 	return issues, nil
 }
 
+// GetIssuesFiltered gets issues with optional filters
+func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility, warehouse string, limit int) ([]*DetectedIssue, error) {
+	query := `
+		SELECT id, job_id, detector_type, detected_at, facility, warehouse,
+			   issue_key, production_order_number, production_order_type,
+			   co_number, co_line, co_suffix, issue_data, created_at
+		FROM detected_issues
+		WHERE job_id = (
+			SELECT id FROM refresh_jobs
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+	`
+	args := make([]interface{}, 0)
+	argNum := 1
+
+	if detectorType != "" {
+		query += fmt.Sprintf(" AND detector_type = $%d", argNum)
+		args = append(args, detectorType)
+		argNum++
+	}
+
+	if facility != "" {
+		query += fmt.Sprintf(" AND facility = $%d", argNum)
+		args = append(args, facility)
+		argNum++
+	}
+
+	if warehouse != "" {
+		query += fmt.Sprintf(" AND warehouse = $%d", argNum)
+		args = append(args, warehouse)
+		argNum++
+	}
+
+	query += fmt.Sprintf(" ORDER BY detected_at DESC LIMIT $%d", argNum)
+	args = append(args, limit)
+
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	issues := make([]*DetectedIssue, 0)
+	for rows.Next() {
+		issue := &DetectedIssue{}
+		err := rows.Scan(
+			&issue.ID, &issue.JobID, &issue.DetectorType, &issue.DetectedAt,
+			&issue.Facility, &issue.Warehouse, &issue.IssueKey,
+			&issue.ProductionOrderNumber, &issue.ProductionOrderType,
+			&issue.CONumber, &issue.COLine, &issue.COSuffix,
+			&issue.IssueData, &issue.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		issues = append(issues, issue)
+	}
+
+	return issues, rows.Err()
+}
+
 // GetRecentIssues gets recent issues (no filter)
 func (q *Queries) GetRecentIssues(ctx context.Context, limit int) ([]*DetectedIssue, error) {
 	query := `
@@ -196,6 +268,11 @@ func (q *Queries) GetRecentIssues(ctx context.Context, limit int) ([]*DetectedIs
 			   issue_key, production_order_number, production_order_type,
 			   co_number, co_line, co_suffix, issue_data, created_at
 		FROM detected_issues
+		WHERE job_id = (
+			SELECT id FROM refresh_jobs
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
 		ORDER BY detected_at DESC
 		LIMIT $1
 	`

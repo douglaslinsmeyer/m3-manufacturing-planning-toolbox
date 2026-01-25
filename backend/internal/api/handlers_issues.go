@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 
@@ -12,12 +11,12 @@ import (
 
 // handleListIssues lists detected issues with filtering
 func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
-	log.Println("DEBUG: handleListIssues called")
 	ctx := r.Context()
 
 	// Parse query parameters
 	detectorType := r.URL.Query().Get("detector_type")
 	facility := r.URL.Query().Get("facility")
+	warehouse := r.URL.Query().Get("warehouse")
 	limitStr := r.URL.Query().Get("limit")
 
 	limit := 100
@@ -27,19 +26,9 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Use the new filtered query that supports multiple filters
 	var issues []*db.DetectedIssue
-	var err error
-
-	// Query by filters
-	if detectorType != "" {
-		issues, err = s.db.GetIssuesByDetectorType(ctx, detectorType, limit)
-	} else if facility != "" {
-		issues, err = s.db.GetIssuesByFacility(ctx, facility, limit)
-	} else {
-		// Get all recent issues
-		issues, err = s.db.GetRecentIssues(ctx, limit)
-	}
-
+	issues, err := s.db.GetIssuesFiltered(ctx, detectorType, facility, warehouse, limit)
 	if err != nil {
 		http.Error(w, "Failed to fetch issues", http.StatusInternalServerError)
 		return
@@ -98,11 +87,9 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 
 // handleGetIssueSummary returns aggregated issue statistics
 func (s *Server) handleGetIssueSummary(w http.ResponseWriter, r *http.Request) {
-	log.Println("DEBUG: handleGetIssueSummary called")
 	ctx := r.Context()
 
 	summary, err := s.db.GetIssueSummary(ctx)
-	log.Printf("DEBUG: GetIssueSummary result - error: %v", err)
 	if err != nil {
 		http.Error(w, "Failed to fetch issue summary", http.StatusInternalServerError)
 		return

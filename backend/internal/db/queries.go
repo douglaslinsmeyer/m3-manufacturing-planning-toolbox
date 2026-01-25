@@ -22,16 +22,17 @@ func (q *Queries) DB() *sql.DB {
 }
 
 // TruncateAnalysisTables truncates all M3 snapshot tables for full refresh
-// This clears all data from production orders, MOs, MOPs, COs, and CO lines
+// This clears all data from production orders, MOs, MOPs, COs, and detected issues
 // while preserving permanent data like jobs and metadata
 func (q *Queries) TruncateAnalysisTables(ctx context.Context) error {
 	// Order is critical to respect foreign key constraints
 	// Only parent tables listed - CASCADE handles children
 	tables := []string{
-		"production_orders",            // First - references mo_id/mop_id
-		"customer_orders",              // Second - cascades to CO lines, deliveries
-		"manufacturing_orders",         // Third - cascades to mo_operations, mo_materials
-		"planned_manufacturing_orders", // Fourth - no dependencies
+		"detected_issues",              // First - clear old detection results
+		"production_orders",            // Second - references mo_id/mop_id
+		"customer_orders",              // Third - cascades to CO lines, deliveries
+		"manufacturing_orders",         // Fourth - cascades to mo_operations, mo_materials
+		"planned_manufacturing_orders", // Fifth - no dependencies
 	}
 
 	tx, err := q.db.BeginTx(ctx, nil)
