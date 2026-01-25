@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"strconv"
@@ -14,6 +15,20 @@ import (
 	"github.com/pinggolf/m3-planning-tools/internal/services"
 )
 
+// IssuesListResponse wraps issue data with pagination metadata
+type IssuesListResponse struct {
+	Data       []map[string]interface{} `json:"data"`
+	Pagination PaginationMeta           `json:"pagination"`
+}
+
+// PaginationMeta contains pagination information
+type PaginationMeta struct {
+	Page       int `json:"page"`
+	PageSize   int `json:"pageSize"`
+	TotalCount int `json:"totalCount"`
+	TotalPages int `json:"totalPages"`
+}
+
 // handleListIssues lists detected issues with filtering
 func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
@@ -22,19 +37,48 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	detectorType := r.URL.Query().Get("detector_type")
 	facility := r.URL.Query().Get("facility")
 	warehouse := r.URL.Query().Get("warehouse")
-	limitStr := r.URL.Query().Get("limit")
 	includeIgnored := r.URL.Query().Get("include_ignored") == "true"
 
-	limit := 100
-	if limitStr != "" {
-		if parsedLimit, err := strconv.Atoi(limitStr); err == nil {
-			limit = parsedLimit
+	// Parse pagination parameters
+	page := 1
+	if pageStr := r.URL.Query().Get("page"); pageStr != "" {
+		if parsedPage, err := strconv.Atoi(pageStr); err == nil && parsedPage >= 1 {
+			page = parsedPage
 		}
 	}
 
-	// Use the new filtered query that supports multiple filters
+	pageSize := 50 // default
+	if pageSizeStr := r.URL.Query().Get("page_size"); pageSizeStr != "" {
+		if parsedSize, err := strconv.Atoi(pageSizeStr); err == nil {
+			// Validate page size is one of the allowed values
+			switch parsedSize {
+			case 25, 50, 100, 200:
+				pageSize = parsedSize
+			default:
+				pageSize = 50 // default to 50 if invalid
+			}
+		}
+	}
+
+	// Calculate offset
+	offset := (page - 1) * pageSize
+
+	// Get total count for pagination metadata
+	totalCount, err := s.db.GetIssuesFilteredCount(ctx, detectorType, facility, warehouse, includeIgnored)
+	if err != nil {
+		http.Error(w, "Failed to count issues", http.StatusInternalServerError)
+		return
+	}
+
+	// Calculate total pages
+	totalPages := int(math.Ceil(float64(totalCount) / float64(pageSize)))
+	if totalPages == 0 {
+		totalPages = 1 // At least 1 page even with 0 results
+	}
+
+	// Get filtered issues with pagination
 	var issues []*db.DetectedIssue
-	issues, err := s.db.GetIssuesFiltered(ctx, detectorType, facility, warehouse, includeIgnored, limit)
+	issues, err = s.db.GetIssuesFiltered(ctx, detectorType, facility, warehouse, includeIgnored, pageSize, offset)
 	if err != nil {
 		http.Error(w, "Failed to fetch issues", http.StatusInternalServerError)
 		return
@@ -92,8 +136,19 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 		response = append(response, item)
 	}
 
+	// Wrap response with pagination metadata
+	paginatedResponse := IssuesListResponse{
+		Data: response,
+		Pagination: PaginationMeta{
+			Page:       page,
+			PageSize:   pageSize,
+			TotalCount: totalCount,
+			TotalPages: totalPages,
+		},
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	json.NewEncoder(w).Encode(paginatedResponse)
 }
 
 // handleGetIssueSummary returns aggregated issue statistics

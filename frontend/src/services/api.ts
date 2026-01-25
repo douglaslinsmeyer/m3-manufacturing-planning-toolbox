@@ -2,11 +2,8 @@ import axios, { AxiosInstance } from 'axios';
 import type {
   AuthStatus,
   UserContext,
-  ProductionOrder,
   ManufacturingOrder,
   PlannedManufacturingOrder,
-  CustomerOrder,
-  Delivery,
   Inconsistency,
   SnapshotStatus,
   SnapshotSummary,
@@ -25,6 +22,17 @@ export interface IssueSummary {
   by_facility: Record<string, number>;
   by_warehouse: Record<string, number>;
   by_facility_warehouse_detector: Record<string, Record<string, Record<string, number>>>;
+}
+
+// PaginatedResponse represents a paginated API response
+export interface PaginatedResponse<T> {
+  data: T[];
+  pagination: {
+    page: number;
+    pageSize: number;
+    totalCount: number;
+    totalPages: number;
+  };
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
@@ -161,23 +169,6 @@ class ApiService {
     return response.data;
   }
 
-  // Production Orders
-  async listProductionOrders(params?: {
-    facility?: string;
-    startDate?: string;
-    endDate?: string;
-    status?: string;
-    type?: 'MO' | 'MOP';
-  }): Promise<ProductionOrder[]> {
-    const response = await this.client.get('/production-orders', { params });
-    return response.data;
-  }
-
-  async getProductionOrder(id: number): Promise<ProductionOrder> {
-    const response = await this.client.get(`/production-orders/${id}`);
-    return response.data;
-  }
-
   // Manufacturing Orders (full details)
   async getManufacturingOrder(id: number): Promise<ManufacturingOrder> {
     const response = await this.client.get(`/manufacturing-orders/${id}`);
@@ -187,38 +178,6 @@ class ApiService {
   // Planned Orders (full details)
   async getPlannedOrder(id: number): Promise<PlannedManufacturingOrder> {
     const response = await this.client.get(`/planned-orders/${id}`);
-    return response.data;
-  }
-
-  // Customer Orders
-  async listCustomerOrders(params?: {
-    customerNumber?: string;
-    startDate?: string;
-    endDate?: string;
-    status?: string;
-  }): Promise<CustomerOrder[]> {
-    const response = await this.client.get('/customer-orders', { params });
-    return response.data;
-  }
-
-  async getCustomerOrder(id: number): Promise<CustomerOrder> {
-    const response = await this.client.get(`/customer-orders/${id}`);
-    return response.data;
-  }
-
-  // Deliveries
-  async listDeliveries(params?: {
-    orderNumber?: string;
-    startDate?: string;
-    endDate?: string;
-    status?: string;
-  }): Promise<Delivery[]> {
-    const response = await this.client.get('/deliveries', { params });
-    return response.data;
-  }
-
-  async getDelivery(id: number): Promise<Delivery> {
-    const response = await this.client.get(`/deliveries/${id}`);
     return response.data;
   }
 
@@ -234,12 +193,16 @@ class ApiService {
     type?: string;
     warehouse?: string;
     includeIgnored?: boolean;
-  }): Promise<Inconsistency[]> {
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResponse<Inconsistency>> {
     const queryParams: any = {};
     if (params?.severity) queryParams.severity = params.severity;
     if (params?.type) queryParams.detector_type = params.type;
     if (params?.warehouse) queryParams.warehouse = params.warehouse;
     if (params?.includeIgnored) queryParams.include_ignored = 'true';
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
 
     const response = await this.client.get('/issues', { params: queryParams });
     return response.data;

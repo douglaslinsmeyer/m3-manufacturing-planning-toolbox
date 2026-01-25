@@ -26,11 +26,11 @@ const PlannedOrderDetail: React.FC = () => {
       <div className="px-4 py-6 sm:px-6 lg:px-12 lg:py-10">
         {/* Back Link */}
         <Link
-          to="/production-orders"
+          to="/"
           className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700 no-underline mb-6"
         >
           <ArrowLeftIcon className="h-4 w-4" />
-          Back to Production Orders
+          Back to Dashboard
         </Link>
 
         {/* Page Header */}

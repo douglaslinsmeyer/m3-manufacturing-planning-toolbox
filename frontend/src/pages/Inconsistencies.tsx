@@ -110,6 +110,10 @@ const Inconsistencies: React.FC = () => {
   const [issueToClose, setIssueToClose] = useState<Issue | null>(null);
   const [isClosing, setIsClosing] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [totalCount, setTotalCount] = useState<number>(0);
+  const [totalPages, setTotalPages] = useState<number>(0);
   const toast = useToast();
 
   // Initialize filters from URL on mount and fetch data
@@ -117,9 +121,23 @@ const Inconsistencies: React.FC = () => {
     const params = new URLSearchParams(window.location.search);
     const detector = params.get('detector');
     const warehouse = params.get('warehouse');
+    const page = params.get('page');
+    const pageSize = params.get('pageSize');
 
     if (detector) setSelectedDetector(detector);
     if (warehouse) setSelectedWarehouse(warehouse);
+    if (page) {
+      const parsedPage = parseInt(page, 10);
+      if (!isNaN(parsedPage) && parsedPage >= 1) {
+        setCurrentPage(parsedPage);
+      }
+    }
+    if (pageSize) {
+      const parsedSize = parseInt(pageSize, 10);
+      if ([25, 50, 100, 200].includes(parsedSize)) {
+        setPageSize(parsedSize);
+      }
+    }
 
     // Fetch config and summary once on mount
     fetchM3Config();
@@ -129,22 +147,31 @@ const Inconsistencies: React.FC = () => {
     setIsInitialized(true);
   }, []);
 
-  // Fetch issues when filters change (only after initialization)
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    if (isInitialized && currentPage !== 1) {
+      setCurrentPage(1);
+    }
+  }, [selectedDetector, selectedWarehouse, showIgnored]);
+
+  // Fetch issues when filters or pagination changes (only after initialization)
   useEffect(() => {
     if (isInitialized) {
       fetchIssues();
     }
-  }, [selectedDetector, selectedWarehouse, showIgnored, isInitialized]);
+  }, [selectedDetector, selectedWarehouse, showIgnored, currentPage, pageSize, isInitialized]);
 
-  // Sync URL with filter state
+  // Sync URL with filter and pagination state
   useEffect(() => {
     const params = new URLSearchParams();
     if (selectedDetector) params.set('detector', selectedDetector);
     if (selectedWarehouse) params.set('warehouse', selectedWarehouse);
+    if (currentPage > 1) params.set('page', currentPage.toString());
+    if (pageSize !== 50) params.set('pageSize', pageSize.toString());
 
     const newUrl = params.toString() ? `?${params.toString()}` : window.location.pathname;
     window.history.replaceState(null, '', newUrl);
-  }, [selectedDetector, selectedWarehouse]);
+  }, [selectedDetector, selectedWarehouse, currentPage, pageSize]);
 
   const fetchM3Config = async () => {
     try {
@@ -170,12 +197,16 @@ const Inconsistencies: React.FC = () => {
   const fetchIssues = async () => {
     setLoading(true);
     try {
-      const data = await api.listInconsistencies({
+      const result = await api.listInconsistencies({
         type: selectedDetector || undefined,
         warehouse: selectedWarehouse || undefined,
         includeIgnored: showIgnored,
+        page: currentPage,
+        pageSize: pageSize,
       });
-      setIssues(data);
+      setIssues(result.data);
+      setTotalCount(result.pagination.totalCount);
+      setTotalPages(result.pagination.totalPages);
     } catch (error) {
       console.error('Failed to fetch issues:', error);
     } finally {
@@ -549,6 +580,72 @@ const Inconsistencies: React.FC = () => {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* Pagination Controls */}
+          {!loading && issues.length > 0 && (
+            <div className="px-6 py-4 border-t border-slate-200 bg-slate-50">
+              <div className="flex items-center justify-between">
+                {/* Left: Page size selector */}
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-700">Show</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="rounded-md border-slate-300 text-sm focus:border-primary-500 focus:ring-primary-500"
+                  >
+                    <option value={25}>25</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                    <option value={200}>200</option>
+                  </select>
+                  <span className="text-sm text-slate-700">per page</span>
+                </div>
+
+                {/* Center: Page info */}
+                <div className="text-sm text-slate-700">
+                  Showing {Math.min((currentPage - 1) * pageSize + 1, totalCount)} to {Math.min(currentPage * pageSize, totalCount)} of {totalCount} issues
+                </div>
+
+                {/* Right: Page navigation */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1.5 text-sm border border-slate-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white hover:shadow-sm"
+                  >
+                    First
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(currentPage - 1)}
+                    disabled={currentPage === 1}
+                    className="px-3 py-1.5 text-sm border border-slate-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white hover:shadow-sm"
+                  >
+                    Previous
+                  </button>
+                  <span className="px-3 py-1.5 text-sm text-slate-700">
+                    Page {currentPage} of {totalPages}
+                  </span>
+                  <button
+                    onClick={() => setCurrentPage(currentPage + 1)}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1.5 text-sm border border-slate-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white hover:shadow-sm"
+                  >
+                    Next
+                  </button>
+                  <button
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    className="px-3 py-1.5 text-sm border border-slate-300 rounded-md disabled:opacity-50 disabled:cursor-not-allowed hover:bg-white hover:shadow-sm"
+                  >
+                    Last
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>

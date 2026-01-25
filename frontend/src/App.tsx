@@ -5,11 +5,8 @@ import { useAuth } from './contexts/AuthContext';
 import { ContextManagementProvider } from './contexts/ContextManagementContext';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
-import ProductionOrders from './pages/ProductionOrders';
 import ManufacturingOrderDetail from './pages/ManufacturingOrderDetail';
 import PlannedOrderDetail from './pages/PlannedOrderDetail';
-import CustomerOrders from './pages/CustomerOrders';
-import Deliveries from './pages/Deliveries';
 import Inconsistencies from './pages/Inconsistencies';
 
 // Protected route wrapper
@@ -46,14 +43,6 @@ function App() {
             }
           />
           <Route
-            path="/production-orders"
-            element={
-              <ProtectedRoute>
-                <ProductionOrders />
-              </ProtectedRoute>
-            }
-          />
-          <Route
             path="/manufacturing-orders/:id"
             element={
               <ProtectedRoute>
@@ -66,22 +55,6 @@ function App() {
             element={
               <ProtectedRoute>
                 <PlannedOrderDetail />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/customer-orders"
-            element={
-              <ProtectedRoute>
-                <CustomerOrders />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="/deliveries"
-            element={
-              <ProtectedRoute>
-                <Deliveries />
               </ProtectedRoute>
             }
           />

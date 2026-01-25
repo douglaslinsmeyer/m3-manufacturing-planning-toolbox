@@ -202,7 +202,7 @@ func (q *Queries) GetIssuesByFacility(ctx context.Context, facility string, limi
 }
 
 // GetIssuesFiltered gets issues with optional filters
-func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility, warehouse string, includeIgnored bool, limit int) ([]*DetectedIssue, error) {
+func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility, warehouse string, includeIgnored bool, limit, offset int) ([]*DetectedIssue, error) {
 	query := `
 		SELECT di.id, di.job_id, di.detector_type, di.detected_at, di.facility, di.warehouse,
 			   di.issue_key, di.production_order_number, di.production_order_type,
@@ -258,8 +258,8 @@ func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility,
 		query += " AND ig.id IS NULL"
 	}
 
-	query += fmt.Sprintf(" ORDER BY di.detected_at DESC LIMIT $%d", argNum)
-	args = append(args, limit)
+	query += fmt.Sprintf(" ORDER BY di.detected_at DESC OFFSET $%d LIMIT $%d", argNum, argNum+1)
+	args = append(args, offset, limit)
 
 	rows, err := q.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -345,6 +345,64 @@ func (q *Queries) GetIssueCountForLatestJob(ctx context.Context) (int, error) {
 	err := q.db.QueryRowContext(ctx, query).Scan(&count)
 	if err == sql.ErrNoRows {
 		return 0, nil // No issues found
+	}
+	return count, err
+}
+
+// GetIssuesFilteredCount gets the total count of issues matching the filters
+func (q *Queries) GetIssuesFilteredCount(ctx context.Context, detectorType, facility, warehouse string, includeIgnored bool) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM detected_issues di
+		LEFT JOIN ignored_issues ig
+			ON di.facility = ig.facility
+			AND di.detector_type = ig.detector_type
+			AND di.issue_key = ig.issue_key
+			AND di.production_order_number = ig.production_order_number
+		LEFT JOIN planned_manufacturing_orders mop
+			ON di.production_order_type = 'MOP'
+			AND mop.plpn = di.production_order_number
+			AND mop.faci = di.facility
+		LEFT JOIN manufacturing_orders mo
+			ON di.production_order_type = 'MO'
+			AND mo.mfno = di.production_order_number
+			AND mo.faci = di.facility
+		WHERE di.job_id = (
+			SELECT id FROM refresh_jobs
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
+	`
+	args := make([]interface{}, 0)
+	argNum := 1
+
+	if detectorType != "" {
+		query += fmt.Sprintf(" AND di.detector_type = $%d", argNum)
+		args = append(args, detectorType)
+		argNum++
+	}
+
+	if facility != "" {
+		query += fmt.Sprintf(" AND di.facility = $%d", argNum)
+		args = append(args, facility)
+		argNum++
+	}
+
+	if warehouse != "" {
+		query += fmt.Sprintf(" AND di.warehouse = $%d", argNum)
+		args = append(args, warehouse)
+		argNum++
+	}
+
+	if !includeIgnored {
+		query += " AND ig.id IS NULL"
+	}
+
+	var count int
+	err := q.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err == sql.ErrNoRows {
+		return 0, nil
 	}
 	return count, err
 }
