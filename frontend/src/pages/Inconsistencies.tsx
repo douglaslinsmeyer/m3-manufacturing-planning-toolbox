@@ -106,6 +106,9 @@ const Inconsistencies: React.FC = () => {
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [issueToDelete, setIssueToDelete] = useState<Issue | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [closeMOModalOpen, setCloseMOModalOpen] = useState(false);
+  const [issueToClose, setIssueToClose] = useState<Issue | null>(null);
+  const [isClosing, setIsClosing] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
   const toast = useToast();
 
@@ -232,6 +235,82 @@ const Inconsistencies: React.FC = () => {
   const handleDeleteMOPCancel = () => {
     setDeleteModalOpen(false);
     setIssueToDelete(null);
+  };
+
+  // Helper functions to determine if MO can be deleted or closed
+  const canDeleteMO = (issue: Issue): boolean => {
+    if (issue.productionOrderType !== 'MO') return false;
+    const status = issue.issueData?.status;
+    if (!status) return false;
+    const statusNum = parseInt(status, 10);
+    return !isNaN(statusNum) && statusNum <= 22;
+  };
+
+  const canCloseMO = (issue: Issue): boolean => {
+    if (issue.productionOrderType !== 'MO') return false;
+    const status = issue.issueData?.status;
+    if (!status) return false;
+    const statusNum = parseInt(status, 10);
+    return !isNaN(statusNum) && statusNum > 22;
+  };
+
+  // Delete MO handlers
+  const handleDeleteMOClick = (issue: Issue) => {
+    setIssueToDelete(issue);
+    setDeleteModalOpen(true);
+  };
+
+  const handleDeleteMOConfirm = async () => {
+    if (!issueToDelete) return;
+
+    setIsDeleting(true);
+    try {
+      const moNumber = issueToDelete.productionOrderNumber;
+      await api.deleteMO(issueToDelete.id);
+
+      setDeleteModalOpen(false);
+      setIssueToDelete(null);
+      await Promise.all([fetchIssues(), fetchSummary()]);
+
+      toast.success(`MO ${moNumber} deleted successfully from M3`);
+    } catch (error) {
+      console.error('Failed to delete MO:', error);
+      toast.error('Failed to delete MO from M3. Please try again.');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  // Close MO handlers
+  const handleCloseMOClick = (issue: Issue) => {
+    setIssueToClose(issue);
+    setCloseMOModalOpen(true);
+  };
+
+  const handleCloseMOConfirm = async () => {
+    if (!issueToClose) return;
+
+    setIsClosing(true);
+    try {
+      const moNumber = issueToClose.productionOrderNumber;
+      await api.closeMO(issueToClose.id);
+
+      setCloseMOModalOpen(false);
+      setIssueToClose(null);
+      await Promise.all([fetchIssues(), fetchSummary()]);
+
+      toast.success(`MO ${moNumber} closed successfully in M3`);
+    } catch (error) {
+      console.error('Failed to close MO:', error);
+      toast.error('Failed to close MO in M3. Please try again.');
+    } finally {
+      setIsClosing(false);
+    }
+  };
+
+  const handleCloseMOCancel = () => {
+    setCloseMOModalOpen(false);
+    setIssueToClose(null);
   };
 
   return (
@@ -442,6 +521,28 @@ const Inconsistencies: React.FC = () => {
                               Delete
                             </button>
                           )}
+
+                          {/* Delete MO button (status <= 22) */}
+                          {issue.detectorType === 'unlinked_production_orders' &&
+                           canDeleteMO(issue) && (
+                            <button
+                              onClick={() => handleDeleteMOClick(issue)}
+                              className="inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                            >
+                              Delete
+                            </button>
+                          )}
+
+                          {/* Close MO button (status > 22) */}
+                          {issue.detectorType === 'unlinked_production_orders' &&
+                           canCloseMO(issue) && (
+                            <button
+                              onClick={() => handleCloseMOClick(issue)}
+                              className="inline-flex items-center px-3 py-1.5 border border-orange-300 text-sm font-medium rounded-md text-orange-700 bg-orange-50 hover:bg-orange-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
+                            >
+                              Close
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -452,15 +553,27 @@ const Inconsistencies: React.FC = () => {
           )}
         </div>
 
-        {/* Delete MOP Confirmation Modal */}
+        {/* Delete MOP/MO Confirmation Modal */}
         <ConfirmModal
           isOpen={deleteModalOpen}
-          title="Delete Manufacturing Order Proposal"
-          message={`Are you sure you want to delete MOP ${issueToDelete?.productionOrderNumber}? This action cannot be undone and will permanently delete the planned order from M3.`}
-          confirmLabel={isDeleting ? 'Deleting...' : 'Delete MOP'}
+          title={issueToDelete?.productionOrderType === 'MOP' ? 'Delete Manufacturing Order Proposal' : 'Delete Manufacturing Order'}
+          message={`Are you sure you want to delete ${issueToDelete?.productionOrderType} ${issueToDelete?.productionOrderNumber}? This action cannot be undone and will permanently delete the order from M3.`}
+          confirmLabel={isDeleting ? 'Deleting...' : `Delete ${issueToDelete?.productionOrderType || 'Order'}`}
           cancelLabel="Cancel"
-          onConfirm={handleDeleteMOPConfirm}
+          onConfirm={issueToDelete?.productionOrderType === 'MOP' ? handleDeleteMOPConfirm : handleDeleteMOConfirm}
           onCancel={handleDeleteMOPCancel}
+          isDestructive={true}
+        />
+
+        {/* Close MO Confirmation Modal */}
+        <ConfirmModal
+          isOpen={closeMOModalOpen}
+          title="Close Manufacturing Order"
+          message={`Are you sure you want to close MO ${issueToClose?.productionOrderNumber}? This will mark the order as complete in M3. This action cannot be undone.`}
+          confirmLabel={isClosing ? 'Closing...' : 'Close MO'}
+          cancelLabel="Cancel"
+          onConfirm={handleCloseMOConfirm}
+          onCancel={handleCloseMOCancel}
           isDestructive={true}
         />
       </div>

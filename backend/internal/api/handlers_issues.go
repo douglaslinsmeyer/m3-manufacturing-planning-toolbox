@@ -407,6 +407,206 @@ func (s *Server) handleDeletePlannedMO(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDeleteMO deletes a Manufacturing Order (MO) via M3 API
+func (s *Server) handleDeleteMO(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse issue ID from URL
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	issueID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid issue ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get issue details to extract MO number
+	issue, err := s.db.GetIssueByID(ctx, issueID)
+	if err != nil {
+		http.Error(w, "Issue not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify this is an MO
+	if issue.ProductionOrderType.String != "MO" {
+		http.Error(w, "This operation is only valid for MOs", http.StatusBadRequest)
+		return
+	}
+
+	// Parse issue data JSON
+	var issueData map[string]interface{}
+	if err := json.Unmarshal([]byte(issue.IssueData), &issueData); err != nil {
+		http.Error(w, "Failed to parse issue data", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify status is <= 22
+	if statusStr, ok := issueData["status"].(string); ok {
+		if status, err := strconv.Atoi(statusStr); err == nil && status > 22 {
+			http.Error(w, "MO status is too advanced for deletion. Use Close instead.", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Call M3 API to delete the MO
+	params := map[string]string{
+		"MFNO": issue.ProductionOrderNumber.String,
+	}
+
+	// Add company if available from issue data
+	if companyStr, ok := issueData["company"].(string); ok {
+		params["CONO"] = companyStr
+	}
+
+	// Execute M3 API call
+	response, err := m3Client.Execute(ctx, "PMS100MI", "DltMO", params)
+	if err != nil {
+		log.Printf("Failed to delete MO %s: %v", issue.ProductionOrderNumber.String, err)
+		http.Error(w, fmt.Sprintf("Failed to delete MO: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Mark the MO as deleted in our database
+	err = s.db.MarkMOAsDeletedRemotely(ctx, issue.ProductionOrderNumber.String, issue.Facility)
+	if err != nil {
+		log.Printf("Failed to mark MO as deleted: %v", err)
+		// Continue anyway - M3 delete succeeded
+	}
+
+	// Create audit log entry
+	err = s.auditService.Log(ctx, services.AuditParams{
+		EntityType: "issue",
+		EntityID:   fmt.Sprintf("%d", issueID),
+		Operation:  "delete_mo",
+		Facility:   issue.Facility,
+		Metadata: map[string]interface{}{
+			"detector_type":           issue.DetectorType,
+			"production_order_number": issue.ProductionOrderNumber.String,
+			"production_order_type":   issue.ProductionOrderType.String,
+			"status":                  issueData["status"],
+			"m3_response":             response,
+		},
+		IPAddress: getIPAddress(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+	if err != nil {
+		// Log error but don't fail the request
+		log.Printf("Failed to create audit log: %v", err)
+	}
+
+	// Return success with M3 response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     true,
+		"m3_response": response,
+	})
+}
+
+// handleCloseMO closes a Manufacturing Order (MO) via M3 API
+func (s *Server) handleCloseMO(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse issue ID from URL
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	issueID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid issue ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get issue details
+	issue, err := s.db.GetIssueByID(ctx, issueID)
+	if err != nil {
+		http.Error(w, "Issue not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify this is an MO
+	if issue.ProductionOrderType.String != "MO" {
+		http.Error(w, "This operation is only valid for MOs", http.StatusBadRequest)
+		return
+	}
+
+	// Parse issue data JSON
+	var issueData map[string]interface{}
+	if err := json.Unmarshal([]byte(issue.IssueData), &issueData); err != nil {
+		http.Error(w, "Failed to parse issue data", http.StatusInternalServerError)
+		return
+	}
+
+	// Verify status is > 22
+	if statusStr, ok := issueData["status"].(string); ok {
+		if status, err := strconv.Atoi(statusStr); err == nil && status <= 22 {
+			http.Error(w, "MO status allows deletion. Use Delete instead.", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Call M3 API to close the MO
+	params := map[string]string{
+		"MFNO": issue.ProductionOrderNumber.String,
+		"FACI": issue.Facility,
+	}
+
+	// Execute M3 API call
+	response, err := m3Client.Execute(ctx, "PMS100MI", "CloseMO", params)
+	if err != nil {
+		log.Printf("Failed to close MO %s: %v", issue.ProductionOrderNumber.String, err)
+		http.Error(w, fmt.Sprintf("Failed to close MO: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Mark the MO as deleted (closed) in our database
+	err = s.db.MarkMOAsDeletedRemotely(ctx, issue.ProductionOrderNumber.String, issue.Facility)
+	if err != nil {
+		log.Printf("Failed to mark MO as closed: %v", err)
+		// Continue anyway - M3 close succeeded
+	}
+
+	// Create audit log entry
+	err = s.auditService.Log(ctx, services.AuditParams{
+		EntityType: "issue",
+		EntityID:   fmt.Sprintf("%d", issueID),
+		Operation:  "close_mo",
+		Facility:   issue.Facility,
+		Metadata: map[string]interface{}{
+			"detector_type":           issue.DetectorType,
+			"production_order_number": issue.ProductionOrderNumber.String,
+			"production_order_type":   issue.ProductionOrderType.String,
+			"status":                  issueData["status"],
+			"m3_response":             response,
+		},
+		IPAddress: getIPAddress(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+	if err != nil {
+		// Log error but don't fail the request
+		log.Printf("Failed to create audit log: %v", err)
+	}
+
+	// Return success with M3 response
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":     true,
+		"m3_response": response,
+	})
+}
+
 // getIPAddress extracts the client IP address from the request
 func getIPAddress(r *http.Request) string {
 	// Check for X-Forwarded-For header (proxy/load balancer)

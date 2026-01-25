@@ -212,6 +212,8 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/issues/{id}/ignore", s.handleIgnoreIssue).Methods("POST")
 	protected.HandleFunc("/issues/{id}/unignore", s.handleUnignoreIssue).Methods("POST")
 	protected.HandleFunc("/issues/{id}/delete-mop", s.handleDeletePlannedMO).Methods("POST")
+	protected.HandleFunc("/issues/{id}/delete-mo", s.handleDeleteMO).Methods("POST")
+	protected.HandleFunc("/issues/{id}/close-mo", s.handleCloseMO).Methods("POST")
 }
 
 // authMiddleware checks if the user is authenticated

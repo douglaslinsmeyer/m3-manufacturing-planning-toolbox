@@ -39,7 +39,8 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			fidt,
 			prno,
 			cono,
-			orty
+			orty,
+			whst
 		FROM manufacturing_orders
 		WHERE cono = $1
 		  AND faci = $2
@@ -55,9 +56,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 
 	for moRows.Next() {
 		var orderNumber, orderType, faci, whlo, itno, orderedQty, stdt, fidt, prno, cono string
-		var orty sql.NullString
+		var orty, whst sql.NullString
 
-		if err := moRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &prno, &cono, &orty); err != nil {
+		if err := moRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &prno, &cono, &orty, &whst); err != nil {
 			log.Printf("Error scanning MO row: %v", err)
 			continue
 		}
@@ -74,6 +75,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 		}
 		if orty.Valid {
 			issueData["mo_type"] = orty.String
+		}
+		if whst.Valid {
+			issueData["status"] = whst.String
 		}
 
 		if err := d.insertIssue(ctx, queries, orderNumber, orderType, faci, whlo, issueData); err != nil {

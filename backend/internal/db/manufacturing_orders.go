@@ -289,7 +289,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			lmdt, lmts,
 			linked_co_number, linked_co_line, linked_co_suffix, allocated_qty,
 			orty,
-			mo_id, sync_timestamp
+			mo_id, sync_timestamp, deleted_remotely
 		)
 		SELECT DISTINCT ON (mo.mfno)
 			'MO',
@@ -309,7 +309,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			mo.lmdt, mo.lmts,
 			mo.linked_co_number, mo.linked_co_line, mo.linked_co_suffix, mo.allocated_qty,
 			mo.orty,
-			mo.id, NOW()
+			mo.id, NOW(), mo.deleted_remotely
 		FROM manufacturing_orders mo
 		ORDER BY mo.mfno,
 		         CASE WHEN mo.lmdt = '' THEN '99999999' ELSE mo.lmdt END DESC,
@@ -343,10 +343,22 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			linked_co_suffix = EXCLUDED.linked_co_suffix,
 			allocated_qty = EXCLUDED.allocated_qty,
 			orty = EXCLUDED.orty,
+			deleted_remotely = EXCLUDED.deleted_remotely,
 			sync_timestamp = NOW(),
 			updated_at = NOW()
 	`
 
 	_, err := q.db.ExecContext(ctx, query)
+	return err
+}
+
+// MarkMOAsDeletedRemotely marks an MO as deleted/closed from M3
+func (q *Queries) MarkMOAsDeletedRemotely(ctx context.Context, mfno string, facility string) error {
+	query := `
+		UPDATE manufacturing_orders
+		SET deleted_remotely = true
+		WHERE mfno = $1 AND faci = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, mfno, facility)
 	return err
 }

@@ -258,6 +258,16 @@ class ApiService {
     return response.data;
   }
 
+  async deleteMO(issueId: number): Promise<{ success: boolean; m3_response?: any }> {
+    const response = await this.client.post(`/issues/${issueId}/delete-mo`);
+    return response.data;
+  }
+
+  async closeMO(issueId: number): Promise<{ success: boolean; m3_response?: any }> {
+    const response = await this.client.post(`/issues/${issueId}/close-mo`);
+    return response.data;
+  }
+
   async getTimeline(params?: {
     startDate?: string;
     endDate?: string;
