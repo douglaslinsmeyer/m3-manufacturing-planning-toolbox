@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import ManufacturingOrderDetail from './pages/ManufacturingOrderDetail';
 import PlannedOrderDetail from './pages/PlannedOrderDetail';
 import Inconsistencies from './pages/Inconsistencies';
+import Profile from './pages/Profile';
 
 // Protected route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -63,6 +64,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Inconsistencies />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/profile"
+            element={
+              <ProtectedRoute>
+                <Profile />
               </ProtectedRoute>
             }
           />

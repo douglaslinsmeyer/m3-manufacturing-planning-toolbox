@@ -5,6 +5,7 @@ import { api, IssueSummary } from '../services/api';
 import { AppLayout } from '../components/AppLayout';
 import { useSnapshotProgress } from '../hooks/useSnapshotProgress';
 import { IssueBreakdownHierarchy } from '../components/IssueBreakdownHierarchy';
+import PhaseProgressBar from '../components/PhaseProgressBar';
 import type { SnapshotSummary, SnapshotStatus } from '../types';
 
 function ArrowPathIcon({ className }: { className?: string }) {
@@ -241,39 +242,65 @@ const Dashboard: React.FC = () => {
               </p>
             )}
 
-            {/* Detailed metrics */}
-            <div className="flex flex-wrap gap-4 text-sm text-slate-600">
-              {snapshotStatus.coLinesProcessed !== undefined && snapshotStatus.coLinesProcessed > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="font-medium">Orders:</span>
-                  <span>{snapshotStatus.coLinesProcessed.toLocaleString()}</span>
-                </div>
-              )}
-              {snapshotStatus.mosProcessed !== undefined && snapshotStatus.mosProcessed > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="font-medium">MOs:</span>
-                  <span>{snapshotStatus.mosProcessed.toLocaleString()}</span>
-                </div>
-              )}
-              {snapshotStatus.mopsProcessed !== undefined && snapshotStatus.mopsProcessed > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="font-medium">MOPs:</span>
-                  <span>{snapshotStatus.mopsProcessed.toLocaleString()}</span>
-                </div>
-              )}
-              {snapshotStatus.recordsPerSecond && snapshotStatus.recordsPerSecond > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="font-medium">Rate:</span>
-                  <span>~{Math.round(snapshotStatus.recordsPerSecond)}/sec</span>
-                </div>
-              )}
-              {snapshotStatus.estimatedTimeRemaining && snapshotStatus.estimatedTimeRemaining > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="font-medium">ETA:</span>
-                  <span>~{Math.ceil(snapshotStatus.estimatedTimeRemaining)}s</span>
-                </div>
-              )}
-            </div>
+            {/* Parallel Phases Display */}
+            {snapshotStatus.parallelPhases && snapshotStatus.parallelPhases.length > 0 ? (
+              <div className="space-y-3 mb-4">
+                <h4 className="text-sm font-medium text-slate-700 mb-3">
+                  Loading Data in Parallel
+                </h4>
+                {snapshotStatus.parallelPhases.map((phase) => (
+                  <PhaseProgressBar
+                    key={phase.phase}
+                    phase={phase}
+                    label={
+                      phase.phase === 'mops' ? 'Planned Manufacturing Orders' :
+                      phase.phase === 'mos' ? 'Manufacturing Orders' :
+                      'Customer Order Lines'
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+              /* Fallback to legacy metrics display */
+              <div className="flex flex-wrap gap-4 text-sm text-slate-600 mb-4">
+                {snapshotStatus.coLinesProcessed !== undefined && snapshotStatus.coLinesProcessed > 0 && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">Orders:</span>
+                    <span>{snapshotStatus.coLinesProcessed.toLocaleString()}</span>
+                  </div>
+                )}
+                {snapshotStatus.mosProcessed !== undefined && snapshotStatus.mosProcessed > 0 && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">MOs:</span>
+                    <span>{snapshotStatus.mosProcessed.toLocaleString()}</span>
+                  </div>
+                )}
+                {snapshotStatus.mopsProcessed !== undefined && snapshotStatus.mopsProcessed > 0 && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">MOPs:</span>
+                    <span>{snapshotStatus.mopsProcessed.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Performance Metrics */}
+            {(snapshotStatus.recordsPerSecond || snapshotStatus.estimatedTimeRemaining) && (
+              <div className="pt-3 border-t border-slate-200 flex flex-wrap gap-4 text-sm text-slate-600 mb-3">
+                {snapshotStatus.recordsPerSecond && snapshotStatus.recordsPerSecond > 0 && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">Rate:</span>
+                    <span>~{Math.round(snapshotStatus.recordsPerSecond)}/sec</span>
+                  </div>
+                )}
+                {snapshotStatus.estimatedTimeRemaining && snapshotStatus.estimatedTimeRemaining > 0 && (
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium">ETA:</span>
+                    <span>~{Math.ceil(snapshotStatus.estimatedTimeRemaining)}s</span>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Error notice if SSE unavailable */}
             {sseError && (

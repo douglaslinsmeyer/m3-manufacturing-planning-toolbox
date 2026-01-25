@@ -92,6 +92,12 @@ const (
 	SubjectSnapshotComplete      = "snapshot.complete.%s"      // snapshot.complete.{jobID}
 	SubjectSnapshotError         = "snapshot.error.%s"         // snapshot.error.{jobID}
 
+	// Phase distribution subjects (for parallel execution)
+	SubjectSnapshotPhaseTRN      = "snapshot.phase.TRN.>"      // Wildcard for all TRN phase jobs
+	SubjectSnapshotPhasePRD      = "snapshot.phase.PRD.>"      // Wildcard for all PRD phase jobs
+	SubjectPhaseComplete         = "snapshot.phase.complete.%s" // snapshot.phase.complete.{parentJobId}
+	SubjectSnapshotFinalize      = "snapshot.finalize.%s"       // snapshot.finalize.{jobId}
+
 	// Analysis subjects
 	SubjectAnalysisRun           = "analysis.run"
 	SubjectAnalysisProgress      = "analysis.progress.%s"      // analysis.progress.{jobID}
@@ -99,6 +105,7 @@ const (
 
 	// Queue groups (for load balancing)
 	QueueGroupSnapshot           = "snapshot-workers"
+	QueueGroupPhaseWorkers       = "phase-workers"
 	QueueGroupAnalysis           = "analysis-workers"
 )
 
@@ -127,4 +134,14 @@ func GetCompleteSubject(jobID string) string {
 // GetErrorSubject returns the error subject for a job
 func GetErrorSubject(jobID string) string {
 	return fmt.Sprintf(SubjectSnapshotError, jobID)
+}
+
+// GetPhaseSubject returns subject for a specific phase job
+func GetPhaseSubject(environment, jobID, phase string) string {
+	return fmt.Sprintf("snapshot.phase.%s.%s.%s", environment, jobID, phase)
+}
+
+// GetPhaseCompleteSubject returns the phase completion subject
+func GetPhaseCompleteSubject(parentJobID string) string {
+	return fmt.Sprintf(SubjectPhaseComplete, parentJobID)
 }

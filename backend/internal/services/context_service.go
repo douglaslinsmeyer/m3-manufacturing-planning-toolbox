@@ -11,7 +11,8 @@ import (
 
 // ContextService manages user context (defaults and temporary overrides)
 type ContextService struct {
-	repository *ContextRepository
+	repository         *ContextRepository
+	userProfileService *UserProfileService
 }
 
 // NewContextService creates a new context service
@@ -19,6 +20,11 @@ func NewContextService(repository *ContextRepository) *ContextService {
 	return &ContextService{
 		repository: repository,
 	}
+}
+
+// SetUserProfileService sets the user profile service (for accessing M3 defaults from profile cache)
+func (s *ContextService) SetUserProfileService(userProfileService *UserProfileService) {
+	s.userProfileService = userProfileService
 }
 
 // EffectiveContext represents the calculated effective context
@@ -30,7 +36,33 @@ type EffectiveContext struct {
 }
 
 // LoadUserDefaults fetches user defaults from M3 and stores in session
+// Optimized to check profile cache first to avoid duplicate API calls
 func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions.Session, m3Client *m3api.Client) error {
+	// Priority 1: Try to get M3 defaults from profile cache (no API call)
+	if s.userProfileService != nil {
+		if userProfileID, ok := session.Values["user_profile_id"].(string); ok && userProfileID != "" {
+			if profile, err := s.userProfileService.GetProfile(ctx, userProfileID); err == nil && profile != nil {
+				if profile.M3Info != nil {
+					fmt.Printf("INFO: Loading user defaults from profile cache (no API call)\n")
+					session.Values["user_company"] = profile.M3Info.DefaultCompany
+					session.Values["user_division"] = profile.M3Info.DefaultDivision
+					session.Values["user_facility"] = profile.M3Info.DefaultFacility
+					session.Values["user_warehouse"] = profile.M3Info.DefaultWarehouse
+					session.Values["user_full_name"] = profile.M3Info.FullName
+
+					fmt.Printf("DEBUG LoadUserDefaults: Loaded from cache - Company: %s, Div: %s, Fac: %s, Whse: %s\n",
+						profile.M3Info.DefaultCompany,
+						profile.M3Info.DefaultDivision,
+						profile.M3Info.DefaultFacility,
+						profile.M3Info.DefaultWarehouse)
+					return nil
+				}
+			}
+		}
+	}
+
+	// Priority 2: Fallback to M3 API call (cache miss or no profile service)
+	fmt.Printf("INFO: Loading user defaults from M3 API (cache miss)\n")
 	userInfo, err := compass.GetUserInfo(ctx, m3Client)
 	if err != nil {
 		return err

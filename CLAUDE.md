@@ -293,3 +293,18 @@ SELECT STDT, FIDT FROM MMOPLP WHERE STDT IS NOT NULL LIMIT 1;
 - **To view logs**: `docker compose logs -f <service_name>`
 - **Never use**: `go run`, `pkill`, or direct process management
 - All service management must go through Docker Compose
+
+### Database Connection & Queries
+
+**IMPORTANT**: Always check `docker-compose.yml` for correct database connection details before querying:
+
+- **Container name**: `postgres` (use `docker compose exec postgres ...`)
+- **Database name**: `m3_planning` (NOT `m3planning`)
+- **User**: `postgres`
+- **Password**: `postgres`
+- **Connection string**: `postgresql://postgres:postgres@postgres:5432/m3_planning?sslmode=disable`
+
+**Example database query**:
+```bash
+docker compose exec postgres psql -U postgres -d m3_planning -c "SELECT * FROM user_profiles LIMIT 1;"
+```

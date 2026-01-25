@@ -1,7 +1,6 @@
 services:
   postgres:
     image: postgres:15-alpine
-    container_name: m3-planning-db
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -20,7 +19,6 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: m3-planning-backend
     ports:
       - "8080:8080"
     environment:
@@ -37,9 +35,26 @@ services:
         condition: service_started
     command: /app/server
 
+  backend-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - APP_ENV=development
+      - APP_PORT=8080
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/m3_planning?sslmode=disable
+      - NATS_URL=nats://nats:4222
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_started
+    command: /app/server
+
   nats:
     image: nats:latest
-    container_name: m3-planning-nats
     ports:
       - "4222:4222"  # Client connections
       - "8222:8222"  # HTTP management
@@ -50,7 +65,6 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    container_name: m3-planning-frontend
     ports:
       - "3000:3000"
     environment:

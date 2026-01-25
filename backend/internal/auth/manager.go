@@ -166,3 +166,7 @@ func generateRandomState() string {
 	// For now, using a simple timestamp-based state
 	return fmt.Sprintf("state-%d", time.Now().UnixNano())
 }
+
+// Note: User profiles are cached in Postgres (user_profiles table) with 15-min TTL
+// Session only stores user_profile_id for quick lookups
+// This avoids cookie size limits and enables horizontal scaling

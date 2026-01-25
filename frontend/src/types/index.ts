@@ -10,6 +10,39 @@ export interface AuthStatus {
   authenticated: boolean;
   environment?: 'TRN' | 'PRD';
   userContext?: UserContext;
+  userProfile?: UserProfile;
+}
+
+// User Profile types
+export interface UserProfile {
+  id: string;
+  userName: string;
+  displayName: string;
+  email?: string;
+  title?: string;
+  department?: string;
+  groups?: UserProfileGroup[];
+  m3Info?: M3UserInfo;
+}
+
+export interface UserProfileGroup {
+  value: string;
+  display: string;
+  type: string; // "Security Role" | "Accounting Entity" | "Distribution Group"
+}
+
+export interface M3UserInfo {
+  userId: string;
+  fullName: string;
+  defaultCompany: string;
+  defaultDivision: string;
+  defaultFacility: string;
+  defaultWarehouse: string;
+  languageCode: string;
+  dateFormat: string;
+  dateSeparator: string;
+  timeSeparator: string;
+  timeZone: string;
 }
 
 // M3 Organizational Hierarchy Types
@@ -236,6 +269,15 @@ export interface Inconsistency {
 }
 
 // Snapshot types
+export interface PhaseProgress {
+  phase: string;                    // "mops" | "mos" | "cos"
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  recordCount?: number;
+  startTime?: string;
+  endTime?: string;
+  error?: string;
+}
+
 export interface SnapshotStatus {
   jobId?: string;
   status: 'idle' | 'running' | 'completed' | 'failed';
@@ -244,6 +286,7 @@ export interface SnapshotStatus {
   currentStep?: string;
   completedSteps?: number;
   totalSteps?: number;
+  parallelPhases?: PhaseProgress[];  // NEW: Parallel phase tracking
   coLinesProcessed?: number;
   mosProcessed?: number;
   mopsProcessed?: number;

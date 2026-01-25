@@ -13,23 +13,34 @@ import (
 	"github.com/pinggolf/m3-planning-tools/internal/queue"
 )
 
+// PhaseProgress represents the status of a single parallel phase
+type PhaseProgress struct {
+	Phase       string    `json:"phase"`
+	Status      string    `json:"status"`
+	RecordCount int       `json:"recordCount"`
+	StartTime   time.Time `json:"startTime,omitempty"`
+	EndTime     time.Time `json:"endTime,omitempty"`
+	Error       string    `json:"error,omitempty"`
+}
+
 // ProgressUpdate represents a progress update message
 type ProgressUpdate struct {
-	JobID                     string  `json:"jobId"`
-	Status                    string  `json:"status"`
-	Progress                  int     `json:"progress"`
-	CurrentStep               string  `json:"currentStep,omitempty"`
-	CompletedSteps            int     `json:"completedSteps,omitempty"`
-	TotalSteps                int     `json:"totalSteps,omitempty"`
-	COLinesProcessed          int     `json:"coLinesProcessed,omitempty"`
-	MOsProcessed              int     `json:"mosProcessed,omitempty"`
-	MOPsProcessed             int     `json:"mopsProcessed,omitempty"`
-	RecordsPerSecond          float64 `json:"recordsPerSecond,omitempty"`
-	EstimatedSecondsRemaining int     `json:"estimatedTimeRemaining,omitempty"`
-	CurrentOperation          string  `json:"currentOperation,omitempty"`
-	CurrentBatch              int     `json:"currentBatch,omitempty"`
-	TotalBatches              int     `json:"totalBatches,omitempty"`
-	Error                     string  `json:"error,omitempty"`
+	JobID                     string          `json:"jobId"`
+	Status                    string          `json:"status"`
+	Progress                  int             `json:"progress"`
+	CurrentStep               string          `json:"currentStep,omitempty"`
+	CompletedSteps            int             `json:"completedSteps,omitempty"`
+	TotalSteps                int             `json:"totalSteps,omitempty"`
+	ParallelPhases            []PhaseProgress `json:"parallelPhases,omitempty"` // Parallel phase tracking
+	COLinesProcessed          int             `json:"coLinesProcessed,omitempty"`
+	MOsProcessed              int             `json:"mosProcessed,omitempty"`
+	MOPsProcessed             int             `json:"mopsProcessed,omitempty"`
+	RecordsPerSecond          float64         `json:"recordsPerSecond,omitempty"`
+	EstimatedSecondsRemaining int             `json:"estimatedTimeRemaining,omitempty"`
+	CurrentOperation          string          `json:"currentOperation,omitempty"`
+	CurrentBatch              int             `json:"currentBatch,omitempty"`
+	TotalBatches              int             `json:"totalBatches,omitempty"`
+	Error                     string          `json:"error,omitempty"`
 }
 
 // handleSnapshotProgressSSE streams real-time progress updates via Server-Sent Events

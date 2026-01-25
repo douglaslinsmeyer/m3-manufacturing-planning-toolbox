@@ -84,7 +84,7 @@ func main() {
 	log.Println("Snapshot worker started")
 
 	// Initialize API server
-	server := api.NewServer(cfg, queries, natsManager)
+	server := api.NewServer(cfg, queries, natsManager, database)
 
 	// Create HTTP server
 	httpServer := &http.Server{

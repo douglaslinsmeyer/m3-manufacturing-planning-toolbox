@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"fmt"
 	"net/http"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/pinggolf/m3-planning-tools/internal/compass"
 	"github.com/pinggolf/m3-planning-tools/internal/config"
 	"github.com/pinggolf/m3-planning-tools/internal/db"
+	"github.com/pinggolf/m3-planning-tools/internal/infor"
 	"github.com/pinggolf/m3-planning-tools/internal/m3api"
 	"github.com/pinggolf/m3-planning-tools/internal/queue"
 	"github.com/pinggolf/m3-planning-tools/internal/services"
@@ -18,19 +20,21 @@ import (
 
 // Server represents the API server
 type Server struct {
-	config         *config.Config
-	db             *db.Queries
-	router         *mux.Router
-	sessionStore   sessions.Store
-	authManager    *auth.Manager
-	natsManager    *queue.Manager
-	contextService *services.ContextService
-	auditService   *services.AuditService
+	config              *config.Config
+	db                  *db.Queries
+	router              *mux.Router
+	sessionStore        sessions.Store
+	authManager         *auth.Manager
+	natsManager         *queue.Manager
+	contextService      *services.ContextService
+	auditService        *services.AuditService
+	userProfileService  *services.UserProfileService
 }
 
 // NewServer creates a new API server instance
-func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manager) *Server {
-	// Initialize session store
+func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manager, database *sql.DB) *Server {
+	// Initialize session store (cookie-based for auth tokens only)
+	// User profiles stored in Postgres to avoid cookie size limits and enable scaling
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
 	sessionStore.Options = &sessions.Options{
 		Path:     "/",
@@ -51,15 +55,22 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 	// Initialize audit service
 	auditService := services.NewAuditService(queries)
 
+	// Initialize user profile service (uses raw DB for JSONB operations)
+	userProfileService := services.NewUserProfileService(database)
+
+	// Link user profile service to context service (for cache-first user defaults loading)
+	contextService.SetUserProfileService(userProfileService)
+
 	s := &Server{
-		config:         cfg,
-		db:             queries,
-		router:         mux.NewRouter(),
-		sessionStore:   sessionStore,
-		authManager:    authManager,
-		natsManager:    natsManager,
-		contextService: contextService,
-		auditService:   auditService,
+		config:             cfg,
+		db:                 queries,
+		router:             mux.NewRouter(),
+		sessionStore:       sessionStore,
+		authManager:        authManager,
+		natsManager:        natsManager,
+		contextService:     contextService,
+		auditService:       auditService,
+		userProfileService: userProfileService,
 	}
 
 	s.setupRoutes()
@@ -122,6 +133,37 @@ func (s *Server) getM3APIClient(r *http.Request) (*m3api.Client, error) {
 	return m3api.NewClient(envConfig.APIBaseURL, getToken), nil
 }
 
+// getInforClient returns an Infor API client for the current user session
+func (s *Server) getInforClient(r *http.Request) (*infor.Client, error) {
+	session, _ := s.sessionStore.Get(r, "m3-session")
+
+	// Get environment
+	environment, ok := session.Values["environment"].(string)
+	if !ok {
+		return nil, fmt.Errorf("no environment in session")
+	}
+
+	// Get environment config
+	envConfig, err := s.config.GetEnvironmentConfig(environment)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create token getter function
+	getToken := func() (string, error) {
+		// Refresh token if needed
+		if err := s.authManager.RefreshTokenIfNeeded(session); err != nil {
+			return "", err
+		}
+		return s.authManager.GetAccessToken(session)
+	}
+
+	// Base URL: https://mingle-ionapi.inforcloudsuite.com/{tenant}/
+	baseURL := fmt.Sprintf("https://mingle-ionapi.inforcloudsuite.com/%s/", envConfig.TenantID)
+
+	return infor.NewClient(baseURL, getToken), nil
+}
+
 // Router returns the configured HTTP router with CORS
 func (s *Server) Router() http.Handler {
 	// Configure CORS
@@ -155,6 +197,9 @@ func (s *Server) setupRoutes() {
 	// User context routes (for selecting company/division/facility/warehouse)
 	authRouter.HandleFunc("/context", s.handleGetContext).Methods("GET")
 	authRouter.HandleFunc("/context", s.handleSetContext).Methods("POST")
+
+	// User profile routes (require authentication)
+	authRouter.HandleFunc("/profile/refresh", s.handleRefreshProfile).Methods("POST")
 
 	// Protected routes (require authentication)
 	protected := api.PathPrefix("").Subrouter()

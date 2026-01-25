@@ -2,6 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import type {
   AuthStatus,
   UserContext,
+  UserProfile,
   ManufacturingOrder,
   PlannedManufacturingOrder,
   Inconsistency,
@@ -76,6 +77,11 @@ class ApiService {
 
   async logout(): Promise<void> {
     await this.client.post('/auth/logout');
+  }
+
+  async refreshProfile(): Promise<UserProfile> {
+    const response = await this.client.post('/auth/profile/refresh');
+    return response.data;
   }
 
   async getAuthStatus(): Promise<AuthStatus> {
