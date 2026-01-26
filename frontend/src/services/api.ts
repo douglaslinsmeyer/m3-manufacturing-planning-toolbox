@@ -14,6 +14,8 @@ import type {
   M3Division,
   M3Facility,
   M3Warehouse,
+  UserSettings,
+  SystemSettingsGrouped,
 } from '../types';
 
 // IssueSummary represents aggregated issue counts from the backend
@@ -244,6 +246,26 @@ class ApiService {
   }): Promise<any> {
     const response = await this.client.get('/analysis/timeline', { params });
     return response.data;
+  }
+
+  // User Settings
+  async getUserSettings(): Promise<UserSettings> {
+    const response = await this.client.get('/settings/user');
+    return response.data;
+  }
+
+  async updateUserSettings(settings: Partial<UserSettings>): Promise<void> {
+    await this.client.put('/settings/user', settings);
+  }
+
+  // System Settings (admin only)
+  async getSystemSettings(): Promise<SystemSettingsGrouped> {
+    const response = await this.client.get('/settings/system');
+    return response.data;
+  }
+
+  async updateSystemSettings(settings: Record<string, string>): Promise<void> {
+    await this.client.put('/settings/system', { settings });
   }
 }
 

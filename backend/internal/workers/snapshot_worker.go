@@ -93,6 +93,32 @@ type PhaseCompletionMessage struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// DataBatchJobMessage represents work for a data batch (ID range)
+type DataBatchJobMessage struct {
+	JobID        string      `json:"jobId"`
+	ParentJobID  string      `json:"parentJobId"`
+	Phase        string      `json:"phase"`        // "mops", "mos", "cos"
+	BatchNumber  int         `json:"batchNumber"`  // 1-based
+	TotalBatches int         `json:"totalBatches"`
+	MinID        interface{} `json:"minId"`        // int64 for PLPN, string for MFNO/ORNO
+	MaxID        interface{} `json:"maxId"`        // int64 for PLPN, string for MFNO/ORNO
+	Environment  string      `json:"environment"`
+	AccessToken  string      `json:"accessToken"`
+	Company      string      `json:"company"`
+	Facility     string      `json:"facility"`
+}
+
+// BatchCompletionMessage signals batch completion
+type BatchCompletionMessage struct {
+	JobID        string `json:"jobId"`
+	ParentJobID  string `json:"parentJobId"`
+	Phase        string `json:"phase"`
+	BatchNumber  int    `json:"batchNumber"`
+	RecordCount  int    `json:"recordCount"`
+	Success      bool   `json:"success"`
+	Error        string `json:"error,omitempty"`
+}
+
 // Start starts the snapshot worker and subscribes to NATS subjects
 func (w *SnapshotWorker) Start() error {
 	log.Println("Starting snapshot worker...")
@@ -138,11 +164,31 @@ func (w *SnapshotWorker) Start() error {
 		return fmt.Errorf("failed to subscribe to PRD phase jobs: %w", err)
 	}
 
+	// Subscribe to TRN batch work distribution (batch worker for ID range-based batching)
+	_, err = w.nats.QueueSubscribe(
+		queue.SubjectSnapshotBatchTRN,
+		queue.QueueGroupBatchWorkers,
+		w.handleBatchJob,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to TRN batch jobs: %w", err)
+	}
+
+	// Subscribe to PRD batch work distribution (batch worker)
+	_, err = w.nats.QueueSubscribe(
+		queue.SubjectSnapshotBatchPRD,
+		queue.QueueGroupBatchWorkers,
+		w.handleBatchJob,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to PRD batch jobs: %w", err)
+	}
+
 	// IMPORTANT: Limit concurrent message processing by handling synchronously
 	// Each worker will process one message at a time, allowing NATS to distribute
 	// the remaining messages to other available workers
 
-	log.Println("Snapshot worker started and listening for jobs and phase work")
+	log.Println("Snapshot worker started and listening for jobs, phase work, and batch work")
 	return nil
 }
 
@@ -206,10 +252,11 @@ func (w *SnapshotWorker) processRefreshWithRetry(req SnapshotRefreshMessage) err
 	return nil
 }
 
-// processRefresh coordinates the parallel data refresh using NATS phase distribution
+// processRefresh coordinates parallel data refresh using NATS batch distribution with ID range partitioning
+// Optimized for Apache Spark: Uses predicate pushdown (WHERE ID >= X AND ID < Y) instead of OFFSET/LIMIT
 func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 	ctx := context.Background()
-	log.Printf("Coordinating refresh job %s", req.JobID)
+	log.Printf("Coordinating refresh job %s with parallel ID range batching", req.JobID)
 
 	// Start the job
 	if err := w.db.StartJob(ctx, req.JobID); err != nil {
@@ -219,7 +266,7 @@ func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 	// Phase 0: Truncate database (must complete first)
 	log.Printf("Phase 0: Truncating database for job %s", req.JobID)
 	w.publishDetailedProgress(req.JobID, "running", "Preparing database", "Truncating tables",
-		0, 5, 0, 0, 0, 0, 0, 0, 0, 0)
+		0, 6, 0, 0, 0, 0, 0, 0, 0, 0)
 
 	envConfig, err := w.config.GetEnvironmentConfig(req.Environment)
 	if err != nil {
@@ -241,41 +288,95 @@ func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 	}
 
 	log.Printf("Phase 0 complete: Database truncated")
-	w.publishDetailedProgress(req.JobID, "running", "Database prepared", "Starting parallel data load",
-		1, 5, 20, 0, 0, 0, 0, 0, 0, 0)
+	w.publishDetailedProgress(req.JobID, "running", "Database prepared", "Analyzing dataset ranges",
+		1, 6, 10, 0, 0, 0, 0, 0, 0, 0)
 
-	// Phases 1-3: Publish 3 phase jobs to NATS queue for parallel execution
-	phases := []string{"mops", "mos", "cos"}
-	for i, phase := range phases {
-		phaseJob := PhaseJobMessage{
-			JobID:       fmt.Sprintf("%s-%s", req.JobID, phase),
-			ParentJobID: req.JobID,
-			Phase:       phase,
-			Environment: req.Environment,
-			AccessToken: req.AccessToken,
-			Company:     req.Company,
-			Facility:    req.Facility,
-		}
+	// Phase 1: Query MIN/MAX/COUNT for all 3 entity types (parallel)
+	log.Printf("Phase 1: Querying data ranges (MIN/MAX/COUNT)...")
 
-		data, _ := json.Marshal(phaseJob)
-		subject := queue.GetPhaseSubject(req.Environment, req.JobID, phase)
-		if err := w.nats.Publish(subject, data); err != nil {
-			log.Printf("Failed to publish phase job %s: %v", phase, err)
-			w.publishError(req.JobID, fmt.Sprintf("Failed to publish phase %s: %v", phase, err))
-			w.db.FailJob(ctx, req.JobID, err.Error())
-			return fmt.Errorf("failed to publish phase %s: %w", phase, err)
-		}
-		log.Printf("Published phase job: %s to %s", phase, subject)
-
-		// Add small delay between publishes to allow NATS to distribute round-robin
-		// This prevents one worker from grabbing all messages before others can respond
-		if i < len(phases)-1 {
-			time.Sleep(50 * time.Millisecond)
-		}
+	type rangeResult struct {
+		phase string
+		meta  *services.RangeMetadata
+		err   error
 	}
 
-	// Wait for all phases to complete and then finalize
-	return w.waitForPhasesAndFinalize(req, snapshotService)
+	rangeChan := make(chan rangeResult, 3)
+
+	// Query ranges in parallel
+	go func() {
+		meta, err := snapshotService.QueryMOPRange(ctx, req.Company, req.Facility)
+		rangeChan <- rangeResult{"mops", meta, err}
+	}()
+	go func() {
+		meta, err := snapshotService.QueryMORange(ctx, req.Company, req.Facility)
+		rangeChan <- rangeResult{"mos", meta, err}
+	}()
+	go func() {
+		meta, err := snapshotService.QueryCORange(ctx, req.Company, req.Facility)
+		rangeChan <- rangeResult{"cos", meta, err}
+	}()
+
+	// Collect range results
+	ranges := make(map[string]*services.RangeMetadata)
+	for i := 0; i < 3; i++ {
+		result := <-rangeChan
+		if result.err != nil {
+			errMsg := fmt.Sprintf("Range query failed for %s: %v", result.phase, result.err)
+			w.publishError(req.JobID, errMsg)
+			w.db.FailJob(ctx, req.JobID, result.err.Error())
+			return fmt.Errorf(errMsg)
+		}
+		ranges[result.phase] = result.meta
+	}
+
+	log.Printf("Data ranges - MOPs: %d records, MOs: %d records, COs: %d records",
+		ranges["mops"].TotalRecords,
+		ranges["mos"].TotalRecords,
+		ranges["cos"].TotalRecords)
+
+	w.publishDetailedProgress(req.JobID, "running", "Ranges queried", "Calculating batch partitions",
+		2, 6, 20,
+		0, 0, 0,
+		0, 0, 0, 0)
+
+	// Phase 2: Calculate batch ranges
+	log.Printf("Phase 2: Calculating batch partitions...")
+
+	// Load batching settings
+	batchSize := services.LoadSystemSettingInt(w.db, "compass_batch_size", 50000)
+	overPartitionFactor := services.LoadSystemSettingFloat(w.db, "compass_over_partition_factor", 1.5)
+
+	log.Printf("Batching settings: batch_size=%d, over_partition_factor=%.1f", batchSize, overPartitionFactor)
+
+	mopBatches := services.CalculateBatchRanges(*ranges["mops"], batchSize, overPartitionFactor)
+	moBatches := services.CalculateBatchRanges(*ranges["mos"], batchSize, overPartitionFactor)
+	coBatches := services.CalculateBatchRanges(*ranges["cos"], batchSize, overPartitionFactor)
+
+	totalBatches := len(mopBatches) + len(moBatches) + len(coBatches)
+
+	// Count single batches for small datasets (nil = no partitioning, use full query)
+	if len(mopBatches) == 0 && ranges["mops"].TotalRecords > 0 {
+		totalBatches++
+	}
+	if len(moBatches) == 0 && ranges["mos"].TotalRecords > 0 {
+		totalBatches++
+	}
+	if len(coBatches) == 0 && ranges["cos"].TotalRecords > 0 {
+		totalBatches++
+	}
+
+	log.Printf("Batch plan: %d MOP batches, %d MO batches, %d CO batches (total: %d)",
+		len(mopBatches), len(moBatches), len(coBatches), totalBatches)
+
+	if totalBatches == 0 {
+		log.Printf("No data to load, skipping to finalize")
+		w.publishDetailedProgress(req.JobID, "running", "No data found", "Running finalize",
+			3, 6, 80, 0, 0, 0, 0, 0, 0, 0)
+		return w.runFinalizeForBatches(req, map[string]int{"mops": 0, "mos": 0, "cos": 0})
+	}
+
+	// Phase 3: Publish batch jobs to NATS and wait for completion
+	return w.publishAndWaitForBatches(req, mopBatches, moBatches, coBatches, ranges, totalBatches)
 }
 
 // publishProgress publishes a progress update to NATS
@@ -627,4 +728,446 @@ func getRecordCount(completions map[string]*PhaseCompletionMessage, phase string
 		return c.RecordCount
 	}
 	return 0
+}
+
+// ========================================
+// Batch Processing Handlers
+// ========================================
+
+// handleBatchJob processes a single data batch with ID range filtering
+// This is the worker that executes parallel batches distributed via NATS
+func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
+	var job DataBatchJobMessage
+	if err := json.Unmarshal(msg.Data, &job); err != nil {
+		log.Printf("Failed to parse batch job: %v", err)
+		return
+	}
+
+	log.Printf("Processing batch %d/%d for %s (range: %v-%v)",
+		job.BatchNumber, job.TotalBatches, job.Phase, job.MinID, job.MaxID)
+
+	ctx := context.Background()
+
+	// Get environment config
+	envConfig, err := w.config.GetEnvironmentConfig(job.Environment)
+	if err != nil {
+		log.Printf("Failed to get environment config: %v", err)
+		w.publishBatchCompletion(job, 0, err)
+		return
+	}
+
+	// Create Compass client
+	getToken := func() (string, error) {
+		return job.AccessToken, nil
+	}
+	compassClient := compass.NewClient(envConfig.CompassBaseURL, getToken)
+	snapshotService := services.NewSnapshotService(compassClient, w.db)
+
+	var recordCount int
+	var fetchErr error
+
+	// Execute batch query based on phase and ID type
+	switch job.Phase {
+	case "mops":
+		// Numeric ID (PLPN)
+		minID, okMin := job.MinID.(float64) // JSON unmarshals numbers as float64
+		maxID, okMax := job.MaxID.(float64)
+		if !okMin || !okMax {
+			log.Printf("Invalid ID types for MOP batch: minID=%T, maxID=%T", job.MinID, job.MaxID)
+			w.publishBatchCompletion(job, 0, fmt.Errorf("invalid ID types"))
+			return
+		}
+		recordCount, fetchErr = snapshotService.RefreshMOPBatch(ctx, job.Company, job.Facility,
+			int64(minID), int64(maxID))
+
+	case "mos":
+		// String ID (MFNO)
+		minID, okMin := job.MinID.(string)
+		maxID, okMax := job.MaxID.(string)
+		if !okMin || !okMax {
+			log.Printf("Invalid ID types for MO batch: minID=%T, maxID=%T", job.MinID, job.MaxID)
+			w.publishBatchCompletion(job, 0, fmt.Errorf("invalid ID types"))
+			return
+		}
+		recordCount, fetchErr = snapshotService.RefreshMOBatch(ctx, job.Company, job.Facility, minID, maxID)
+
+	case "cos":
+		// String ID (ORNO)
+		minID, okMin := job.MinID.(string)
+		maxID, okMax := job.MaxID.(string)
+		if !okMin || !okMax {
+			log.Printf("Invalid ID types for CO batch: minID=%T, maxID=%T", job.MinID, job.MaxID)
+			w.publishBatchCompletion(job, 0, fmt.Errorf("invalid ID types"))
+			return
+		}
+		recordCount, fetchErr = snapshotService.RefreshCOBatch(ctx, job.Company, job.Facility, minID, maxID)
+
+	default:
+		log.Printf("Unknown phase: %s", job.Phase)
+		w.publishBatchCompletion(job, 0, fmt.Errorf("unknown phase: %s", job.Phase))
+		return
+	}
+
+	// Publish batch completion
+	w.publishBatchCompletion(job, recordCount, fetchErr)
+}
+
+// publishBatchCompletion publishes a batch completion message
+func (w *SnapshotWorker) publishBatchCompletion(job DataBatchJobMessage, recordCount int, err error) {
+	completion := BatchCompletionMessage{
+		JobID:       job.JobID,
+		ParentJobID: job.ParentJobID,
+		Phase:       job.Phase,
+		BatchNumber: job.BatchNumber,
+		RecordCount: recordCount,
+		Success:     err == nil,
+	}
+	if err != nil {
+		completion.Error = err.Error()
+		log.Printf("Batch %d/%d for %s failed: %v", job.BatchNumber, job.TotalBatches, job.Phase, err)
+	} else {
+		log.Printf("Batch %d/%d for %s completed: %d records", job.BatchNumber, job.TotalBatches, job.Phase, recordCount)
+	}
+
+	data, _ := json.Marshal(completion)
+	completeSubject := queue.GetBatchCompleteSubject(job.ParentJobID)
+	if err := w.nats.Publish(completeSubject, data); err != nil {
+		log.Printf("Failed to publish batch completion: %v", err)
+	}
+}
+
+// publishAndWaitForBatches publishes batch jobs to NATS and waits for all to complete
+func (w *SnapshotWorker) publishAndWaitForBatches(
+	req SnapshotRefreshMessage,
+	mopBatches, moBatches, coBatches []services.BatchRange,
+	ranges map[string]*services.RangeMetadata,
+	totalBatches int,
+) error {
+	ctx := context.Background()
+
+	log.Printf("Phase 3: Publishing %d batch jobs to NATS queue...", totalBatches)
+	w.publishDetailedProgress(req.JobID, "running", "Publishing batch jobs", "Distributing work to workers",
+		3, 6, 30, 0, 0, 0, 0, 0, 0, totalBatches)
+
+	batchCount := 0
+
+	// Publish MOP batches
+	if len(mopBatches) > 0 {
+		for _, batch := range mopBatches {
+			batchJob := DataBatchJobMessage{
+				JobID:        fmt.Sprintf("%s-mop-b%d", req.JobID, batch.BatchNumber),
+				ParentJobID:  req.JobID,
+				Phase:        "mops",
+				BatchNumber:  batch.BatchNumber,
+				TotalBatches: len(mopBatches),
+				MinID:        batch.MinID,
+				MaxID:        batch.MaxID,
+				Environment:  req.Environment,
+				AccessToken:  req.AccessToken,
+				Company:      req.Company,
+				Facility:     req.Facility,
+			}
+
+			data, _ := json.Marshal(batchJob)
+			subject := queue.GetBatchSubject(req.Environment, "mops")
+			if err := w.nats.Publish(subject, data); err != nil {
+				log.Printf("Failed to publish MOP batch: %v", err)
+				w.publishError(req.JobID, fmt.Sprintf("Failed to publish batch: %v", err))
+				w.db.FailJob(ctx, req.JobID, err.Error())
+				return err
+			}
+			batchCount++
+		}
+		log.Printf("Published %d MOP batch jobs", len(mopBatches))
+	} else if ranges["mops"].TotalRecords > 0 {
+		// Single batch (no partitioning) - use full MIN/MAX range
+		batchJob := DataBatchJobMessage{
+			JobID:        fmt.Sprintf("%s-mop-b1", req.JobID),
+			ParentJobID:  req.JobID,
+			Phase:        "mops",
+			BatchNumber:  1,
+			TotalBatches: 1,
+			MinID:        ranges["mops"].MinID,
+			MaxID:        ranges["mops"].MaxID,
+			Environment:  req.Environment,
+			AccessToken:  req.AccessToken,
+			Company:      req.Company,
+			Facility:     req.Facility,
+		}
+
+		data, _ := json.Marshal(batchJob)
+		subject := queue.GetBatchSubject(req.Environment, "mops")
+		if err := w.nats.Publish(subject, data); err != nil {
+			log.Printf("Failed to publish MOP batch: %v", err)
+			w.publishError(req.JobID, fmt.Sprintf("Failed to publish batch: %v", err))
+			w.db.FailJob(ctx, req.JobID, err.Error())
+			return err
+		}
+		batchCount++
+		log.Printf("Published 1 MOP batch job (no partitioning)")
+	}
+
+	// Publish MO batches
+	if len(moBatches) > 0 {
+		for _, batch := range moBatches {
+			batchJob := DataBatchJobMessage{
+				JobID:        fmt.Sprintf("%s-mo-b%d", req.JobID, batch.BatchNumber),
+				ParentJobID:  req.JobID,
+				Phase:        "mos",
+				BatchNumber:  batch.BatchNumber,
+				TotalBatches: len(moBatches),
+				MinID:        batch.MinID,
+				MaxID:        batch.MaxID,
+				Environment:  req.Environment,
+				AccessToken:  req.AccessToken,
+				Company:      req.Company,
+				Facility:     req.Facility,
+			}
+
+			data, _ := json.Marshal(batchJob)
+			subject := queue.GetBatchSubject(req.Environment, "mos")
+			if err := w.nats.Publish(subject, data); err != nil {
+				log.Printf("Failed to publish MO batch: %v", err)
+				w.publishError(req.JobID, fmt.Sprintf("Failed to publish batch: %v", err))
+				w.db.FailJob(ctx, req.JobID, err.Error())
+				return err
+			}
+			batchCount++
+		}
+		log.Printf("Published %d MO batch jobs", len(moBatches))
+	} else if ranges["mos"].TotalRecords > 0 {
+		batchJob := DataBatchJobMessage{
+			JobID:        fmt.Sprintf("%s-mo-b1", req.JobID),
+			ParentJobID:  req.JobID,
+			Phase:        "mos",
+			BatchNumber:  1,
+			TotalBatches: 1,
+			MinID:        ranges["mos"].MinID,
+			MaxID:        ranges["mos"].MaxID,
+			Environment:  req.Environment,
+			AccessToken:  req.AccessToken,
+			Company:      req.Company,
+			Facility:     req.Facility,
+		}
+
+		data, _ := json.Marshal(batchJob)
+		subject := queue.GetBatchSubject(req.Environment, "mos")
+		if err := w.nats.Publish(subject, data); err != nil {
+			log.Printf("Failed to publish MO batch: %v", err)
+			w.publishError(req.JobID, fmt.Sprintf("Failed to publish batch: %v", err))
+			w.db.FailJob(ctx, req.JobID, err.Error())
+			return err
+		}
+		batchCount++
+		log.Printf("Published 1 MO batch job (no partitioning)")
+	}
+
+	// Publish CO batches
+	if len(coBatches) > 0 {
+		for _, batch := range coBatches {
+			batchJob := DataBatchJobMessage{
+				JobID:        fmt.Sprintf("%s-co-b%d", req.JobID, batch.BatchNumber),
+				ParentJobID:  req.JobID,
+				Phase:        "cos",
+				BatchNumber:  batch.BatchNumber,
+				TotalBatches: len(coBatches),
+				MinID:        batch.MinID,
+				MaxID:        batch.MaxID,
+				Environment:  req.Environment,
+				AccessToken:  req.AccessToken,
+				Company:      req.Company,
+				Facility:     req.Facility,
+			}
+
+			data, _ := json.Marshal(batchJob)
+			subject := queue.GetBatchSubject(req.Environment, "cos")
+			if err := w.nats.Publish(subject, data); err != nil {
+				log.Printf("Failed to publish CO batch: %v", err)
+				w.publishError(req.JobID, fmt.Sprintf("Failed to publish batch: %v", err))
+				w.db.FailJob(ctx, req.JobID, err.Error())
+				return err
+			}
+			batchCount++
+		}
+		log.Printf("Published %d CO batch jobs", len(coBatches))
+	} else if ranges["cos"].TotalRecords > 0 {
+		batchJob := DataBatchJobMessage{
+			JobID:        fmt.Sprintf("%s-co-b1", req.JobID),
+			ParentJobID:  req.JobID,
+			Phase:        "cos",
+			BatchNumber:  1,
+			TotalBatches: 1,
+			MinID:        ranges["cos"].MinID,
+			MaxID:        ranges["cos"].MaxID,
+			Environment:  req.Environment,
+			AccessToken:  req.AccessToken,
+			Company:      req.Company,
+			Facility:     req.Facility,
+		}
+
+		data, _ := json.Marshal(batchJob)
+		subject := queue.GetBatchSubject(req.Environment, "cos")
+		if err := w.nats.Publish(subject, data); err != nil {
+			log.Printf("Failed to publish CO batch: %v", err)
+			w.publishError(req.JobID, fmt.Sprintf("Failed to publish batch: %v", err))
+			w.db.FailJob(ctx, req.JobID, err.Error())
+			return err
+		}
+		batchCount++
+		log.Printf("Published 1 CO batch job (no partitioning)")
+	}
+
+	log.Printf("Published %d total batch jobs, waiting for completion...", batchCount)
+
+	// Wait for all batches to complete
+	return w.waitForBatchesAndFinalize(req, batchCount, ranges)
+}
+
+// waitForBatchesAndFinalize waits for all batches to complete, then runs finalize and detection
+func (w *SnapshotWorker) waitForBatchesAndFinalize(
+	req SnapshotRefreshMessage,
+	totalBatches int,
+	ranges map[string]*services.RangeMetadata,
+) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	log.Printf("Phase 4: Waiting for %d batches to complete...", totalBatches)
+
+	// Track batch completions
+	completedBatches := 0
+	recordsByPhase := map[string]int{
+		"mops": 0,
+		"mos":  0,
+		"cos":  0,
+	}
+	var mu sync.Mutex
+
+	// Subscribe to batch completion events
+	completeSubject := queue.GetBatchCompleteSubject(req.JobID)
+	sub, err := w.nats.Subscribe(completeSubject, func(msg *nats.Msg) {
+		var completion BatchCompletionMessage
+		if err := json.Unmarshal(msg.Data, &completion); err != nil {
+			log.Printf("Failed to parse batch completion: %v", err)
+			return
+		}
+
+		mu.Lock()
+		completedBatches++
+		recordsByPhase[completion.Phase] += completion.RecordCount
+
+		// Calculate progress percentage (batches are 30-70% of total work)
+		batchProgress := 30 + int(float64(completedBatches)/float64(totalBatches)*40)
+
+		log.Printf("Batch %d/%d completed: %s batch %d, %d records (total %s: %d)",
+			completedBatches, totalBatches,
+			completion.Phase, completion.BatchNumber, completion.RecordCount,
+			completion.Phase, recordsByPhase[completion.Phase])
+
+		// Publish detailed progress update
+		w.publishDetailedProgress(req.JobID, "running",
+			"Loading data batches",
+			fmt.Sprintf("Batch %d/%d complete", completedBatches, totalBatches),
+			4, 6, batchProgress,
+			recordsByPhase["cos"], recordsByPhase["mos"], recordsByPhase["mops"],
+			0, 0, completedBatches, totalBatches)
+
+		mu.Unlock()
+	})
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to subscribe to batch completions: %v", err)
+		w.publishError(req.JobID, errMsg)
+		w.db.FailJob(context.Background(), req.JobID, errMsg)
+		return fmt.Errorf(errMsg)
+	}
+	defer sub.Unsubscribe()
+
+	// Wait for all batches with timeout
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			errMsg := fmt.Sprintf("Timeout waiting for batches (%d/%d completed)", completedBatches, totalBatches)
+			w.publishError(req.JobID, errMsg)
+			w.db.FailJob(context.Background(), req.JobID, errMsg)
+			return fmt.Errorf(errMsg)
+
+		case <-ticker.C:
+			mu.Lock()
+			complete := completedBatches >= totalBatches
+			mu.Unlock()
+
+			if complete {
+				log.Printf("All %d batches completed successfully", totalBatches)
+				log.Printf("Total records loaded - MOPs: %d, MOs: %d, COs: %d",
+					recordsByPhase["mops"], recordsByPhase["mos"], recordsByPhase["cos"])
+
+				// Run finalize and detection
+				return w.runFinalizeForBatches(req, recordsByPhase)
+			}
+		}
+	}
+}
+
+// runFinalizeForBatches executes finalize and detection phases after batches complete
+func (w *SnapshotWorker) runFinalizeForBatches(req SnapshotRefreshMessage, recordsByPhase map[string]int) error {
+	ctx := context.Background()
+
+	// Phase 5: Finalize unified views
+	log.Printf("Phase 5: Running finalize for job %s", req.JobID)
+	w.publishDetailedProgress(req.JobID, "running", "Finalizing data", "Updating production orders view",
+		5, 6, 80,
+		recordsByPhase["cos"],
+		recordsByPhase["mos"],
+		recordsByPhase["mops"],
+		0, 0, 0, 0)
+
+	if err := w.db.UpdateProductionOrdersFromMOPs(ctx); err != nil {
+		errMsg := fmt.Sprintf("Finalize MOPs failed: %v", err)
+		w.publishError(req.JobID, errMsg)
+		w.db.FailJob(ctx, req.JobID, err.Error())
+		return fmt.Errorf(errMsg)
+	}
+
+	if err := w.db.UpdateProductionOrdersFromMOs(ctx); err != nil {
+		errMsg := fmt.Sprintf("Finalize MOs failed: %v", err)
+		w.publishError(req.JobID, errMsg)
+		w.db.FailJob(ctx, req.JobID, err.Error())
+		return fmt.Errorf(errMsg)
+	}
+
+	// Phase 6: Detection
+	log.Printf("Phase 6: Running detection for job %s", req.JobID)
+	w.publishDetailedProgress(req.JobID, "running", "Running issue detectors", "Analyzing data",
+		6, 6, 90,
+		recordsByPhase["cos"],
+		recordsByPhase["mos"],
+		recordsByPhase["mops"],
+		0, 0, 0, 0)
+
+	detectionService := services.NewDetectionService(w.db)
+	if err := detectionService.RunAllDetectors(ctx, req.JobID, req.Company, req.Facility); err != nil {
+		log.Printf("Detection warning: %v", err)
+		// Don't fail job on detection errors
+	}
+
+	// Mark job complete
+	w.db.CompleteJob(ctx, req.JobID)
+	w.publishDetailedProgress(req.JobID, "completed", "Data refresh completed", "All data loaded successfully",
+		6, 6, 100,
+		recordsByPhase["cos"],
+		recordsByPhase["mos"],
+		recordsByPhase["mops"],
+		0, 0, 0, 0)
+	w.publishComplete(req.JobID)
+
+	log.Printf("Refresh job %s completed successfully - MOPs: %d, MOs: %d, COs: %d",
+		req.JobID,
+		recordsByPhase["mops"],
+		recordsByPhase["mos"],
+		recordsByPhase["cos"])
+
+	return nil
 }

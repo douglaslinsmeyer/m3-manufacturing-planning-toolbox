@@ -106,7 +106,7 @@ func (s *UserProfileService) HasRole(ctx context.Context, userID string, roleDis
 			SELECT 1 FROM user_profiles
 			WHERE user_id = $1
 			AND expires_at > NOW()
-			AND profile_data @> jsonb_build_object('groups', jsonb_build_array(jsonb_build_object('display', $2)))
+			AND profile_data @> jsonb_build_object('groups', jsonb_build_array(jsonb_build_object('display', $2::text)))
 		)
 	`
 

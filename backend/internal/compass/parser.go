@@ -982,3 +982,27 @@ func getBool(record map[string]interface{}, key string) bool {
 	}
 	return false
 }
+
+// ========================================
+// Public Helpers for External Packages
+// ========================================
+
+// GetString safely extracts a string value from a Compass record
+func GetString(record map[string]interface{}, key string) string {
+	return getString(record, key)
+}
+
+// GetInt safely extracts an integer value from a Compass record
+func GetInt(record map[string]interface{}, key string) int {
+	return getInt(record, key)
+}
+
+// GetInt64 safely extracts an int64 value from a Compass record
+func GetInt64(record map[string]interface{}, key string) int64 {
+	return getInt64(record, key)
+}
+
+// GetFloat safely extracts a float64 value from a Compass record
+func GetFloat(record map[string]interface{}, key string) float64 {
+	return getFloat(record, key)
+}

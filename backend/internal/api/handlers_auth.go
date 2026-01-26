@@ -299,7 +299,48 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	// Get combined user profile from Postgres cache (15-min TTL)
 	var userProfile *UserProfileResponse
 	if userProfileID, ok := session.Values["user_profile_id"].(string); ok && userProfileID != "" {
-		if profile, err := s.userProfileService.GetProfile(r.Context(), userProfileID); err == nil && profile != nil {
+		profile, err := s.userProfileService.GetProfile(r.Context(), userProfileID)
+
+		// If profile is nil (cache expired) or error occurred, try to refresh it
+		if profile == nil || err != nil {
+			if err != nil {
+				log.Printf("WARNING: Failed to get cached user profile: %v, attempting refresh\n", err)
+			} else {
+				log.Printf("INFO: User profile cache expired, refreshing from Infor API\n")
+			}
+
+			// Refresh profile from Infor and M3
+			if inforClient, clientErr := s.getInforClient(r); clientErr == nil {
+				if inforProfile, profileErr := inforClient.GetUserProfile(r.Context()); profileErr == nil {
+					// Create combined profile
+					combinedProfile := &infor.CombinedUserProfile{
+						UserProfile: *inforProfile,
+					}
+
+					// Fetch M3 user info
+					if m3Client, m3Err := s.getM3APIClient(r); m3Err == nil {
+						if m3Info, m3InfoErr := infor.GetM3UserInfo(r.Context(), m3Client); m3InfoErr == nil {
+							combinedProfile.M3Info = m3Info
+							log.Printf("INFO: Refreshed M3 user info for: %s\n", m3Info.UserID)
+						}
+					}
+
+					// Re-cache the refreshed profile
+					if cacheErr := s.userProfileService.SetProfile(r.Context(), combinedProfile); cacheErr == nil {
+						profile = combinedProfile
+						log.Printf("INFO: User profile refreshed and cached for: %s\n", inforProfile.DisplayName)
+					} else {
+						log.Printf("WARNING: Failed to cache refreshed profile: %v\n", cacheErr)
+					}
+				} else {
+					log.Printf("WARNING: Failed to refresh Infor profile: %v\n", profileErr)
+				}
+			} else {
+				log.Printf("WARNING: Failed to create Infor client for profile refresh: %v\n", clientErr)
+			}
+		}
+
+		if profile != nil {
 			// Get primary email
 			primaryEmail := ""
 			for _, email := range profile.Emails {

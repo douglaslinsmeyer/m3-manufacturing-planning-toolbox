@@ -8,12 +8,6 @@ interface AppLayoutProps {
   children: React.ReactNode;
 }
 
-const navigation = [
-  { name: 'Dashboard', href: '/', icon: HomeIcon },
-  { name: 'Inconsistencies', href: '/inconsistencies', icon: ExclamationIcon },
-  { name: 'Profile', href: '/profile', icon: UserIcon },
-];
-
 function HomeIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -73,10 +67,23 @@ function XMarkIcon({ className }: { className?: string }) {
 
 export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const location = useLocation();
-  const { environment, logout } = useAuth();
+  const { environment, logout, userProfile } = useAuth();
   const { effectiveContext } = useContextManagement();
   const [contextSwitcherOpen, setContextSwitcherOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Check if user is admin
+  const isAdmin = userProfile?.groups?.some(
+    g => g.type === 'Security Role' && g.display === 'Infor-SystemAdministrator'
+  ) || false;
+
+  // Build navigation array conditionally
+  const navigation = [
+    { name: 'Dashboard', href: '/', icon: HomeIcon },
+    { name: 'Inconsistencies', href: '/inconsistencies', icon: ExclamationIcon },
+    ...(isAdmin ? [{ name: 'Settings', href: '/settings', icon: CogIcon }] : []),
+    { name: 'Profile', href: '/profile', icon: UserIcon },
+  ];
 
   const handleLogout = async () => {
     try {

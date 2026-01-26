@@ -8,6 +8,7 @@ import Dashboard from './pages/Dashboard';
 import ManufacturingOrderDetail from './pages/ManufacturingOrderDetail';
 import PlannedOrderDetail from './pages/PlannedOrderDetail';
 import Inconsistencies from './pages/Inconsistencies';
+import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 
 // Protected route wrapper
@@ -64,6 +65,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Inconsistencies />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/settings"
+            element={
+              <ProtectedRoute>
+                <Settings />
               </ProtectedRoute>
             }
           />

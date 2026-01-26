@@ -307,3 +307,32 @@ export interface SnapshotSummary {
   lastRefresh?: string;
   inconsistenciesCount: number;
 }
+
+// Settings types
+export interface UserSettings {
+  userId: string;
+  defaultWarehouse?: string;
+  defaultFacility?: string;
+  defaultDivision?: string;
+  defaultCompany?: string;
+  itemsPerPage: number;
+  theme: 'light' | 'dark' | 'auto';
+  dateFormat: string;
+  timeFormat: '12h' | '24h';
+  enableNotifications: boolean;
+  notificationSound: boolean;
+  preferences: Record<string, any>;
+}
+
+export interface SystemSetting {
+  key: string;
+  value: string;
+  type: 'string' | 'integer' | 'float' | 'boolean' | 'json';
+  description?: string;
+  category: string;
+  constraints?: Record<string, any>;
+}
+
+export interface SystemSettingsGrouped {
+  categories: Record<string, SystemSetting[]>;
+}

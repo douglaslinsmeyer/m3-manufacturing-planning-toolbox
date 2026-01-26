@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -29,6 +30,7 @@ type Server struct {
 	contextService      *services.ContextService
 	auditService        *services.AuditService
 	userProfileService  *services.UserProfileService
+	settingsService     *services.SettingsService
 }
 
 // NewServer creates a new API server instance
@@ -61,6 +63,9 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 	// Link user profile service to context service (for cache-first user defaults loading)
 	contextService.SetUserProfileService(userProfileService)
 
+	// Initialize settings service
+	settingsService := services.NewSettingsService(queries, auditService)
+
 	s := &Server{
 		config:             cfg,
 		db:                 queries,
@@ -71,6 +76,7 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 		contextService:     contextService,
 		auditService:       auditService,
 		userProfileService: userProfileService,
+		settingsService:    settingsService,
 	}
 
 	s.setupRoutes()
@@ -95,8 +101,9 @@ func (s *Server) getCompassClient(r *http.Request) (*compass.Client, error) {
 
 	// Create token getter function
 	getToken := func() (string, error) {
-		// Refresh token if needed
-		if err := s.authManager.RefreshTokenIfNeeded(session); err != nil {
+		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
+		_, err := s.authManager.RefreshTokenIfNeeded(session)
+		if err != nil {
 			return "", err
 		}
 		return s.authManager.GetAccessToken(session)
@@ -123,8 +130,9 @@ func (s *Server) getM3APIClient(r *http.Request) (*m3api.Client, error) {
 
 	// Create token getter function
 	getToken := func() (string, error) {
-		// Refresh token if needed
-		if err := s.authManager.RefreshTokenIfNeeded(session); err != nil {
+		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
+		_, err := s.authManager.RefreshTokenIfNeeded(session)
+		if err != nil {
 			return "", err
 		}
 		return s.authManager.GetAccessToken(session)
@@ -151,8 +159,9 @@ func (s *Server) getInforClient(r *http.Request) (*infor.Client, error) {
 
 	// Create token getter function
 	getToken := func() (string, error) {
-		// Refresh token if needed
-		if err := s.authManager.RefreshTokenIfNeeded(session); err != nil {
+		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
+		_, err := s.authManager.RefreshTokenIfNeeded(session)
+		if err != nil {
 			return "", err
 		}
 		return s.authManager.GetAccessToken(session)
@@ -259,6 +268,16 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/issues/{id}/delete-mop", s.handleDeletePlannedMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/delete-mo", s.handleDeleteMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/close-mo", s.handleCloseMO).Methods("POST")
+
+	// Settings routes (user settings - authenticated users only)
+	protected.HandleFunc("/settings/user", s.handleGetUserSettings).Methods("GET")
+	protected.HandleFunc("/settings/user", s.handleUpdateUserSettings).Methods("PUT")
+
+	// System settings routes (admin only)
+	adminRouter := protected.PathPrefix("/settings/system").Subrouter()
+	adminRouter.Use(s.adminMiddleware)
+	adminRouter.HandleFunc("", s.handleGetSystemSettings).Methods("GET")
+	adminRouter.HandleFunc("", s.handleUpdateSystemSettings).Methods("PUT")
 }
 
 // authMiddleware checks if the user is authenticated
@@ -274,9 +293,18 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		}
 
 		// Check if token is still valid and refresh if needed
-		if err := s.authManager.RefreshTokenIfNeeded(session); err != nil {
+		refreshed, err := s.authManager.RefreshTokenIfNeeded(session)
+		if err != nil {
 			http.Error(w, "Authentication expired", http.StatusUnauthorized)
 			return
+		}
+
+		// Save session if tokens were refreshed to persist new token data
+		if refreshed {
+			if err := session.Save(r, w); err != nil {
+				log.Printf("Failed to save session after token refresh: %v", err)
+				// Don't fail the request - session might still work on next call
+			}
 		}
 
 		next.ServeHTTP(w, r)

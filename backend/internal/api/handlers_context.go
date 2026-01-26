@@ -453,8 +453,9 @@ func (s *Server) getContextRepositoryForRequest(r *http.Request, environment str
 
 	// Create a function to get the token from the session
 	getToken := func() (string, error) {
-		// Refresh token if needed
-		if err := s.authManager.RefreshTokenIfNeeded(session); err != nil {
+		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
+		_, err := s.authManager.RefreshTokenIfNeeded(session)
+		if err != nil {
 			return "", err
 		}
 		return s.authManager.GetAccessToken(session)

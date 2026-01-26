@@ -560,3 +560,116 @@ func ParseM3Time(m3Time int) string {
 	second := m3Time % 100
 	return fmt.Sprintf("%02d:%02d:%02d", hour, minute, second)
 }
+
+// ========================================
+// Range Queries for Parallel Batching
+// ========================================
+// These lightweight aggregate queries return MIN/MAX/COUNT for ID-based partitioning
+// Optimized for Apache Spark: fast aggregates with predicate pushdown
+
+// BuildMOPRangeQuery builds a query to get MIN/MAX/COUNT for planned manufacturing orders
+func (qb *QueryBuilder) BuildMOPRangeQuery() string {
+	query := fmt.Sprintf(`
+SELECT
+  MIN(mop.PLPN) as min_id,
+  MAX(mop.PLPN) as max_id,
+  COUNT(*) as total_records
+FROM MMOPLP mop
+WHERE mop.deleted = 'false'
+  AND mop.PSTS = '20'
+  AND mop.CONO = '%s'
+  AND mop.FACI = '%s'
+`, qb.company, qb.facility)
+
+	return strings.TrimSpace(query)
+}
+
+// BuildMORangeQuery builds a query to get MIN/MAX/COUNT for manufacturing orders
+func (qb *QueryBuilder) BuildMORangeQuery() string {
+	query := fmt.Sprintf(`
+SELECT
+  MIN(mo.MFNO) as min_id,
+  MAX(mo.MFNO) as max_id,
+  COUNT(*) as total_records
+FROM MWOHED mo
+WHERE mo.deleted = 'false'
+  AND mo.WHST <= '20'
+  AND mo.CONO = '%s'
+  AND mo.FACI = '%s'
+`, qb.company, qb.facility)
+
+	return strings.TrimSpace(query)
+}
+
+// BuildCORangeQuery builds a query to get MIN/MAX/COUNT for customer order lines
+func (qb *QueryBuilder) BuildCORangeQuery() string {
+	query := fmt.Sprintf(`
+SELECT
+  MIN(ORNO) as min_id,
+  MAX(ORNO) as max_id,
+  COUNT(*) as total_records
+FROM OOLINE
+WHERE deleted = 'false'
+  AND ORST >= '20'
+  AND ORST < '30'
+  AND CONO = '%s'
+  AND FACI = '%s'
+`, qb.company, qb.facility)
+
+	return strings.TrimSpace(query)
+}
+
+// ========================================
+// Batch Queries with ID Range Filtering
+// ========================================
+// These queries add ID range predicates to enable Spark partition pruning
+
+// BuildMOPBatchQuery builds a query for a specific PLPN range
+// Enables Spark partition pruning via WHERE PLPN >= X AND PLPN < Y predicate
+func (qb *QueryBuilder) BuildMOPBatchQuery(minID, maxID int64) string {
+	baseQuery := qb.BuildPlannedOrdersWithCOLinksQuery()
+
+	// Insert range predicate before ORDER BY clause
+	rangeClause := fmt.Sprintf("  AND mop.PLPN >= %d AND mop.PLPN < %d\n", minID, maxID)
+
+	// Find ORDER BY position and insert range filter before it
+	orderByPos := strings.Index(baseQuery, "ORDER BY")
+	if orderByPos > 0 {
+		return baseQuery[:orderByPos] + rangeClause + baseQuery[orderByPos:]
+	}
+
+	// No ORDER BY found, append range clause
+	return baseQuery + "\n" + rangeClause
+}
+
+// BuildMOBatchQuery builds a query for a specific MFNO range
+// Uses string comparison for ID ranges (works with zero-padded IDs)
+func (qb *QueryBuilder) BuildMOBatchQuery(minID, maxID string) string {
+	baseQuery := qb.BuildManufacturingOrdersQuery()
+
+	// Insert range predicate before ORDER BY
+	rangeClause := fmt.Sprintf("  AND mo.MFNO >= '%s' AND mo.MFNO < '%s'\n", minID, maxID)
+
+	orderByPos := strings.Index(baseQuery, "ORDER BY")
+	if orderByPos > 0 {
+		return baseQuery[:orderByPos] + rangeClause + baseQuery[orderByPos:]
+	}
+
+	return baseQuery + "\n" + rangeClause
+}
+
+// BuildCOBatchQuery builds a query for a specific ORNO range
+// Uses string comparison for order number ranges
+func (qb *QueryBuilder) BuildCOBatchQuery(minID, maxID string) string {
+	baseQuery := qb.BuildOpenCustomerOrderLinesQuery()
+
+	// Insert range predicate before ORDER BY
+	rangeClause := fmt.Sprintf("  AND ORNO >= '%s' AND ORNO < '%s'\n", minID, maxID)
+
+	orderByPos := strings.Index(baseQuery, "ORDER BY")
+	if orderByPos > 0 {
+		return baseQuery[:orderByPos] + rangeClause + baseQuery[orderByPos:]
+	}
+
+	return baseQuery + "\n" + rangeClause
+}

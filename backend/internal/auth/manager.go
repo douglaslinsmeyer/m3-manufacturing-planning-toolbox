@@ -85,35 +85,39 @@ func (m *Manager) ExchangeCodeForTokens(ctx context.Context, environment, code s
 }
 
 // RefreshTokenIfNeeded checks if the token needs refreshing and refreshes it if necessary
-func (m *Manager) RefreshTokenIfNeeded(session *sessions.Session) error {
+// Returns (true, nil) if token was refreshed, (false, nil) if still valid, (false, error) on failure
+func (m *Manager) RefreshTokenIfNeeded(session *sessions.Session) (bool, error) {
 	// Get token expiry from session
 	expiryUnix, ok := session.Values["token_expiry"].(int64)
 	if !ok {
-		return fmt.Errorf("invalid token expiry in session")
+		return false, fmt.Errorf("invalid token expiry in session")
 	}
 
 	expiry := time.Unix(expiryUnix, 0)
+	timeUntilExpiry := time.Until(expiry)
 
 	// Check if token is expiring within the refresh buffer (default 5 minutes)
-	if time.Until(expiry) > m.config.TokenRefreshBuffer {
-		return nil // Token is still valid
+	if timeUntilExpiry > m.config.TokenRefreshBuffer {
+		return false, nil // Token is still valid, no refresh needed
 	}
 
 	// Get refresh token and environment
 	refreshToken, ok := session.Values["refresh_token"].(string)
 	if !ok || refreshToken == "" {
-		return fmt.Errorf("no refresh token available")
+		return false, fmt.Errorf("no refresh token available")
 	}
 
 	environment, ok := session.Values["environment"].(string)
 	if !ok {
-		return fmt.Errorf("no environment in session")
+		return false, fmt.Errorf("no environment in session")
 	}
+
+	fmt.Printf("Token refresh triggered - expires in %v (env: %s)\n", timeUntilExpiry, environment)
 
 	// Get OAuth config
 	oauthConfig, err := m.getOAuthConfig(environment)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	// Create token source for refresh
@@ -126,7 +130,7 @@ func (m *Manager) RefreshTokenIfNeeded(session *sessions.Session) error {
 	// Get fresh token
 	newToken, err := tokenSource.Token()
 	if err != nil {
-		return fmt.Errorf("failed to refresh token: %w", err)
+		return false, fmt.Errorf("failed to refresh token: %w", err)
 	}
 
 	// Update session with new token
@@ -136,7 +140,9 @@ func (m *Manager) RefreshTokenIfNeeded(session *sessions.Session) error {
 	}
 	session.Values["token_expiry"] = newToken.Expiry.Unix()
 
-	return nil
+	fmt.Printf("Token refreshed successfully - new expiry: %v\n", newToken.Expiry)
+
+	return true, nil // Token was successfully refreshed
 }
 
 // GetAccessToken retrieves the access token from the session

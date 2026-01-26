@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/pinggolf/m3-planning-tools/internal/db"
 	"github.com/pinggolf/m3-planning-tools/internal/services/detectors"
@@ -37,12 +38,37 @@ func (s *DetectionService) reportProgress(phase string, stepNum, totalSteps int,
 	}
 }
 
-// RunAllDetectors executes all registered detectors
+// RunAllDetectors executes all registered detectors (respects enabled/disabled settings)
 func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, company, facility string) error {
 	log.Printf("Starting issue detection for job %s (company: %s, facility: %s)", jobID, company, facility)
 
 	allDetectors := s.registry.GetAll()
-	totalDetectors := len(allDetectors)
+
+	// Load detector enable/disable settings from system_settings
+	enabledDetectors := s.loadEnabledDetectors(ctx)
+
+	// Filter to only enabled detectors
+	activeDetectors := make([]detectors.IssueDetector, 0)
+	for _, detector := range allDetectors {
+		settingKey := fmt.Sprintf("detector_%s_enabled", detector.Name())
+
+		// Check if detector is enabled (default: true if setting doesn't exist)
+		if enabled, exists := enabledDetectors[settingKey]; exists && !enabled {
+			log.Printf("Detector '%s' is disabled, skipping", detector.Name())
+			continue
+		}
+
+		activeDetectors = append(activeDetectors, detector)
+	}
+
+	totalDetectors := len(activeDetectors)
+
+	if totalDetectors == 0 {
+		log.Println("No detectors enabled, skipping detection phase")
+		return nil
+	}
+
+	log.Printf("Running %d enabled detectors (total available: %d)", totalDetectors, len(allDetectors))
 
 	// Create detection job record
 	if err := s.db.CreateIssueDetectionJob(ctx, jobID, totalDetectors); err != nil {
@@ -60,7 +86,7 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, company, 
 	totalIssues := 0
 	completedDetectors := 0
 
-	for i, detector := range allDetectors {
+	for i, detector := range activeDetectors {
 		log.Printf("Running detector %d/%d: %s", i+1, totalDetectors, detector.Name())
 		s.reportProgress("detection", i, totalDetectors, fmt.Sprintf("Running %s detector", detector.Description()))
 
@@ -91,6 +117,28 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, company, 
 
 	s.reportProgress("detection", totalDetectors, totalDetectors, fmt.Sprintf("Detection complete - %d issues found", totalIssues))
 
-	log.Printf("Issue detection completed - %d total issues found across %d detectors", totalIssues, completedDetectors)
+	log.Printf("Issue detection completed - %d total issues found across %d enabled detectors", totalIssues, completedDetectors)
 	return nil
+}
+
+// loadEnabledDetectors loads detector enable/disable settings from system_settings
+// Returns map of setting_key → enabled (true/false)
+// Default: all detectors enabled if setting doesn't exist
+func (s *DetectionService) loadEnabledDetectors(ctx context.Context) map[string]bool {
+	settings, err := s.db.GetSystemSettings(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to load detector settings: %v (all detectors will run)", err)
+		return make(map[string]bool) // Empty map = all enabled by default
+	}
+
+	enabled := make(map[string]bool)
+	for _, setting := range settings {
+		if strings.HasPrefix(setting.SettingKey, "detector_") &&
+			strings.HasSuffix(setting.SettingKey, "_enabled") {
+			enabled[setting.SettingKey] = setting.SettingValue == "true"
+		}
+	}
+
+	log.Printf("Loaded %d detector enable/disable settings", len(enabled))
+	return enabled
 }

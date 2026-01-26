@@ -201,7 +201,10 @@ func (c *Client) GetQueryStatus(ctx context.Context, jobID string, timeout int) 
 	}
 
 	recordCount := 0
+	// Data Fabric can return "recordCount" or "rowCount" depending on the response
 	if rc, ok := result["recordCount"].(float64); ok {
+		recordCount = int(rc)
+	} else if rc, ok := result["rowCount"].(float64); ok {
 		recordCount = int(rc)
 	}
 
@@ -294,30 +297,78 @@ func (c *Client) WaitForQueryCompletion(ctx context.Context, jobID string, pollI
 	}
 }
 
-// ExecuteQuery is a convenience method that submits a query, waits for completion, and returns results
-func (c *Client) ExecuteQuery(ctx context.Context, query string, maxRecords int) ([]byte, error) {
-	// Submit query
-	submitResp, err := c.SubmitQuery(ctx, query, maxRecords)
+// ExecuteQueryWithPagination executes a query with automatic pagination when results exceed page size
+// Returns: (data []byte, totalRecords int, error)
+// Optimized for Apache Spark Data Fabric - submits with maxRecords=0 (unlimited) and paginates results
+func (c *Client) ExecuteQueryWithPagination(ctx context.Context, query string, pageSize int) ([]byte, int, error) {
+	// Submit query with unlimited records (Spark will execute full query)
+	submitResp, err := c.SubmitQuery(ctx, query, 0)
 	if err != nil {
-		return nil, fmt.Errorf("failed to submit query: %w", err)
+		return nil, 0, fmt.Errorf("failed to submit query: %w", err)
 	}
 
-	// Wait for completion
+	// Wait for completion and get total record count
 	statusResp, err := c.WaitForQueryCompletion(ctx, submitResp.JobID, 2*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("query execution failed: %w", err)
+		return nil, 0, fmt.Errorf("query execution failed: %w", err)
 	}
 
-	// Fetch results (single page for now, can be enhanced for pagination)
-	results, err := c.GetQueryResult(ctx, submitResp.JobID, 0, maxRecords)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch results: %w", err)
+	totalRecords := statusResp.RecordCount
+	fmt.Printf("Query %s completed: %d total records\n", submitResp.JobID, totalRecords)
+
+	// Handle empty result - return empty array for ParseResults compatibility
+	if totalRecords == 0 {
+		emptyArray := []map[string]interface{}{}
+		data, _ := json.Marshal(emptyArray)
+		return data, 0, nil
 	}
 
-	// Log completion
-	fmt.Printf("Query completed successfully. JobID: %s, Records: %d\n", submitResp.JobID, statusResp.RecordCount)
+	// Single page optimization (no pagination needed)
+	// GetQueryResult returns raw array, which is what we want
+	if totalRecords <= pageSize {
+		data, err := c.GetQueryResult(ctx, submitResp.JobID, 0, totalRecords)
+		return data, totalRecords, err
+	}
 
-	return results, nil
+	// Multi-page fetch required
+	// Data Fabric returns raw JSON arrays: [{...}, {...}]
+	// We need to fetch multiple pages and combine them into a single array
+	numPages := (totalRecords + pageSize - 1) / pageSize // Ceiling division
+	fmt.Printf("Paginating: %d pages of up to %d records each (total: %d)\n", numPages, pageSize, totalRecords)
+
+	var allRecords []map[string]interface{}
+
+	for page := 0; page < numPages; page++ {
+		offset := page * pageSize
+		limit := pageSize
+		if offset+limit > totalRecords {
+			limit = totalRecords - offset
+		}
+
+		// Fetch page (returns raw JSON array)
+		pageData, err := c.GetQueryResult(ctx, submitResp.JobID, offset, limit)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to fetch page %d/%d: %w", page+1, numPages, err)
+		}
+
+		// Parse page as array (Data Fabric returns raw arrays, not wrapped objects)
+		var pageRecords []map[string]interface{}
+		if err := json.Unmarshal(pageData, &pageRecords); err != nil {
+			return nil, 0, fmt.Errorf("failed to parse page %d/%d: %w", page+1, numPages, err)
+		}
+
+		// Append records
+		allRecords = append(allRecords, pageRecords...)
+
+		fmt.Printf("Page %d/%d: %d records (total: %d/%d)\n",
+			page+1, numPages, len(pageRecords), len(allRecords), totalRecords)
+	}
+
+	fmt.Printf("Pagination complete. Total records fetched: %d\n", len(allRecords))
+
+	// Return combined array (ParseResults expects a raw array)
+	data, err := json.Marshal(allRecords)
+	return data, totalRecords, err
 }
 
 // CancelQuery cancels a running query
