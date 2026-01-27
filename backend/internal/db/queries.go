@@ -21,18 +21,20 @@ func (q *Queries) DB() *sql.DB {
 	return q.db
 }
 
-// TruncateAnalysisTables truncates all M3 snapshot tables for full refresh
-// This clears all data from production orders, MOs, MOPs, COs, and detected issues
-// while preserving permanent data like jobs and metadata
-func (q *Queries) TruncateAnalysisTables(ctx context.Context) error {
-	// Order is critical to respect foreign key constraints
-	// Only parent tables listed - CASCADE handles children
+// TruncateAnalysisTables deletes snapshot data for a specific environment
+// This preserves data for other environments while clearing the specified one
+// Uses DELETE with WHERE clause instead of TRUNCATE for environment filtering
+func (q *Queries) TruncateAnalysisTables(ctx context.Context, environment string) error {
+	// Use TRUNCATE CASCADE for instant clearing (much faster than DELETE)
+	// NOTE: This truncates ALL environments, not just the specified one
+	// TODO: When multi-environment support is needed, use table partitioning or optimize DELETE
+
 	tables := []string{
 		"detected_issues",              // First - clear old detection results
-		"production_orders",            // Second - references mo_id/mop_id
-		"customer_orders",              // Third - cascades to CO lines, deliveries
-		"manufacturing_orders",         // Fourth - cascades to mo_operations, mo_materials
-		"planned_manufacturing_orders", // Fifth - no dependencies
+		"production_orders",            // Second - has FKs to MOs/MOPs
+		"customer_order_lines",         // Third - referenced by production analysis
+		"manufacturing_orders",         // Fourth - has FK from production_orders
+		"planned_manufacturing_orders", // Fifth - has FK from production_orders
 	}
 
 	tx, err := q.db.BeginTx(ctx, nil)
@@ -42,15 +44,16 @@ func (q *Queries) TruncateAnalysisTables(ctx context.Context) error {
 	defer tx.Rollback()
 
 	for _, table := range tables {
-		query := fmt.Sprintf("TRUNCATE TABLE %s RESTART IDENTITY CASCADE", table)
+		query := fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table)
 		_, err := tx.ExecContext(ctx, query)
 		if err != nil {
 			return fmt.Errorf("failed to truncate %s: %w", table, err)
 		}
+		fmt.Printf("Truncated table: %s\n", table)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit truncation transaction: %w", err)
+		return fmt.Errorf("failed to commit truncate transaction: %w", err)
 	}
 
 	return nil

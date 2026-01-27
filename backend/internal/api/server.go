@@ -21,16 +21,17 @@ import (
 
 // Server represents the API server
 type Server struct {
-	config              *config.Config
-	db                  *db.Queries
-	router              *mux.Router
-	sessionStore        sessions.Store
-	authManager         *auth.Manager
-	natsManager         *queue.Manager
-	contextService      *services.ContextService
-	auditService        *services.AuditService
-	userProfileService  *services.UserProfileService
-	settingsService     *services.SettingsService
+	config                *config.Config
+	db                    *db.Queries
+	router                *mux.Router
+	sessionStore          sessions.Store
+	authManager           *auth.Manager
+	natsManager           *queue.Manager
+	contextService        *services.ContextService
+	auditService          *services.AuditService
+	userProfileService    *services.UserProfileService
+	settingsService       *services.SettingsService
+	detectorConfigService *services.DetectorConfigService
 }
 
 // NewServer creates a new API server instance
@@ -66,17 +67,21 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 	// Initialize settings service
 	settingsService := services.NewSettingsService(queries, auditService)
 
+	// Initialize detector config service
+	detectorConfigService := services.NewDetectorConfigService(queries)
+
 	s := &Server{
-		config:             cfg,
-		db:                 queries,
-		router:             mux.NewRouter(),
-		sessionStore:       sessionStore,
-		authManager:        authManager,
-		natsManager:        natsManager,
-		contextService:     contextService,
-		auditService:       auditService,
-		userProfileService: userProfileService,
-		settingsService:    settingsService,
+		config:                cfg,
+		db:                    queries,
+		router:                mux.NewRouter(),
+		sessionStore:          sessionStore,
+		authManager:           authManager,
+		natsManager:           natsManager,
+		contextService:        contextService,
+		auditService:          auditService,
+		userProfileService:    userProfileService,
+		settingsService:       settingsService,
+		detectorConfigService: detectorConfigService,
 	}
 
 	s.setupRoutes()
@@ -232,6 +237,7 @@ func (s *Server) setupRoutes() {
 
 	// Snapshot management
 	protected.HandleFunc("/snapshot/refresh", s.handleSnapshotRefresh).Methods("POST")
+	protected.HandleFunc("/snapshot/refresh/{jobId}/cancel", s.handleCancelRefresh).Methods("POST")
 	protected.HandleFunc("/snapshot/status", s.handleSnapshotStatus).Methods("GET")
 	protected.HandleFunc("/snapshot/summary", s.handleSnapshotSummary).Methods("GET")
 	protected.HandleFunc("/snapshot/active-job", s.handleGetActiveJob).Methods("GET")
@@ -246,14 +252,6 @@ func (s *Server) setupRoutes() {
 
 	// Planned manufacturing orders (full MOP details)
 	protected.HandleFunc("/planned-orders/{id}", s.handleGetPlannedOrder).Methods("GET")
-
-	// Customer orders
-	protected.HandleFunc("/customer-orders", s.handleListCustomerOrders).Methods("GET")
-	protected.HandleFunc("/customer-orders/{id}", s.handleGetCustomerOrder).Methods("GET")
-
-	// Deliveries
-	protected.HandleFunc("/deliveries", s.handleListDeliveries).Methods("GET")
-	protected.HandleFunc("/deliveries/{id}", s.handleGetDelivery).Methods("GET")
 
 	// Analysis endpoints
 	protected.HandleFunc("/analysis/inconsistencies", s.handleListInconsistencies).Methods("GET")

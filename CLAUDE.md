@@ -277,6 +277,94 @@ SELECT STDT, FIDT FROM MMOPLP WHERE STDT IS NOT NULL LIMIT 1;
 -- Returns: STDT=20260303 (integer)
 ```
 
+## Snapshot Refresh Architecture
+
+### Overview
+
+The snapshot refresh system uses a **Coordinator-Worker pattern** with NATS message queuing to load M3 data in parallel across multiple worker instances.
+
+### Architecture Flow
+
+```
+API Handler (POST /api/data/refresh)
+    ↓
+    1. Create refresh job in DB
+    2. Publish to NATS subject: snapshot.refresh.{ENV}
+    ↓
+Coordinator Worker (handleRefreshRequest)
+    ↓
+    Phase 0: Truncate DB tables for environment
+    Phase 1: Publish 3 data jobs to NATS
+             ├─ snapshot.batch.{ENV}.mops
+             ├─ snapshot.batch.{ENV}.mos
+             └─ snapshot.batch.{ENV}.cos
+    ↓
+Data Loader Workers (handleBatchJob) [3 instances]
+    ↓
+    Execute full data load from Compass SQL
+    Publish completion → snapshot.batch.complete.{jobID}
+    ↓
+Coordinator (waitForDataJobs)
+    ↓
+    Wait for 3 completions
+    Phase 3: Finalize (update production_orders view)
+    Phase 4: Detection (run all issue detectors)
+    ↓
+    Mark job complete
+    Publish progress/complete messages
+```
+
+### Key Components
+
+**Message Types:**
+- `SnapshotRefreshMessage` - Initial refresh request from API
+- `DataBatchJobMessage` - Work distribution to data loaders
+- `BatchCompletionMessage` - Data load completion signal
+- `ProgressUpdate` - Real-time progress updates (SSE)
+
+**NATS Subjects:**
+- `snapshot.refresh.{ENV}` - Coordinator job queue
+- `snapshot.batch.{ENV}.{dataType}` - Data loader work queue
+- `snapshot.batch.complete.{jobID}` - Completion event stream
+- `snapshot.progress.{jobID}` - Progress event stream (SSE)
+
+**Worker Roles:**
+- **Coordinator** - Orchestrates phases, waits for completions, runs finalize/detection
+- **Data Loaders** - Execute parallel Compass SQL queries, insert to DB
+
+### Design Notes
+
+**Terminology: "Batch" vs "Data Type"**
+- Current implementation uses "batch" terminology in message names
+- Each "batch job" actually loads the FULL dataset for one data type (MOPs/MOs/COs)
+- There is NO actual batching (ID ranges, pagination) currently implemented
+- The "batch" terminology is reserved for future ID-range batching if needed
+
+**Parallelism:**
+- 3 data loads run in parallel (MOPs, MOs, COs)
+- Work distributed via NATS queue groups
+- 3 worker instances by default (horizontally scalable)
+- Coordinator synchronously waits for all 3 to complete
+
+**Progress Tracking:**
+- Phase 0 (Truncate): 0-20%
+- Phase 1-2 (Data loading): 25-70% (15% per data type completion)
+- Phase 3 (Finalize): 75%
+- Phase 4 (Detection): 90-100%
+
+**Detection:**
+- Currently runs synchronously in coordinator after finalize
+- NOT using message queue for async detection
+- Runs on single coordinator worker (potential bottleneck)
+- Future: Could be made async with dedicated detector workers
+
+### Environment Isolation
+
+- **TRN** and **PRD** use separate NATS subjects
+- Database tables have `environment` column for multi-tenancy
+- Truncate operations are environment-scoped
+- OAuth tokens are environment-specific
+
 ## Development Environment
 
 - Backend: Go with PostgreSQL
@@ -289,10 +377,14 @@ SELECT STDT, FIDT FROM MMOPLP WHERE STDT IS NOT NULL LIMIT 1;
 **IMPORTANT**: This project uses Docker Compose for all services.
 
 - **To restart/rebuild backend**: `docker compose up backend --build`
+  - **CRITICAL**: When rebuilding backend, also rebuild workers: `docker compose up backend backend-worker --build`
+  - The backend and backend-worker containers share the same Go codebase
+  - Forgetting to rebuild workers is a common mistake that causes version mismatches
 - **To restart/rebuild frontend**: `docker compose up frontend --build`
 - **To view logs**: `docker compose logs -f <service_name>`
 - **Never use**: `go run`, `pkill`, or direct process management
 - All service management must go through Docker Compose
+- **Worker scaling**: 3 backend-worker instances run by default (configured via `deploy.replicas: 3`)
 
 ### Database Connection & Queries
 

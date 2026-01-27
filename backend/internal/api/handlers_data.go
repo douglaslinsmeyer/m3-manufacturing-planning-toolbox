@@ -111,6 +111,52 @@ func generateJobID() string {
 	return fmt.Sprintf("job-%d", time.Now().UnixNano())
 }
 
+// handleCancelRefresh cancels a running snapshot refresh job
+func (s *Server) handleCancelRefresh(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	jobID := vars["jobId"]
+
+	if jobID == "" {
+		http.Error(w, "Job ID is required", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+
+	// Get job to verify it exists and is cancellable
+	job, err := s.db.GetRefreshJob(ctx, jobID)
+	if err != nil {
+		http.Error(w, "Failed to get job", http.StatusInternalServerError)
+		return
+	}
+
+	if job == nil {
+		http.Error(w, "Job not found", http.StatusNotFound)
+		return
+	}
+
+	// Check if job is in a cancellable state
+	if job.Status != "pending" && job.Status != "running" {
+		http.Error(w, fmt.Sprintf("Job cannot be cancelled (status: %s)", job.Status), http.StatusBadRequest)
+		return
+	}
+
+	// Mark job as failed with cancellation message
+	if err := s.db.FailJob(ctx, jobID, "Cancelled by user"); err != nil {
+		http.Error(w, "Failed to cancel job", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Snapshot refresh job %s cancelled by user", jobID)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "cancelled",
+		"jobId":   jobID,
+		"message": "Snapshot refresh job cancelled",
+	})
+}
+
 // handleSnapshotStatus returns the status of the current snapshot refresh
 func (s *Server) handleSnapshotStatus(w http.ResponseWriter, r *http.Request) {
 	session, _ := s.sessionStore.Get(r, "m3-session")
@@ -202,17 +248,23 @@ func (s *Server) handleGetActiveJob(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Get counts from database
-	var productionOrdersCount, moCount, mopCount, coLinesCount int
-
-	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM production_orders").Scan(&productionOrdersCount)
-	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM manufacturing_orders").Scan(&moCount)
-	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM planned_manufacturing_orders").Scan(&mopCount)
-	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM customer_order_lines").Scan(&coLinesCount)
-
-	// Get last refresh time from most recent completed job
+	// Get environment from session first
 	session, _ := s.sessionStore.Get(r, "m3-session")
 	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
+	// Get counts from database for this environment
+	var productionOrdersCount, moCount, mopCount, coLinesCount int
+
+	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM production_orders WHERE environment = $1", environment).Scan(&productionOrdersCount)
+	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM manufacturing_orders WHERE environment = $1", environment).Scan(&moCount)
+	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM planned_manufacturing_orders WHERE environment = $1", environment).Scan(&mopCount)
+	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM customer_order_lines WHERE environment = $1", environment).Scan(&coLinesCount)
+
+	// Get last refresh time from most recent completed job
 
 	job, _ := s.db.GetLatestRefreshJob(ctx, environment)
 
@@ -222,7 +274,7 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get inconsistency count from latest detection job
-	issueCount, err := s.db.GetIssueCountForLatestJob(ctx)
+	issueCount, err := s.db.GetIssueCountForLatestJob(ctx, environment)
 	if err != nil {
 		log.Printf("Warning: failed to get issue count: %v", err)
 		issueCount = 0 // Graceful fallback
@@ -233,8 +285,7 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 		"totalProductionOrders":    productionOrdersCount,
 		"totalManufacturingOrders": moCount,
 		"totalPlannedOrders":       mopCount,
-		"totalCustomerOrders":      coLinesCount,
-		"totalDeliveries":          0,
+		"totalCustomerOrderLines":  coLinesCount,
 		"lastRefresh":              lastRefresh,
 		"inconsistenciesCount":     issueCount,
 	})
@@ -283,48 +334,6 @@ func (s *Server) handleGetPlannedOrder(w http.ResponseWriter, r *http.Request) {
 
 	// TODO: Query planned_manufacturing_orders table with all details
 	// Include planning parameters, demand references, etc.
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"id": id,
-	})
-}
-
-// handleListCustomerOrders lists customer orders
-func (s *Server) handleListCustomerOrders(w http.ResponseWriter, r *http.Request) {
-	// TODO: Query customer_orders table
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]interface{}{})
-}
-
-// handleGetCustomerOrder gets a single customer order with lines
-func (s *Server) handleGetCustomerOrder(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	// TODO: Query customer_orders and customer_order_lines tables
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{
-		"id": id,
-	})
-}
-
-// handleListDeliveries lists deliveries
-func (s *Server) handleListDeliveries(w http.ResponseWriter, r *http.Request) {
-	// TODO: Query deliveries table
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]interface{}{})
-}
-
-// handleGetDelivery gets a single delivery
-func (s *Server) handleGetDelivery(w http.ResponseWriter, r *http.Request) {
-	vars := mux.Vars(r)
-	id := vars["id"]
-
-	// TODO: Query deliveries table
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{

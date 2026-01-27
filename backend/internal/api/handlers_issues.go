@@ -33,6 +33,14 @@ type PaginationMeta struct {
 func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Parse query parameters
 	detectorType := r.URL.Query().Get("detector_type")
 	facility := r.URL.Query().Get("facility")
@@ -64,7 +72,7 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 	offset := (page - 1) * pageSize
 
 	// Get total count for pagination metadata
-	totalCount, err := s.db.GetIssuesFilteredCount(ctx, detectorType, facility, warehouse, includeIgnored)
+	totalCount, err := s.db.GetIssuesFilteredCount(ctx, environment, detectorType, facility, warehouse, includeIgnored)
 	if err != nil {
 		http.Error(w, "Failed to count issues", http.StatusInternalServerError)
 		return
@@ -78,7 +86,7 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 
 	// Get filtered issues with pagination
 	var issues []*db.DetectedIssue
-	issues, err = s.db.GetIssuesFiltered(ctx, detectorType, facility, warehouse, includeIgnored, pageSize, offset)
+	issues, err = s.db.GetIssuesFiltered(ctx, environment, detectorType, facility, warehouse, includeIgnored, pageSize, offset)
 	if err != nil {
 		http.Error(w, "Failed to fetch issues", http.StatusInternalServerError)
 		return
@@ -155,10 +163,18 @@ func (s *Server) handleListIssues(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleGetIssueSummary(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Parse query parameter
 	includeIgnored := r.URL.Query().Get("include_ignored") == "true"
 
-	summary, err := s.db.GetIssueSummary(ctx, includeIgnored)
+	summary, err := s.db.GetIssueSummary(ctx, environment, includeIgnored)
 	if err != nil {
 		http.Error(w, "Failed to fetch issue summary", http.StatusInternalServerError)
 		return
@@ -236,6 +252,14 @@ func (s *Server) handleGetIssueDetail(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleIgnoreIssue(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Parse issue ID from URL
 	vars := mux.Vars(r)
 	idStr := vars["id"]
@@ -260,6 +284,7 @@ func (s *Server) handleIgnoreIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Call queries.IgnoreIssue() with extracted identifiers
 	err = s.db.IgnoreIssue(ctx, db.IgnoreIssueParams{
+		Environment:           environment,
 		Facility:              issue.Facility,
 		DetectorType:          issue.DetectorType,
 		IssueKey:              issue.IssueKey,
@@ -278,9 +303,10 @@ func (s *Server) handleIgnoreIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Create audit log entry
 	err = s.auditService.Log(ctx, services.AuditParams{
-		EntityType: "issue",
-		EntityID:   fmt.Sprintf("%d", issueID),
-		Operation:  "ignore",
+		Environment: environment,
+		EntityType:  "issue",
+		EntityID:    fmt.Sprintf("%d", issueID),
+		Operation:   "ignore",
 		// TODO: Add UserID and UserName from auth context
 		Facility: issue.Facility,
 		Metadata: map[string]interface{}{
@@ -309,6 +335,14 @@ func (s *Server) handleIgnoreIssue(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUnignoreIssue(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Parse issue ID from URL
 	vars := mux.Vars(r)
 	idStr := vars["id"]
@@ -327,6 +361,7 @@ func (s *Server) handleUnignoreIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Call queries.UnignoreIssue() with extracted identifiers
 	err = s.db.UnignoreIssue(ctx, db.UnignoreIssueParams{
+		Environment:           environment,
 		Facility:              issue.Facility,
 		DetectorType:          issue.DetectorType,
 		IssueKey:              issue.IssueKey,
@@ -339,9 +374,10 @@ func (s *Server) handleUnignoreIssue(w http.ResponseWriter, r *http.Request) {
 
 	// Create audit log entry
 	err = s.auditService.Log(ctx, services.AuditParams{
-		EntityType: "issue",
-		EntityID:   fmt.Sprintf("%d", issueID),
-		Operation:  "unignore",
+		Environment: environment,
+		EntityType:  "issue",
+		EntityID:    fmt.Sprintf("%d", issueID),
+		Operation:   "unignore",
 		// TODO: Add UserID and UserName from auth context
 		Facility: issue.Facility,
 		Metadata: map[string]interface{}{

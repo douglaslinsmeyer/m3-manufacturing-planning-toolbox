@@ -111,6 +111,9 @@ type CustomerOrderLineRecord struct {
 	// M3 Partner/EDI
 	E0PA, DSGP, PUSN, PUTP string
 
+	// M3 Joint Delivery
+	JDCD string
+
 	// M3 Attributes (ATV1-ATV0)
 	ATV1, ATV2, ATV3, ATV4, ATV5 string
 	ATV6, ATV7, ATV8, ATV9, ATV0 string
@@ -252,6 +255,9 @@ func ParseCustomerOrderLine(record map[string]interface{}) (*CustomerOrderLineRe
 		DSGP: getString(record, "DSGP"),
 		PUSN: getString(record, "PUSN"),
 		PUTP: getStringFromAny(record, "PUTP"),
+
+		// Joint Delivery
+		JDCD: getString(record, "JDCD"),
 
 		// Attributes (ATV1-ATV0)
 		ATV1: getStringFromAny(record, "ATV1"),

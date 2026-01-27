@@ -8,8 +8,8 @@ import (
 
 // CustomerOrderLine represents a customer order line - all M3 fields as strings
 type CustomerOrderLine struct {
-	ID   int64
-	COId sql.NullInt64
+	ID          int64
+	Environment string // M3 environment (TRN or PRD)
 
 	// M3 Core Identifiers
 	CONO, DIVI, ORNO, PONR, POSX string
@@ -60,6 +60,9 @@ type CustomerOrderLine struct {
 	// M3 Partner/EDI
 	E0PA, DSGP, PUSN, PUTP string
 
+	// M3 Joint Delivery
+	JDCD string
+
 	// M3 Attributes (ATV1-ATV0)
 	ATV1, ATV2, ATV3, ATV4, ATV5 string
 	ATV6, ATV7, ATV8, ATV9, ATV0 string
@@ -107,6 +110,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO customer_order_lines (
+			environment,
 			cono, divi, orno, ponr, posx,
 			itno, itds, teds, repi,
 			orst, orty,
@@ -124,6 +128,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			adid, rout, rodn, dsdt, dshm, modl, tedl, tel2,
 			tepa, pact, cupa,
 			e0pa, dsgp, pusn, putp,
+			jdcd,
 			atv1, atv2, atv3, atv4, atv5, atv6, atv7, atv8, atv9, atv0,
 			uca1, uca2, uca3, uca4, uca5, uca6, uca7, uca8, uca9, uca0,
 			udn1, udn2, udn3, udn4, udn5, udn6,
@@ -135,35 +140,37 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			m3_timestamp,
 			sync_timestamp
 		) VALUES (
-			$1, $2, $3, $4, $5,
-			$6, $7, $8, $9,
-			$10, $11,
-			$12, $13,
-			$14, $15, $16, $17, $18,
-			$19, $20, $21, $22, $23,
-			$24, $25, $26,
-			$27, $28, $29, $30, $31, $32, $33,
-			$34, $35, $36, $37,
-			$38, $39, $40, $41, $42, $43,
-			$44, $45, $46, $47, $48, $49,
-			$50, $51, $52, $53,
-			$54, $55, $56, $57,
-			$58, $59, $60, $61, $62,
-			$63, $64, $65, $66, $67, $68, $69, $70,
-			$71, $72, $73,
-			$74, $75, $76, $77,
-			$78, $79, $80, $81, $82, $83, $84, $85, $86, $87,
-			$88, $89, $90, $91, $92, $93, $94, $95, $96, $97,
-			$98, $99, $100, $101, $102, $103,
-			$104, $105, $106,
-			$107,
-			$108, $109, $110, $111,
-			$112, $113,
-			$114, $115, $116, $117, $118, $119,
-			$120,
+			$1,
+			$2, $3, $4, $5, $6,
+			$7, $8, $9, $10,
+			$11, $12,
+			$13, $14,
+			$15, $16, $17, $18, $19,
+			$20, $21, $22, $23, $24,
+			$25, $26, $27,
+			$28, $29, $30, $31, $32, $33, $34,
+			$35, $36, $37, $38,
+			$39, $40, $41, $42, $43, $44,
+			$45, $46, $47, $48, $49, $50,
+			$51, $52, $53, $54,
+			$55, $56, $57, $58,
+			$59, $60, $61, $62, $63,
+			$64, $65, $66, $67, $68, $69, $70, $71,
+			$72, $73, $74,
+			$75, $76, $77, $78,
+			$79,
+			$80, $81, $82, $83, $84, $85, $86, $87, $88, $89,
+			$90, $91, $92, $93, $94, $95, $96, $97, $98, $99,
+			$100, $101, $102, $103, $104, $105,
+			$106, $107, $108,
+			$109,
+			$110, $111, $112, $113,
+			$114, $115,
+			$116, $117, $118, $119, $120, $121,
+			$122,
 			NOW()
 		)
-		ON CONFLICT (orno, ponr, posx)
+		ON CONFLICT (environment, orno, ponr, posx)
 		DO UPDATE SET
 			itds = EXCLUDED.itds,
 			teds = EXCLUDED.teds,
@@ -176,6 +183,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			dwdt = EXCLUDED.dwdt,
 			codt = EXCLUDED.codt,
 			pldt = EXCLUDED.pldt,
+			jdcd = EXCLUDED.jdcd,
 			lmdt = EXCLUDED.lmdt,
 			lmts = EXCLUDED.lmts,
 			m3_timestamp = EXCLUDED.m3_timestamp,
@@ -189,6 +197,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 
 	for _, line := range lines {
 		_, err = stmt.ExecContext(ctx,
+			line.Environment,
 			line.CONO, line.DIVI, line.ORNO, line.PONR, line.POSX,
 			line.ITNO, line.ITDS, line.TEDS, line.REPI,
 			line.ORST, line.ORTY,
@@ -206,6 +215,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			line.ADID, line.ROUT, line.RODN, line.DSDT, line.DSHM, line.MODL, line.TEDL, line.TEL2,
 			line.TEPA, line.PACT, line.CUPA,
 			line.E0PA, line.DSGP, line.PUSN, line.PUTP,
+			line.JDCD,
 			line.ATV1, line.ATV2, line.ATV3, line.ATV4, line.ATV5, line.ATV6, line.ATV7, line.ATV8, line.ATV9, line.ATV0,
 			line.UCA1, line.UCA2, line.UCA3, line.UCA4, line.UCA5, line.UCA6, line.UCA7, line.UCA8, line.UCA9, line.UCA0,
 			line.UDN1, line.UDN2, line.UDN3, line.UDN4, line.UDN5, line.UDN6,

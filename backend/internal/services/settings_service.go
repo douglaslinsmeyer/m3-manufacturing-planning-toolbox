@@ -23,9 +23,9 @@ func NewSettingsService(queries *db.Queries, auditService *AuditService) *Settin
 	}
 }
 
-// GetUserSettings retrieves user settings, returning defaults if none exist
-func (s *SettingsService) GetUserSettings(ctx context.Context, userID string) (*db.UserSettings, error) {
-	settings, err := s.queries.GetUserSettings(ctx, userID)
+// GetUserSettings retrieves user settings for a specific environment, returning defaults if none exist
+func (s *SettingsService) GetUserSettings(ctx context.Context, environment, userID string) (*db.UserSettings, error) {
+	settings, err := s.queries.GetUserSettings(ctx, environment, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -33,6 +33,7 @@ func (s *SettingsService) GetUserSettings(ctx context.Context, userID string) (*
 	// Return default settings if none exist
 	if settings == nil {
 		settings = &db.UserSettings{
+			Environment:         environment,
 			UserID:              userID,
 			ItemsPerPage:        20,
 			Theme:               "light",
@@ -50,10 +51,14 @@ func (s *SettingsService) GetUserSettings(ctx context.Context, userID string) (*
 // UpdateUserSettings updates user settings and logs the change
 func (s *SettingsService) UpdateUserSettings(
 	ctx context.Context,
+	environment string,
 	userID string,
 	params db.UpsertUserSettingsParams,
 	modifiedBy string,
 ) error {
+	// Ensure environment is set in params
+	params.Environment = environment
+
 	// Perform update
 	if err := s.queries.UpsertUserSettings(ctx, params); err != nil {
 		return err
@@ -61,30 +66,33 @@ func (s *SettingsService) UpdateUserSettings(
 
 	// Log audit trail
 	return s.auditService.Log(ctx, AuditParams{
-		EntityType: "user_settings",
-		EntityID:   userID,
-		Operation:  "update",
-		UserID:     modifiedBy,
+		Environment: environment,
+		EntityType:  "user_settings",
+		EntityID:    userID,
+		Operation:   "update",
+		UserID:      modifiedBy,
 		Metadata: map[string]interface{}{
 			"settings_updated": true,
 		},
 	})
 }
 
-// GetSystemSettings retrieves all system settings
-func (s *SettingsService) GetSystemSettings(ctx context.Context) ([]db.SystemSetting, error) {
-	return s.queries.GetSystemSettings(ctx)
+// GetSystemSettings retrieves all system settings for a specific environment
+func (s *SettingsService) GetSystemSettings(ctx context.Context, environment string) ([]db.SystemSetting, error) {
+	return s.queries.GetSystemSettings(ctx, environment)
 }
 
-// UpdateSystemSettings updates multiple system settings (admin only)
+// UpdateSystemSettings updates multiple system settings (admin only) for a specific environment
 func (s *SettingsService) UpdateSystemSettings(
 	ctx context.Context,
+	environment string,
 	updates map[string]string,
 	modifiedBy string,
 ) error {
 	// Validate and update each setting
 	for key, value := range updates {
 		if err := s.queries.UpdateSystemSetting(ctx, db.UpdateSystemSettingParams{
+			Environment:    environment,
 			SettingKey:     key,
 			SettingValue:   value,
 			LastModifiedBy: modifiedBy,
@@ -95,9 +103,10 @@ func (s *SettingsService) UpdateSystemSettings(
 
 	// Log audit trail
 	return s.auditService.Log(ctx, AuditParams{
-		EntityType: "system_settings",
-		Operation:  "bulk_update",
-		UserID:     modifiedBy,
+		Environment: environment,
+		EntityType:  "system_settings",
+		Operation:   "bulk_update",
+		UserID:      modifiedBy,
 		Metadata: map[string]interface{}{
 			"settings_count": len(updates),
 			"settings_keys":  getKeys(updates),

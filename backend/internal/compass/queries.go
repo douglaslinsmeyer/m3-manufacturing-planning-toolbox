@@ -109,13 +109,13 @@ ORDER BY LMDT, LMTS
 	return strings.TrimSpace(query)
 }
 
-// BuildManufacturingOrdersQuery builds the query for MWOHED (Manufacturing Orders)
-// JOINs with MPREAL to get linked CO numbers directly
+// BuildManufacturingOrdersQuery builds the query for MWOHED with MPREAL supply chain resolution
+// Uses SCNB (Supply Chain Number) to handle multi-level chains of any depth: MO → DO → ... → CO
+// All records in a supply chain share the same SCNB, so we self-join MPREAL to find the CO link
 // Only fetches MOs that are Released or Planned (not yet started: WHST <= '20')
 // Filtered by company and facility context
 // For full refresh, use GetFullRefreshDate() as the lastSyncDate parameter
 func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
-	// Select MO fields with mo. prefix
 	fields := []string{
 		// Core identifiers
 		"mo.CONO", "mo.DIVI", "mo.FACI", "mo.MFNO", "mo.PRNO", "mo.ITNO",
@@ -139,7 +139,7 @@ func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
 		// Warehouse
 		"mo.WHLO", "mo.WHSL", "mo.BANO",
 
-		// Reference orders (often NULL - that's why we use MPREAL!)
+		// Reference orders
 		"mo.RORC", "mo.RORN", "mo.RORL", "mo.RORX",
 
 		// Hierarchy
@@ -169,21 +169,35 @@ func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
 		// Data Lake
 		"mo.timestamp", "mo.deleted",
 
-		// MPREAL linking fields (to get CO number)
-		"mpreal.DRDN as linked_co_number",
-		"mpreal.DRDL as linked_co_line",
-		"mpreal.DRDX as linked_co_suffix",
-		"mpreal.PQTY as allocated_qty",
+		// CO link (direct or indirect via DO/PO)
+		"COALESCE(mpreal_direct.DRDN, co_link.DRDN) as linked_co_number",
+		"COALESCE(mpreal_direct.DRDL, co_link.DRDL) as linked_co_line",
+		"COALESCE(mpreal_direct.DRDX, co_link.DRDX) as linked_co_suffix",
+		"COALESCE(mpreal_direct.PQTY, co_link.PQTY) as allocated_qty",
 	}
 
 	query := fmt.Sprintf(`
 SELECT %s
 FROM MWOHED mo
-LEFT JOIN MPREAL mpreal
-  ON mpreal.ARDN = mo.MFNO
-  AND mpreal.AOCA = '101'
-  AND mpreal.DOCA = '311'
-  AND mpreal.deleted = 'false'
+-- Direct link: MO → CO
+LEFT JOIN MPREAL mpreal_direct
+  ON mpreal_direct.ARDN = mo.MFNO
+  AND mpreal_direct.AOCA = '101'
+  AND mpreal_direct.DOCA = '311'
+  AND mpreal_direct.deleted = 'false'
+-- Indirect link step 1: MO → DO/PO
+LEFT JOIN MPREAL mpreal_mo
+  ON mpreal_mo.ARDN = mo.MFNO
+  AND mpreal_mo.AOCA = '101'
+  AND mpreal_mo.DOCA IN ('510', '511')
+  AND mpreal_mo.deleted = 'false'
+  AND mpreal_direct.DRDN IS NULL
+-- Indirect link step 2: DO/PO → CO
+LEFT JOIN MPREAL co_link
+  ON co_link.ARDN = mpreal_mo.DRDN
+  AND co_link.AOCA IN ('500', '501')
+  AND co_link.DOCA = '311'
+  AND co_link.deleted = 'false'
 WHERE mo.deleted = 'false'
   AND mo.LMDT >= %d
   AND mo.WHST <= '20'
@@ -195,7 +209,9 @@ ORDER BY mo.STDT, mo.LMDT
 	return strings.TrimSpace(query)
 }
 
-// BuildPlannedOrdersWithCOLinksQuery builds the query for MMOPLP with MPREAL joins
+// BuildPlannedOrdersWithCOLinksQuery builds the query for MMOPLP with MPREAL supply chain resolution
+// Uses SCNB (Supply Chain Number) to handle multi-level chains of any depth: MOP → DO → ... → CO
+// All records in a supply chain share the same SCNB, so we self-join MPREAL to find the CO link
 // Filtered by company and facility context, only includes firmed planned orders (PSTS = '20')
 // For full refresh, use GetFullRefreshDate() as the lastSyncDate parameter
 func (qb *QueryBuilder) BuildPlannedOrdersWithCOLinksQuery() string {
@@ -221,7 +237,7 @@ func (qb *QueryBuilder) BuildPlannedOrdersWithCOLinksQuery() string {
 		// Warehouse
 		"mop.WHLO",
 
-		// Reference orders (often NULL)
+		// Reference orders
 		"mop.RORC", "mop.RORN", "mop.RORL", "mop.RORX", "mop.RORH",
 
 		// Hierarchy
@@ -245,21 +261,35 @@ func (qb *QueryBuilder) BuildPlannedOrdersWithCOLinksQuery() string {
 		// Data Lake
 		"mop.timestamp", "mop.deleted",
 
-		// MPREAL linking fields (to get CO number)
-		"mpreal.DRDN as linked_co_number",
-		"mpreal.DRDL as linked_co_line",
-		"mpreal.DRDX as linked_co_suffix",
-		"mpreal.PQTY as allocated_qty",
+		// CO link (direct or indirect via DO/PO)
+		"COALESCE(mpreal_direct.DRDN, co_link.DRDN) as linked_co_number",
+		"COALESCE(mpreal_direct.DRDL, co_link.DRDL) as linked_co_line",
+		"COALESCE(mpreal_direct.DRDX, co_link.DRDX) as linked_co_suffix",
+		"COALESCE(mpreal_direct.PQTY, co_link.PQTY) as allocated_qty",
 	}
 
 	query := fmt.Sprintf(`
 SELECT %s
 FROM MMOPLP mop
-LEFT JOIN MPREAL mpreal
-  ON mop.PLPN = CAST(mpreal.ARDN AS BIGINT)
-  AND mpreal.AOCA = '100'
-  AND mpreal.DOCA = '311'
-  AND mpreal.deleted = 'false'
+-- Direct link: MOP → CO
+LEFT JOIN MPREAL mpreal_direct
+  ON mop.PLPN = CAST(mpreal_direct.ARDN AS BIGINT)
+  AND mpreal_direct.AOCA = '100'
+  AND mpreal_direct.DOCA = '311'
+  AND mpreal_direct.deleted = 'false'
+-- Indirect link step 1: MOP → DO/PO
+LEFT JOIN MPREAL mpreal_mop
+  ON mop.PLPN = CAST(mpreal_mop.ARDN AS BIGINT)
+  AND mpreal_mop.AOCA = '100'
+  AND mpreal_mop.DOCA IN ('510', '511')
+  AND mpreal_mop.deleted = 'false'
+  AND mpreal_direct.DRDN IS NULL
+-- Indirect link step 2: DO/PO → CO
+LEFT JOIN MPREAL co_link
+  ON co_link.ARDN = mpreal_mop.DRDN
+  AND co_link.AOCA IN ('500', '501')
+  AND co_link.DOCA = '311'
+  AND co_link.deleted = 'false'
 WHERE mop.deleted = 'false'
   AND mop.LMDT >= %d
   AND mop.PSTS = '20'
@@ -437,6 +467,9 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 		// Partner/EDI (ALL)
 		"E0PA", "DSGP", "PUSN", "PUTP",
 
+		// Joint Delivery
+		"JDCD",
+
 		// Attributes (ATV1-ATV0)
 		"ATV1", "ATV2", "ATV3", "ATV4", "ATV5",
 		"ATV6", "ATV7", "ATV8", "ATV9", "ATV0",
@@ -520,6 +553,49 @@ ORDER BY LMDT, LMTS
 	return strings.TrimSpace(query)
 }
 
+// BuildMPREALQuery builds the query for MPREAL (Pre-Allocation/Supply Chain Links)
+// Loads all pre-allocation records for supply chain resolution
+// Filtered by company context
+// For full refresh, use GetFullRefreshDate() as the lastSyncDate parameter
+func (qb *QueryBuilder) BuildMPREALQuery() string {
+	fields := []string{
+		// Core identifiers
+		"CONO", "WHLO", "ITNO",
+
+		// Acquisition (source) order
+		"AOCA", "ARDN", "ARDL", "ARDX",
+
+		// Demand (destination) order
+		"DOCA", "DRDN", "DRDL", "DRDX",
+
+		// Quantity
+		"PQTY", "PQTR",
+
+		// Supply Chain Number (CRITICAL for multi-level linking!)
+		"SCNB",
+
+		// Planning
+		"RESP", "PATY",
+
+		// M3 audit
+		"RGDT", "RGTM", "LMDT", "CHNO", "CHID", "LMTS",
+
+		// Data Lake
+		"timestamp", "deleted",
+	}
+
+	query := fmt.Sprintf(`
+SELECT %s
+FROM MPREAL
+WHERE deleted = 'false'
+  AND LMDT >= %d
+  AND CONO = '%s'
+ORDER BY SCNB, AOCA, DOCA
+`, strings.Join(fields, ", "), qb.lastSyncDate, qb.company)
+
+	return strings.TrimSpace(query)
+}
+
 // GetFullRefreshDate returns a date far in the past for full refresh
 func GetFullRefreshDate() int {
 	return 20200101 // January 1, 2020
@@ -561,115 +637,3 @@ func ParseM3Time(m3Time int) string {
 	return fmt.Sprintf("%02d:%02d:%02d", hour, minute, second)
 }
 
-// ========================================
-// Range Queries for Parallel Batching
-// ========================================
-// These lightweight aggregate queries return MIN/MAX/COUNT for ID-based partitioning
-// Optimized for Apache Spark: fast aggregates with predicate pushdown
-
-// BuildMOPRangeQuery builds a query to get MIN/MAX/COUNT for planned manufacturing orders
-func (qb *QueryBuilder) BuildMOPRangeQuery() string {
-	query := fmt.Sprintf(`
-SELECT
-  MIN(mop.PLPN) as min_id,
-  MAX(mop.PLPN) as max_id,
-  COUNT(*) as total_records
-FROM MMOPLP mop
-WHERE mop.deleted = 'false'
-  AND mop.PSTS = '20'
-  AND mop.CONO = '%s'
-  AND mop.FACI = '%s'
-`, qb.company, qb.facility)
-
-	return strings.TrimSpace(query)
-}
-
-// BuildMORangeQuery builds a query to get MIN/MAX/COUNT for manufacturing orders
-func (qb *QueryBuilder) BuildMORangeQuery() string {
-	query := fmt.Sprintf(`
-SELECT
-  MIN(mo.MFNO) as min_id,
-  MAX(mo.MFNO) as max_id,
-  COUNT(*) as total_records
-FROM MWOHED mo
-WHERE mo.deleted = 'false'
-  AND mo.WHST <= '20'
-  AND mo.CONO = '%s'
-  AND mo.FACI = '%s'
-`, qb.company, qb.facility)
-
-	return strings.TrimSpace(query)
-}
-
-// BuildCORangeQuery builds a query to get MIN/MAX/COUNT for customer order lines
-func (qb *QueryBuilder) BuildCORangeQuery() string {
-	query := fmt.Sprintf(`
-SELECT
-  MIN(ORNO) as min_id,
-  MAX(ORNO) as max_id,
-  COUNT(*) as total_records
-FROM OOLINE
-WHERE deleted = 'false'
-  AND ORST >= '20'
-  AND ORST < '30'
-  AND CONO = '%s'
-  AND FACI = '%s'
-`, qb.company, qb.facility)
-
-	return strings.TrimSpace(query)
-}
-
-// ========================================
-// Batch Queries with ID Range Filtering
-// ========================================
-// These queries add ID range predicates to enable Spark partition pruning
-
-// BuildMOPBatchQuery builds a query for a specific PLPN range
-// Enables Spark partition pruning via WHERE PLPN >= X AND PLPN < Y predicate
-func (qb *QueryBuilder) BuildMOPBatchQuery(minID, maxID int64) string {
-	baseQuery := qb.BuildPlannedOrdersWithCOLinksQuery()
-
-	// Insert range predicate before ORDER BY clause
-	rangeClause := fmt.Sprintf("  AND mop.PLPN >= %d AND mop.PLPN < %d\n", minID, maxID)
-
-	// Find ORDER BY position and insert range filter before it
-	orderByPos := strings.Index(baseQuery, "ORDER BY")
-	if orderByPos > 0 {
-		return baseQuery[:orderByPos] + rangeClause + baseQuery[orderByPos:]
-	}
-
-	// No ORDER BY found, append range clause
-	return baseQuery + "\n" + rangeClause
-}
-
-// BuildMOBatchQuery builds a query for a specific MFNO range
-// Uses string comparison for ID ranges (works with zero-padded IDs)
-func (qb *QueryBuilder) BuildMOBatchQuery(minID, maxID string) string {
-	baseQuery := qb.BuildManufacturingOrdersQuery()
-
-	// Insert range predicate before ORDER BY
-	rangeClause := fmt.Sprintf("  AND mo.MFNO >= '%s' AND mo.MFNO < '%s'\n", minID, maxID)
-
-	orderByPos := strings.Index(baseQuery, "ORDER BY")
-	if orderByPos > 0 {
-		return baseQuery[:orderByPos] + rangeClause + baseQuery[orderByPos:]
-	}
-
-	return baseQuery + "\n" + rangeClause
-}
-
-// BuildCOBatchQuery builds a query for a specific ORNO range
-// Uses string comparison for order number ranges
-func (qb *QueryBuilder) BuildCOBatchQuery(minID, maxID string) string {
-	baseQuery := qb.BuildOpenCustomerOrderLinesQuery()
-
-	// Insert range predicate before ORDER BY
-	rangeClause := fmt.Sprintf("  AND ORNO >= '%s' AND ORNO < '%s'\n", minID, maxID)
-
-	orderByPos := strings.Index(baseQuery, "ORDER BY")
-	if orderByPos > 0 {
-		return baseQuery[:orderByPos] + rangeClause + baseQuery[orderByPos:]
-	}
-
-	return baseQuery + "\n" + rangeClause
-}

@@ -31,9 +31,10 @@ type AuditParams struct {
 	UserName string
 
 	// Optional context
-	Company   string
-	Facility  string
-	Warehouse string
+	Environment string
+	Company     string
+	Facility    string
+	Warehouse   string
 
 	// Flexible metadata
 	Metadata map[string]interface{}
@@ -57,17 +58,18 @@ func (s *AuditService) Log(ctx context.Context, params AuditParams) error {
 
 	// Insert audit log record
 	return s.queries.CreateAuditLog(ctx, db.CreateAuditLogParams{
-		EntityType: params.EntityType,
-		EntityID:   sql.NullString{String: params.EntityID, Valid: params.EntityID != ""},
-		Operation:  params.Operation,
-		UserID:     sql.NullString{String: params.UserID, Valid: params.UserID != ""},
-		UserName:   sql.NullString{String: params.UserName, Valid: params.UserName != ""},
-		Company:    sql.NullString{String: params.Company, Valid: params.Company != ""},
-		Facility:   sql.NullString{String: params.Facility, Valid: params.Facility != ""},
-		Warehouse:  sql.NullString{String: params.Warehouse, Valid: params.Warehouse != ""},
-		Metadata:   metadataJSON,
-		IPAddress:  sql.NullString{String: params.IPAddress, Valid: params.IPAddress != ""},
-		UserAgent:  sql.NullString{String: params.UserAgent, Valid: params.UserAgent != ""},
+		Environment: sql.NullString{String: params.Environment, Valid: params.Environment != ""},
+		EntityType:  params.EntityType,
+		EntityID:    sql.NullString{String: params.EntityID, Valid: params.EntityID != ""},
+		Operation:   params.Operation,
+		UserID:      sql.NullString{String: params.UserID, Valid: params.UserID != ""},
+		UserName:    sql.NullString{String: params.UserName, Valid: params.UserName != ""},
+		Company:     sql.NullString{String: params.Company, Valid: params.Company != ""},
+		Facility:    sql.NullString{String: params.Facility, Valid: params.Facility != ""},
+		Warehouse:   sql.NullString{String: params.Warehouse, Valid: params.Warehouse != ""},
+		Metadata:    metadataJSON,
+		IPAddress:   sql.NullString{String: params.IPAddress, Valid: params.IPAddress != ""},
+		UserAgent:   sql.NullString{String: params.UserAgent, Valid: params.UserAgent != ""},
 	})
 }
 

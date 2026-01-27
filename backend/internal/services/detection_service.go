@@ -15,14 +15,21 @@ import (
 type DetectionService struct {
 	db               *db.Queries
 	registry         *detectors.DetectorRegistry
+	configService    *DetectorConfigService
 	progressCallback ProgressCallback
 }
 
 // NewDetectionService creates a new detection service
-func NewDetectionService(database *db.Queries) *DetectionService {
+func NewDetectionService(database *db.Queries, configService *DetectorConfigService) *DetectionService {
+	// Initialize detector registry with config service
+	registry := detectors.NewDetectorRegistry()
+	registry.Register(detectors.NewUnlinkedProductionOrdersDetector(configService))
+	registry.Register(detectors.NewJointDeliveryDateMismatchDetector(configService))
+
 	return &DetectionService{
-		db:       database,
-		registry: detectors.InitializeDetectors(),
+		db:            database,
+		registry:      registry,
+		configService: configService,
 	}
 }
 
@@ -39,13 +46,13 @@ func (s *DetectionService) reportProgress(phase string, stepNum, totalSteps int,
 }
 
 // RunAllDetectors executes all registered detectors (respects enabled/disabled settings)
-func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, company, facility string) error {
-	log.Printf("Starting issue detection for job %s (company: %s, facility: %s)", jobID, company, facility)
+func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, environment, company, facility string) error {
+	log.Printf("Starting issue detection for job %s (environment: %s, company: %s, facility: %s)", jobID, environment, company, facility)
 
 	allDetectors := s.registry.GetAll()
 
-	// Load detector enable/disable settings from system_settings
-	enabledDetectors := s.loadEnabledDetectors(ctx)
+	// Load detector enable/disable settings from system_settings for this environment
+	enabledDetectors := s.loadEnabledDetectors(ctx, environment)
 
 	// Filter to only enabled detectors
 	activeDetectors := make([]detectors.IssueDetector, 0)
@@ -90,7 +97,7 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, company, 
 		log.Printf("Running detector %d/%d: %s", i+1, totalDetectors, detector.Name())
 		s.reportProgress("detection", i, totalDetectors, fmt.Sprintf("Running %s detector", detector.Description()))
 
-		issuesFound, err := detector.Detect(ctx, s.db, company, facility)
+		issuesFound, err := detector.Detect(ctx, s.db, environment, company, facility)
 		if err != nil {
 			log.Printf("Detector %s failed: %v", detector.Name(), err)
 			s.db.IncrementFailedDetectors(ctx, jobID)
@@ -121,11 +128,12 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, company, 
 	return nil
 }
 
-// loadEnabledDetectors loads detector enable/disable settings from system_settings
+// loadEnabledDetectors loads detector enable/disable settings from system_settings for a specific environment
 // Returns map of setting_key → enabled (true/false)
 // Default: all detectors enabled if setting doesn't exist
-func (s *DetectionService) loadEnabledDetectors(ctx context.Context) map[string]bool {
-	settings, err := s.db.GetSystemSettings(ctx)
+func (s *DetectionService) loadEnabledDetectors(ctx context.Context, environment string) map[string]bool {
+	// Load settings for this environment
+	settings, err := s.db.GetSystemSettings(ctx, environment)
 	if err != nil {
 		log.Printf("Warning: Failed to load detector settings: %v (all detectors will run)", err)
 		return make(map[string]bool) // Empty map = all enabled by default
@@ -139,6 +147,33 @@ func (s *DetectionService) loadEnabledDetectors(ctx context.Context) map[string]
 		}
 	}
 
-	log.Printf("Loaded %d detector enable/disable settings", len(enabled))
+	log.Printf("Loaded %d detector enable/disable settings for environment '%s'", len(enabled), environment)
 	return enabled
+}
+
+// GetDetectorByName retrieves detector by name for async execution
+func (s *DetectionService) GetDetectorByName(name string) detectors.IssueDetector {
+	return s.registry.GetByName(name)
+}
+
+// GetAllDetectorNames returns all registered detector names
+func (s *DetectionService) GetAllDetectorNames() []string {
+	all := s.registry.GetAll()
+	names := make([]string, len(all))
+	for i, d := range all {
+		names[i] = d.Name()
+	}
+	return names
+}
+
+// IsDetectorEnabled checks if detector is enabled for environment
+func (s *DetectionService) IsDetectorEnabled(ctx context.Context, environment, detectorName string) (bool, error) {
+	enabledMap := s.loadEnabledDetectors(ctx, environment)
+	settingKey := fmt.Sprintf("detector_%s_enabled", detectorName)
+
+	if enabled, exists := enabledMap[settingKey]; exists {
+		return enabled, nil
+	}
+
+	return true, nil // Default: enabled
 }

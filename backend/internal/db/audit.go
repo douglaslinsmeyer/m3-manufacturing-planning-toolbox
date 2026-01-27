@@ -9,13 +9,14 @@ import (
 func (q *Queries) CreateAuditLog(ctx context.Context, params CreateAuditLogParams) error {
 	query := `
 		INSERT INTO audit_log (
-			entity_type, entity_id, operation,
+			environment, entity_type, entity_id, operation,
 			user_id, user_name,
 			company, facility, warehouse,
 			metadata, ip_address, user_agent
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
 	_, err := q.db.ExecContext(ctx, query,
+		params.Environment,
 		params.EntityType,
 		params.EntityID,
 		params.Operation,

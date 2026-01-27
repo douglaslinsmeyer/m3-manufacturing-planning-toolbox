@@ -302,7 +302,7 @@ export interface SnapshotSummary {
   totalProductionOrders: number;
   totalManufacturingOrders: number;
   totalPlannedOrders: number;
-  totalCustomerOrders: number;
+  totalCustomerOrderLines: number;
   totalDeliveries: number;
   lastRefresh?: string;
   inconsistenciesCount: number;

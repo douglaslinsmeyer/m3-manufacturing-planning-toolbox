@@ -6,28 +6,62 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/pinggolf/m3-planning-tools/internal/db"
 )
 
-// UnlinkedProductionOrdersDetector finds MO/MOP without CO links
-type UnlinkedProductionOrdersDetector struct{}
+// UnlinkedProductionOrdersDetector finds MO/MOP without CO links (with configurable filters)
+type UnlinkedProductionOrdersDetector struct {
+	configService ConfigService
+}
+
+// NewUnlinkedProductionOrdersDetector creates a new detector with config service
+func NewUnlinkedProductionOrdersDetector(configService ConfigService) *UnlinkedProductionOrdersDetector {
+	return &UnlinkedProductionOrdersDetector{configService: configService}
+}
 
 func (d *UnlinkedProductionOrdersDetector) Name() string {
 	return "unlinked_production_orders"
 }
 
 func (d *UnlinkedProductionOrdersDetector) Description() string {
-	return "Detects manufacturing orders and planned orders without customer order links"
+	return "Detects manufacturing orders and planned orders without customer order links (with configurable filters)"
 }
 
-func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *db.Queries, company, facility string) (int, error) {
-	log.Printf("[%s] Running detector for facility %s", d.Name(), facility)
+func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *db.Queries, environment, company, facility string) (int, error) {
+	log.Printf("[%s] Running detector for environment %s, facility %s", d.Name(), environment, facility)
+
+	// Load global filters for this environment
+	filters, err := d.configService.LoadFilters(ctx, environment, d.Name())
+	if err != nil {
+		log.Printf("[%s] Warning: failed to load filters: %v (using defaults)", d.Name(), err)
+		filters = DetectorFilters{}
+	}
+
+	// Build filter clauses
+	moStatusClause := buildStatusExclusionSQL("whst", filters.ExcludeMOStatuses)
+	mopStatusClause := buildStatusExclusionSQL("psts", filters.ExcludeMOPStatuses)
+	facilityClause := buildFacilityExclusionSQL(filters.ExcludeFacilities)
+
+	// Build age filter (only flag orders older than min_order_age_days)
+	ageClause := ""
+	if filters.MinOrderAgeDays > 0 {
+		cutoffDate := time.Now().AddDate(0, 0, -filters.MinOrderAgeDays)
+		cutoffDateInt := cutoffDate.Year()*10000 + int(cutoffDate.Month())*100 + cutoffDate.Day()
+		ageClause = fmt.Sprintf("AND CAST(stdt AS INTEGER) < %d", cutoffDateInt)
+	}
+
+	// Build quantity filter
+	quantityClause := ""
+	if filters.MinQuantityThreshold > 0 {
+		quantityClause = fmt.Sprintf("AND CAST(orqt AS DECIMAL) >= %.6f", filters.MinQuantityThreshold)
+	}
 
 	issuesFound := 0
 
-	// Find unlinked MOs
-	moQuery := `
+	// Find unlinked MOs with filters
+	moQuery := fmt.Sprintf(`
 		SELECT
 			mfno as order_number,
 			'MO' as order_type,
@@ -42,13 +76,18 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			orty,
 			whst
 		FROM manufacturing_orders
-		WHERE cono = $1
-		  AND faci = $2
+		WHERE environment = $1
+		  AND cono = $2
+		  AND faci = $3
 		  AND (linked_co_number IS NULL OR linked_co_number = '')
 		  AND deleted_remotely = false
-	`
+		  %s
+		  %s
+		  %s
+		  %s
+	`, moStatusClause, facilityClause, ageClause, quantityClause)
 
-	moRows, err := queries.DB().QueryContext(ctx, moQuery, company, facility)
+	moRows, err := queries.DB().QueryContext(ctx, moQuery, environment, company, facility)
 	if err != nil {
 		return 0, fmt.Errorf("failed to query unlinked MOs: %w", err)
 	}
@@ -80,7 +119,7 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			issueData["status"] = whst.String
 		}
 
-		if err := d.insertIssue(ctx, queries, orderNumber, orderType, faci, whlo, issueData); err != nil {
+		if err := d.insertIssue(ctx, queries, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
 			log.Printf("Error inserting MO issue: %v", err)
 			continue
 		}
@@ -88,8 +127,14 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 		issuesFound++
 	}
 
-	// Find unlinked MOPs
-	mopQuery := `
+	// Build quantity filter for MOPs
+	quantityClauseMOP := ""
+	if filters.MinQuantityThreshold > 0 {
+		quantityClauseMOP = fmt.Sprintf("AND CAST(ppqt AS DECIMAL) >= %.6f", filters.MinQuantityThreshold)
+	}
+
+	// Find unlinked MOPs with filters
+	mopQuery := fmt.Sprintf(`
 		SELECT
 			CAST(plpn AS VARCHAR) as order_number,
 			'MOP' as order_type,
@@ -101,15 +146,21 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			fidt,
 			cono,
 			orty,
-			prno
+			prno,
+			psts
 		FROM planned_manufacturing_orders
-		WHERE cono = $1
-		  AND faci = $2
+		WHERE environment = $1
+		  AND cono = $2
+		  AND faci = $3
 		  AND (linked_co_number IS NULL OR linked_co_number = '')
 		  AND deleted_remotely = false
-	`
+		  %s
+		  %s
+		  %s
+		  %s
+	`, mopStatusClause, facilityClause, ageClause, quantityClauseMOP)
 
-	mopRows, err := queries.DB().QueryContext(ctx, mopQuery, company, facility)
+	mopRows, err := queries.DB().QueryContext(ctx, mopQuery, environment, company, facility)
 	if err != nil {
 		return issuesFound, fmt.Errorf("failed to query unlinked MOPs: %w", err)
 	}
@@ -117,9 +168,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 
 	for mopRows.Next() {
 		var orderNumber, orderType, faci, whlo, itno, orderedQty, stdt, fidt, cono string
-		var orty, prno sql.NullString
+		var orty, prno, psts sql.NullString
 
-		if err := mopRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &cono, &orty, &prno); err != nil {
+		if err := mopRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &cono, &orty, &prno, &psts); err != nil {
 			log.Printf("Error scanning MOP row: %v", err)
 			continue
 		}
@@ -138,8 +189,11 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 		if prno.Valid {
 			issueData["product_number"] = prno.String
 		}
+		if psts.Valid {
+			issueData["status"] = psts.String
+		}
 
-		if err := d.insertIssue(ctx, queries, orderNumber, orderType, faci, whlo, issueData); err != nil {
+		if err := d.insertIssue(ctx, queries, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
 			log.Printf("Error inserting MOP issue: %v", err)
 			continue
 		}
@@ -147,24 +201,28 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 		issuesFound++
 	}
 
-	log.Printf("[%s] Found %d unlinked orders", d.Name(), issuesFound)
+	log.Printf("[%s] Found %d unlinked orders (filters applied: mo_statuses=%v, mop_statuses=%v, min_age_days=%d, facilities=%v, min_qty=%.2f)",
+		d.Name(), issuesFound,
+		filters.ExcludeMOStatuses, filters.ExcludeMOPStatuses,
+		filters.MinOrderAgeDays, filters.ExcludeFacilities, filters.MinQuantityThreshold)
 	return issuesFound, nil
 }
 
-func (d *UnlinkedProductionOrdersDetector) insertIssue(ctx context.Context, queries *db.Queries, orderNumber, orderType, facility, warehouse string, issueData map[string]interface{}) error {
+func (d *UnlinkedProductionOrdersDetector) insertIssue(ctx context.Context, queries *db.Queries, environment, orderNumber, orderType, facility, warehouse string, issueData map[string]interface{}) error {
 	issueDataJSON, _ := json.Marshal(issueData)
 
 	query := `
 		INSERT INTO detected_issues (
-			job_id, detector_type, facility, warehouse,
+			environment, job_id, detector_type, facility, warehouse,
 			issue_key, production_order_number, production_order_type,
 			issue_data
 		)
 		SELECT
-			id, $1, $2, $3,
-			$4, $5, $6,
-			$7
+			$1, id, $2, $3, $4,
+			$5, $6, $7,
+			$8
 		FROM refresh_jobs
+		WHERE environment = $9
 		ORDER BY created_at DESC
 		LIMIT 1
 	`
@@ -172,9 +230,9 @@ func (d *UnlinkedProductionOrdersDetector) insertIssue(ctx context.Context, quer
 	issueKey := orderNumber // Group by order number
 
 	_, err := queries.DB().ExecContext(ctx, query,
-		d.Name(), facility, warehouse,
+		environment, d.Name(), facility, warehouse,
 		issueKey, orderNumber, orderType,
-		issueDataJSON,
+		issueDataJSON, environment, // $9 for WHERE clause
 	)
 
 	return err

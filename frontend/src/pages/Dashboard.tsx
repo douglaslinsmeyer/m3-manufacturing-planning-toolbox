@@ -25,6 +25,14 @@ function ExclamationTriangleIcon({ className }: { className?: string }) {
   );
 }
 
+function CheckCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+    </svg>
+  );
+}
+
 function ArrowTrendingUpIcon({ className }: { className?: string }) {
   return (
     <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
@@ -60,7 +68,7 @@ function ShoppingCartIcon({ className }: { className?: string }) {
 const stats = [
   { name: 'Current Facility', key: 'currentFacility', href: '#', icon: BuildingIcon, color: 'info' },
   { name: 'Production Orders', key: 'totalProductionOrders', href: '#', icon: CubeIcon, color: 'primary' },
-  { name: 'Customer Orders', key: 'totalCustomerOrders', href: '#', icon: ShoppingCartIcon, color: 'success' },
+  { name: 'CO Lines', key: 'totalCustomerOrderLines', href: '#', icon: ShoppingCartIcon, color: 'success' },
   { name: 'Inconsistencies', key: 'inconsistenciesCount', href: '/inconsistencies', icon: ExclamationTriangleIcon, color: 'warning' },
 ];
 
@@ -170,6 +178,28 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const handleCancelRefresh = async () => {
+    if (!currentJobId) return;
+
+    try {
+      const response = await fetch(`/api/data/snapshot/refresh/${currentJobId}/cancel`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to cancel refresh');
+      }
+
+      console.log('Refresh cancelled successfully');
+      setCurrentJobId(null);
+      // Reload status to reflect cancellation
+      loadSnapshotStatus();
+    } catch (error) {
+      console.error('Failed to cancel refresh:', error);
+    }
+  };
+
   const getStatValue = (key: string): string | number => {
     if (!summary) return 0;
 
@@ -247,10 +277,19 @@ const Dashboard: React.FC = () => {
         {/* Refresh Progress */}
         {snapshotStatus?.status === 'running' && (
           <div className="mb-6 lg:mb-10 rounded-lg bg-white p-6 shadow-sm ring-1 ring-slate-200">
-            {/* Header with percentage */}
+            {/* Header with percentage and cancel button */}
             <div className="flex items-center justify-between mb-3">
               <span className="text-lg font-semibold text-slate-900">Refreshing data...</span>
-              <span className="text-2xl font-bold text-primary-600">{snapshotStatus.progress}%</span>
+              <div className="flex items-center gap-4">
+                <span className="text-2xl font-bold text-primary-600">{snapshotStatus.progress}%</span>
+                <button
+                  onClick={handleCancelRefresh}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-md shadow-sm transition-colors"
+                  title="Cancel refresh"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
 
             {/* Progress bar */}
@@ -311,7 +350,7 @@ const Dashboard: React.FC = () => {
               <div className="flex flex-wrap gap-4 text-sm text-slate-600 mb-4">
                 {snapshotStatus.coLinesProcessed !== undefined && snapshotStatus.coLinesProcessed > 0 && (
                   <div className="flex items-center gap-1">
-                    <span className="font-medium">Orders:</span>
+                    <span className="font-medium">CO Lines:</span>
                     <span>{snapshotStatus.coLinesProcessed.toLocaleString()}</span>
                   </div>
                 )}
@@ -366,6 +405,43 @@ const Dashboard: React.FC = () => {
           </div>
         )}
 
+        {/* Refresh Failure Message */}
+        {snapshotStatus?.status === 'failed' && (
+          <div className="mb-6 lg:mb-10 rounded-lg bg-red-50 p-6 shadow-sm ring-1 ring-red-200">
+            <div className="flex items-start gap-3">
+              <ExclamationTriangleIcon className="h-6 w-6 text-red-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-red-900 mb-2">Data Refresh Failed</h3>
+                <p className="text-sm text-red-700 mb-3">
+                  The data refresh encountered an error and could not complete.
+                </p>
+                {snapshotStatus.error && (
+                  <div className="bg-white rounded p-3 text-sm text-slate-700 font-mono whitespace-pre-wrap break-words">
+                    {snapshotStatus.error}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Refresh Success Message */}
+        {snapshotStatus?.status === 'completed' && currentJobId && (
+          <div className="mb-6 lg:mb-10 rounded-lg bg-green-50 p-6 shadow-sm ring-1 ring-green-200">
+            <div className="flex items-start gap-3">
+              <CheckCircleIcon className="h-6 w-6 text-green-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-green-900 mb-1">Data Refresh Completed</h3>
+                <p className="text-sm text-green-700">
+                  Successfully refreshed {(snapshotStatus.coLinesProcessed || 0).toLocaleString()} CO lines,{' '}
+                  {(snapshotStatus.mosProcessed || 0).toLocaleString()} MOs, and{' '}
+                  {(snapshotStatus.mopsProcessed || 0).toLocaleString()} MOPs.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Stats Grid */}
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4 mb-6 lg:gap-8 lg:mb-10">
           {stats.map((stat) => {
@@ -402,7 +478,7 @@ const Dashboard: React.FC = () => {
                       </p>
                     )}
 
-                    {stat.key === 'totalCustomerOrders' && (
+                    {stat.key === 'totalCustomerOrderLines' && (
                       <p className="mt-1 text-xs text-slate-500">
                         Reserved lines only
                       </p>

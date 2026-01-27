@@ -92,16 +92,15 @@ const (
 	SubjectSnapshotComplete      = "snapshot.complete.%s"      // snapshot.complete.{jobID}
 	SubjectSnapshotError         = "snapshot.error.%s"         // snapshot.error.{jobID}
 
-	// Phase distribution subjects (for parallel execution)
-	SubjectSnapshotPhaseTRN      = "snapshot.phase.TRN.>"      // Wildcard for all TRN phase jobs
-	SubjectSnapshotPhasePRD      = "snapshot.phase.PRD.>"      // Wildcard for all PRD phase jobs
-	SubjectPhaseComplete         = "snapshot.phase.complete.%s" // snapshot.phase.complete.{parentJobId}
-	SubjectSnapshotFinalize      = "snapshot.finalize.%s"       // snapshot.finalize.{jobId}
-
-	// Batch distribution subjects (for ID range-based parallel batching)
+	// Batch distribution subjects (for parallel data loading)
 	SubjectSnapshotBatchTRN      = "snapshot.batch.TRN.>"      // Wildcard for all TRN batch jobs
 	SubjectSnapshotBatchPRD      = "snapshot.batch.PRD.>"      // Wildcard for all PRD batch jobs
 	SubjectBatchComplete         = "snapshot.batch.complete.%s" // snapshot.batch.complete.{parentJobId}
+
+	// Detector distribution subjects (for parallel detector execution)
+	SubjectSnapshotDetectorTRN   = "snapshot.detector.TRN.>"      // Wildcard for all TRN detector jobs
+	SubjectSnapshotDetectorPRD   = "snapshot.detector.PRD.>"      // Wildcard for all PRD detector jobs
+	SubjectDetectorComplete      = "snapshot.detector.complete.%s" // snapshot.detector.complete.{parentJobId}
 
 	// Analysis subjects
 	SubjectAnalysisRun           = "analysis.run"
@@ -110,8 +109,7 @@ const (
 
 	// Queue groups (for load balancing)
 	QueueGroupSnapshot           = "snapshot-workers"
-	QueueGroupPhaseWorkers       = "phase-workers"
-	QueueGroupBatchWorkers       = "batch-workers" // NEW: For parallel batch processing
+	QueueGroupBatchWorkers       = "batch-workers"
 	QueueGroupAnalysis           = "analysis-workers"
 )
 
@@ -142,16 +140,6 @@ func GetErrorSubject(jobID string) string {
 	return fmt.Sprintf(SubjectSnapshotError, jobID)
 }
 
-// GetPhaseSubject returns subject for a specific phase job
-func GetPhaseSubject(environment, jobID, phase string) string {
-	return fmt.Sprintf("snapshot.phase.%s.%s.%s", environment, jobID, phase)
-}
-
-// GetPhaseCompleteSubject returns the phase completion subject
-func GetPhaseCompleteSubject(parentJobID string) string {
-	return fmt.Sprintf(SubjectPhaseComplete, parentJobID)
-}
-
 // GetBatchSubject returns the subject for a specific batch type
 // Example: GetBatchSubject("TRN", "mops") → "snapshot.batch.TRN.mops"
 func GetBatchSubject(environment, phase string) string {
@@ -162,4 +150,16 @@ func GetBatchSubject(environment, phase string) string {
 // All batch completions for a job go to the same subject
 func GetBatchCompleteSubject(parentJobID string) string {
 	return fmt.Sprintf(SubjectBatchComplete, parentJobID)
+}
+
+// GetDetectorSubject returns the subject for a specific detector job
+// Example: GetDetectorSubject("TRN", "unlinked_production_orders") → "snapshot.detector.TRN.unlinked_production_orders"
+func GetDetectorSubject(environment, detectorName string) string {
+	return fmt.Sprintf("snapshot.detector.%s.%s", environment, detectorName)
+}
+
+// GetDetectorCompleteSubject returns the subject for detector completion events
+// All detector completions for a job go to the same subject
+func GetDetectorCompleteSubject(parentJobID string) string {
+	return fmt.Sprintf(SubjectDetectorComplete, parentJobID)
 }

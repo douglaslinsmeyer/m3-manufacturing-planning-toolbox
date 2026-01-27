@@ -4,16 +4,18 @@ import { AppLayout } from '../components/AppLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../services/api';
 import type { SystemSettingsGrouped } from '../types';
+import DetectorSection from '../components/DetectorSection';
+import { ToastContainer } from '../components/Toast';
+import { useToast } from '../hooks/useToast';
 
 const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
-  const [activeTab, setActiveTab] = useState<'data-refresh' | 'detectors' | 'integration'>('data-refresh');
+  const toast = useToast();
+  const [activeTab, setActiveTab] = useState<'data-refresh' | 'detectors'>('data-refresh');
   const [systemSettings, setSystemSettings] = useState<SystemSettingsGrouped | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Check if user is admin
   const isAdmin = userProfile?.groups?.some(
@@ -36,12 +38,11 @@ const Settings: React.FC = () => {
 
   const loadSystemSettings = async () => {
     setLoading(true);
-    setError(null);
     try {
       const settings = await api.getSystemSettings();
       setSystemSettings(settings);
     } catch (err: any) {
-      setError(err.response?.data || 'Failed to load system settings');
+      toast.error(err.response?.data || 'Failed to load system settings');
     } finally {
       setLoading(false);
     }
@@ -52,8 +53,6 @@ const Settings: React.FC = () => {
     if (!systemSettings) return;
 
     setSaving(true);
-    setError(null);
-    setSuccessMessage(null);
     try {
       // Convert systemSettings back to flat map
       const flatSettings: Record<string, string> = {};
@@ -62,10 +61,9 @@ const Settings: React.FC = () => {
       });
 
       await api.updateSystemSettings(flatSettings);
-      setSuccessMessage('System settings saved successfully');
-      setTimeout(() => setSuccessMessage(null), 3000);
+      toast.success('System settings saved successfully');
     } catch (err: any) {
-      setError(err.response?.data || 'Failed to save system settings');
+      toast.error(err.response?.data || 'Failed to save system settings');
     } finally {
       setSaving(false);
     }
@@ -78,6 +76,7 @@ const Settings: React.FC = () => {
 
   return (
     <AppLayout>
+      <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
       <div className="px-4 py-6 sm:px-6 lg:px-12 lg:py-10">
         <div className="max-w-5xl mx-auto">
           {/* Header */}
@@ -111,30 +110,8 @@ const Settings: React.FC = () => {
               >
                 Detectors
               </button>
-              <button
-                onClick={() => setActiveTab('integration')}
-                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
-                  activeTab === 'integration'
-                    ? 'border-primary-500 text-primary-600'
-                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
-                }`}
-              >
-                Integration & Performance
-              </button>
             </nav>
           </div>
-
-          {/* Messages */}
-          {error && (
-            <div className="mb-4 bg-error-50 border border-error-200 text-error-800 px-4 py-3 rounded">
-              {error}
-            </div>
-          )}
-          {successMessage && (
-            <div className="mb-4 bg-success-50 border border-success-200 text-success-800 px-4 py-3 rounded">
-              {successMessage}
-            </div>
-          )}
 
           {/* Content */}
           {loading ? (
@@ -162,7 +139,7 @@ interface SystemSettingsFormProps {
   onSettingsChange: (settings: SystemSettingsGrouped | null) => void;
   onSave: (e: React.FormEvent) => void;
   saving: boolean;
-  activeTab: 'data-refresh' | 'detectors' | 'integration';
+  activeTab: 'data-refresh' | 'detectors';
 }
 
 const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
@@ -195,8 +172,6 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
         return ['data_refresh'];
       case 'detectors':
         return ['detection'];
-      case 'integration':
-        return ['integration', 'performance'];
       default:
         return [];
     }
@@ -207,11 +182,81 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
   const categoryLabels: Record<string, string> = {
     data_refresh: 'Data Refresh Settings',
     detection: 'Detector Configuration',
-    integration: 'M3 Integration Settings',
-    performance: 'Performance & Caching',
-    security: 'Security Settings',
   };
 
+  // Special handling for detectors tab - use custom detector sections
+  if (activeTab === 'detectors' && settings.categories['detection']) {
+    return (
+      <form onSubmit={onSave}>
+        <div className="space-y-6">
+          {/* Production Timing Detector Section */}
+          <DetectorSection
+            detectorName="production_timing"
+            detectorLabel="Production Timing"
+            detectorDescription="Detects production orders starting too early or too late relative to customer delivery dates"
+            settings={settings.categories['detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+
+          {/* Start Date Mismatch Detector Section */}
+          <DetectorSection
+            detectorName="start_date_mismatch"
+            detectorLabel="Start Date Mismatch"
+            detectorDescription="Detects multiple production orders for same customer order line with mismatched start dates"
+            settings={settings.categories['detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+
+          {/* Unlinked Production Orders Detector Section */}
+          <DetectorSection
+            detectorName="unlinked_production_orders"
+            detectorLabel="Unlinked Production Orders"
+            detectorDescription="Detects production orders without customer order linkage"
+            settings={settings.categories['detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+
+          {/* Joint Delivery Date Mismatch Detector Section */}
+          <DetectorSection
+            detectorName="joint_delivery_date_mismatch"
+            detectorLabel="Joint Delivery Date Mismatch"
+            detectorDescription="Detects production orders within same joint delivery group with mismatched delivery dates"
+            settings={settings.categories['detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+        </div>
+
+        {/* Save Button */}
+        <div className="mt-6 flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save Detector Settings'}
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  // Standard category rendering for other tabs
   return (
     <form onSubmit={onSave} className="bg-white shadow rounded-lg">
       {categoriesToShow.map((categoryKey, idx) => {

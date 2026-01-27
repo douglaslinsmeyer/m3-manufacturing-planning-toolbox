@@ -10,6 +10,7 @@ import (
 // PlannedManufacturingOrder represents a planned manufacturing order record - all M3 fields as strings
 type PlannedManufacturingOrder struct {
 	ID              int64
+	Environment     string // M3 environment (TRN or PRD)
 
 	// M3 Core Identifiers
 	CONO            string
@@ -111,6 +112,7 @@ func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*Planne
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO planned_manufacturing_orders (
+			environment,
 			cono, divi, faci, plpn, plps, prno, itno,
 			psts, whst, actp,
 			orty, gety,
@@ -129,25 +131,26 @@ func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*Planne
 			linked_co_number, linked_co_line, linked_co_suffix, allocated_qty,
 			sync_timestamp
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7,
-			$8, $9, $10,
-			$11, $12,
-			$13, $14,
-			$15, $16, $17, $18, $19, $20,
-			$21, $22, $23, $24, $25,
-			$26,
-			$27, $28, $29, $30, $31,
-			$32, $33,
-			$34, $35,
-			$36, $37,
-			$38,
-			$39, $40,
-			$41, $42, $43, $44, $45, $46,
-			$47,
-			$48, $49, $50, $51,
+			$1,
+			$2, $3, $4, $5, $6, $7, $8,
+			$9, $10, $11,
+			$12, $13,
+			$14, $15,
+			$16, $17, $18, $19, $20, $21,
+			$22, $23, $24, $25, $26,
+			$27,
+			$28, $29, $30, $31, $32,
+			$33, $34,
+			$35, $36,
+			$37, $38,
+			$39,
+			$40, $41,
+			$42, $43, $44, $45, $46, $47,
+			$48,
+			$49, $50, $51, $52,
 			NOW()
 		)
-		ON CONFLICT (plpn)
+		ON CONFLICT (environment, plpn)
 		DO UPDATE SET
 			psts = EXCLUDED.psts,
 			whst = EXCLUDED.whst,
@@ -203,6 +206,7 @@ func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*Planne
 
 	for _, mop := range orders {
 		_, err = stmt.ExecContext(ctx,
+			mop.Environment,
 			mop.CONO, mop.DIVI, mop.FACI, mop.PLPN, mop.PLPS, mop.PRNO, mop.ITNO,
 			mop.PSTS, mop.WHST, mop.ACTP,
 			mop.ORTY, mop.GETY,
@@ -232,7 +236,7 @@ func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*Planne
 func (q *Queries) UpdateProductionOrdersFromMOPs(ctx context.Context) error {
 	query := `
 		INSERT INTO production_orders (
-			order_type, order_number,
+			environment, order_type, order_number,
 			cono, divi, faci,
 			prno, itno,
 			ordered_quantity, manufactured_quantity,
@@ -250,7 +254,8 @@ func (q *Queries) UpdateProductionOrdersFromMOPs(ctx context.Context) error {
 			orty,
 			mop_id, sync_timestamp, deleted_remotely
 		)
-		SELECT DISTINCT ON (mop.plpn)
+		SELECT DISTINCT ON (mop.environment, mop.plpn)
+			mop.environment,
 			'MOP',
 			mop.plpn,
 			mop.cono, mop.divi, mop.faci,
@@ -270,10 +275,10 @@ func (q *Queries) UpdateProductionOrdersFromMOPs(ctx context.Context) error {
 			mop.orty,
 			mop.id, NOW(), mop.deleted_remotely
 		FROM planned_manufacturing_orders mop
-		ORDER BY mop.plpn,
+		ORDER BY mop.environment, mop.plpn,
 		         CASE WHEN mop.lmdt = '' THEN '99999999' ELSE mop.lmdt END DESC,
 		         mop.id DESC
-		ON CONFLICT (order_number)
+		ON CONFLICT (environment, order_number, order_type)
 		DO UPDATE SET
 			status = EXCLUDED.status,
 			proposal_status = EXCLUDED.proposal_status,

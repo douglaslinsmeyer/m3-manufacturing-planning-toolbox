@@ -27,6 +27,7 @@ type IssueDetectionJob struct {
 // DetectedIssue represents a detected issue
 type DetectedIssue struct {
 	ID                    int64
+	Environment           string // M3 environment (TRN or PRD)
 	JobID                 string
 	DetectorType          string
 	DetectedAt            sql.NullTime
@@ -117,24 +118,26 @@ func (q *Queries) ClearIssuesForJob(ctx context.Context, jobID string) error {
 	return err
 }
 
-// GetIssuesByDetectorType gets issues filtered by detector type
-func (q *Queries) GetIssuesByDetectorType(ctx context.Context, detectorType string, limit int) ([]*DetectedIssue, error) {
+// GetIssuesByDetectorType gets issues filtered by detector type for a specific environment
+func (q *Queries) GetIssuesByDetectorType(ctx context.Context, environment, detectorType string, limit int) ([]*DetectedIssue, error) {
 	query := `
 		SELECT id, job_id, detector_type, detected_at, facility, warehouse,
 			   issue_key, production_order_number, production_order_type,
 			   co_number, co_line, co_suffix, issue_data, created_at
 		FROM detected_issues
-		WHERE job_id = (
+		WHERE environment = $1
+		AND job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
-		AND detector_type = $1
+		AND detector_type = $2
 		ORDER BY detected_at DESC
-		LIMIT $2
+		LIMIT $3
 	`
 
-	rows, err := q.db.QueryContext(ctx, query, detectorType, limit)
+	rows, err := q.db.QueryContext(ctx, query, environment, detectorType, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -159,24 +162,26 @@ func (q *Queries) GetIssuesByDetectorType(ctx context.Context, detectorType stri
 	return issues, nil
 }
 
-// GetIssuesByFacility gets issues filtered by facility
-func (q *Queries) GetIssuesByFacility(ctx context.Context, facility string, limit int) ([]*DetectedIssue, error) {
+// GetIssuesByFacility gets issues filtered by facility for a specific environment
+func (q *Queries) GetIssuesByFacility(ctx context.Context, environment, facility string, limit int) ([]*DetectedIssue, error) {
 	query := `
 		SELECT id, job_id, detector_type, detected_at, facility, warehouse,
 			   issue_key, production_order_number, production_order_type,
 			   co_number, co_line, co_suffix, issue_data, created_at
 		FROM detected_issues
-		WHERE job_id = (
+		WHERE environment = $1
+		AND job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
-		AND facility = $1
+		AND facility = $2
 		ORDER BY detected_at DESC
-		LIMIT $2
+		LIMIT $3
 	`
 
-	rows, err := q.db.QueryContext(ctx, query, facility, limit)
+	rows, err := q.db.QueryContext(ctx, query, environment, facility, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -201,8 +206,8 @@ func (q *Queries) GetIssuesByFacility(ctx context.Context, facility string, limi
 	return issues, nil
 }
 
-// GetIssuesFiltered gets issues with optional filters
-func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility, warehouse string, includeIgnored bool, limit, offset int) ([]*DetectedIssue, error) {
+// GetIssuesFiltered gets issues with optional filters for a specific environment
+func (q *Queries) GetIssuesFiltered(ctx context.Context, environment, detectorType, facility, warehouse string, includeIgnored bool, limit, offset int) ([]*DetectedIssue, error) {
 	query := `
 		SELECT di.id, di.job_id, di.detector_type, di.detected_at, di.facility, di.warehouse,
 			   di.issue_key, di.production_order_number, di.production_order_type,
@@ -211,30 +216,37 @@ func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility,
 			   mot.order_type_description as mo_type_description
 		FROM detected_issues di
 		LEFT JOIN ignored_issues ig
-			ON di.facility = ig.facility
+			ON di.environment = ig.environment
+			AND di.facility = ig.facility
 			AND di.detector_type = ig.detector_type
 			AND di.issue_key = ig.issue_key
 			AND di.production_order_number = ig.production_order_number
 		LEFT JOIN m3_manufacturing_order_types mot
-			ON mot.order_type = di.issue_data->>'mo_type'
+			ON mot.environment = di.environment
+			AND mot.order_type = di.issue_data->>'mo_type'
 			AND mot.company_number = di.issue_data->>'company'
 		LEFT JOIN planned_manufacturing_orders mop
-			ON di.production_order_type = 'MOP'
+			ON di.environment = mop.environment
+			AND di.production_order_type = 'MOP'
 			AND mop.plpn = di.production_order_number
 			AND mop.faci = di.facility
 		LEFT JOIN manufacturing_orders mo
-			ON di.production_order_type = 'MO'
+			ON di.environment = mo.environment
+			AND di.production_order_type = 'MO'
 			AND mo.mfno = di.production_order_number
 			AND mo.faci = di.facility
-		WHERE di.job_id = (
+		WHERE di.environment = $1
+		AND di.job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
 		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
 	`
 	args := make([]interface{}, 0)
-	argNum := 1
+	args = append(args, environment)
+	argNum := 2
 
 	if detectorType != "" {
 		query += fmt.Sprintf(" AND di.detector_type = $%d", argNum)
@@ -288,23 +300,25 @@ func (q *Queries) GetIssuesFiltered(ctx context.Context, detectorType, facility,
 	return issues, rows.Err()
 }
 
-// GetRecentIssues gets recent issues (no filter)
-func (q *Queries) GetRecentIssues(ctx context.Context, limit int) ([]*DetectedIssue, error) {
+// GetRecentIssues gets recent issues (no filter) for a specific environment
+func (q *Queries) GetRecentIssues(ctx context.Context, environment string, limit int) ([]*DetectedIssue, error) {
 	query := `
 		SELECT id, job_id, detector_type, detected_at, facility, warehouse,
 			   issue_key, production_order_number, production_order_type,
 			   co_number, co_line, co_suffix, issue_data, created_at
 		FROM detected_issues
-		WHERE job_id = (
+		WHERE environment = $1
+		AND job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
 		ORDER BY detected_at DESC
-		LIMIT $1
+		LIMIT $2
 	`
 
-	rows, err := q.db.QueryContext(ctx, query, limit)
+	rows, err := q.db.QueryContext(ctx, query, environment, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -329,53 +343,61 @@ func (q *Queries) GetRecentIssues(ctx context.Context, limit int) ([]*DetectedIs
 	return issues, nil
 }
 
-// GetIssueCountForLatestJob gets the total issue count for the latest refresh job
-func (q *Queries) GetIssueCountForLatestJob(ctx context.Context) (int, error) {
+// GetIssueCountForLatestJob gets the total issue count for the latest refresh job in a specific environment
+func (q *Queries) GetIssueCountForLatestJob(ctx context.Context, environment string) (int, error) {
 	query := `
 		SELECT COUNT(*)
 		FROM detected_issues
-		WHERE job_id = (
+		WHERE environment = $1
+		AND job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
 	`
 
 	var count int
-	err := q.db.QueryRowContext(ctx, query).Scan(&count)
+	err := q.db.QueryRowContext(ctx, query, environment).Scan(&count)
 	if err == sql.ErrNoRows {
 		return 0, nil // No issues found
 	}
 	return count, err
 }
 
-// GetIssuesFilteredCount gets the total count of issues matching the filters
-func (q *Queries) GetIssuesFilteredCount(ctx context.Context, detectorType, facility, warehouse string, includeIgnored bool) (int, error) {
+// GetIssuesFilteredCount gets the total count of issues matching the filters for a specific environment
+func (q *Queries) GetIssuesFilteredCount(ctx context.Context, environment, detectorType, facility, warehouse string, includeIgnored bool) (int, error) {
 	query := `
 		SELECT COUNT(*)
 		FROM detected_issues di
 		LEFT JOIN ignored_issues ig
-			ON di.facility = ig.facility
+			ON di.environment = ig.environment
+			AND di.facility = ig.facility
 			AND di.detector_type = ig.detector_type
 			AND di.issue_key = ig.issue_key
 			AND di.production_order_number = ig.production_order_number
 		LEFT JOIN planned_manufacturing_orders mop
-			ON di.production_order_type = 'MOP'
+			ON di.environment = mop.environment
+			AND di.production_order_type = 'MOP'
 			AND mop.plpn = di.production_order_number
 			AND mop.faci = di.facility
 		LEFT JOIN manufacturing_orders mo
-			ON di.production_order_type = 'MO'
+			ON di.environment = mo.environment
+			AND di.production_order_type = 'MO'
 			AND mo.mfno = di.production_order_number
 			AND mo.faci = di.facility
-		WHERE di.job_id = (
+		WHERE di.environment = $1
+		AND di.job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
 		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
 	`
 	args := make([]interface{}, 0)
-	argNum := 1
+	args = append(args, environment)
+	argNum := 2
 
 	if detectorType != "" {
 		query += fmt.Sprintf(" AND di.detector_type = $%d", argNum)
@@ -407,8 +429,8 @@ func (q *Queries) GetIssuesFilteredCount(ctx context.Context, detectorType, faci
 	return count, err
 }
 
-// GetIssueSummary gets aggregated issue counts with warehouse grouping and nested hierarchy
-func (q *Queries) GetIssueSummary(ctx context.Context, includeIgnored bool) (map[string]interface{}, error) {
+// GetIssueSummary gets aggregated issue counts with warehouse grouping and nested hierarchy for a specific environment
+func (q *Queries) GetIssueSummary(ctx context.Context, environment string, includeIgnored bool) (map[string]interface{}, error) {
 	query := `
 		SELECT
 			di.detector_type,
@@ -417,20 +439,25 @@ func (q *Queries) GetIssueSummary(ctx context.Context, includeIgnored bool) (map
 			COUNT(*) as issue_count
 		FROM detected_issues di
 		LEFT JOIN ignored_issues ig
-			ON di.facility = ig.facility
+			ON di.environment = ig.environment
+			AND di.facility = ig.facility
 			AND di.detector_type = ig.detector_type
 			AND di.issue_key = ig.issue_key
 			AND di.production_order_number = ig.production_order_number
 		LEFT JOIN planned_manufacturing_orders mop
-			ON di.production_order_type = 'MOP'
+			ON di.environment = mop.environment
+			AND di.production_order_type = 'MOP'
 			AND mop.plpn = di.production_order_number
 			AND mop.faci = di.facility
 		LEFT JOIN manufacturing_orders mo
-			ON di.production_order_type = 'MO'
+			ON di.environment = mo.environment
+			AND di.production_order_type = 'MO'
 			AND mo.mfno = di.production_order_number
 			AND mo.faci = di.facility
-		WHERE di.job_id = (
+		WHERE di.environment = $1
+		AND di.job_id = (
 			SELECT id FROM refresh_jobs
+			WHERE environment = $1
 			ORDER BY created_at DESC
 			LIMIT 1
 		)
@@ -446,7 +473,7 @@ func (q *Queries) GetIssueSummary(ctx context.Context, includeIgnored bool) (map
 		ORDER BY di.facility, di.warehouse, di.detector_type
 	`
 
-	rows, err := q.db.QueryContext(ctx, query)
+	rows, err := q.db.QueryContext(ctx, query, environment)
 	if err != nil {
 		return nil, err
 	}
@@ -543,17 +570,18 @@ func (q *Queries) GetLatestRefreshJobID(ctx context.Context) (string, error) {
 func (q *Queries) IgnoreIssue(ctx context.Context, params IgnoreIssueParams) error {
 	query := `
 		INSERT INTO ignored_issues (
-			facility, detector_type, issue_key,
+			environment, facility, detector_type, issue_key,
 			production_order_number, production_order_type,
 			co_number, co_line, notes, ignored_by
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (facility, detector_type, issue_key, production_order_number)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		ON CONFLICT (environment, facility, detector_type, issue_key, production_order_number)
 		DO UPDATE SET
 			ignored_at = CURRENT_TIMESTAMP,
 			notes = EXCLUDED.notes,
 			ignored_by = EXCLUDED.ignored_by
 	`
 	_, err := q.db.ExecContext(ctx, query,
+		params.Environment,
 		params.Facility,
 		params.DetectorType,
 		params.IssueKey,
@@ -571,12 +599,14 @@ func (q *Queries) IgnoreIssue(ctx context.Context, params IgnoreIssueParams) err
 func (q *Queries) UnignoreIssue(ctx context.Context, params UnignoreIssueParams) error {
 	query := `
 		DELETE FROM ignored_issues
-		WHERE facility = $1
-		  AND detector_type = $2
-		  AND issue_key = $3
-		  AND production_order_number = $4
+		WHERE environment = $1
+		  AND facility = $2
+		  AND detector_type = $3
+		  AND issue_key = $4
+		  AND production_order_number = $5
 	`
 	_, err := q.db.ExecContext(ctx, query,
+		params.Environment,
 		params.Facility,
 		params.DetectorType,
 		params.IssueKey,
@@ -590,14 +620,16 @@ func (q *Queries) IsIssueIgnored(ctx context.Context, params CheckIgnoredParams)
 	query := `
 		SELECT EXISTS(
 			SELECT 1 FROM ignored_issues
-			WHERE facility = $1
-			  AND detector_type = $2
-			  AND issue_key = $3
-			  AND production_order_number = $4
+			WHERE environment = $1
+			  AND facility = $2
+			  AND detector_type = $3
+			  AND issue_key = $4
+			  AND production_order_number = $5
 		)
 	`
 	var exists bool
 	err := q.db.QueryRowContext(ctx, query,
+		params.Environment,
 		params.Facility,
 		params.DetectorType,
 		params.IssueKey,

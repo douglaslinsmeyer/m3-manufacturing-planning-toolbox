@@ -43,6 +43,14 @@ type SystemSettingsGroupedResponse struct {
 
 // handleGetUserSettings retrieves the current user's settings
 func (s *Server) handleGetUserSettings(w http.ResponseWriter, r *http.Request) {
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Get user ID from session/profile
 	userID, err := s.getUserIDFromSession(r)
 	if err != nil {
@@ -51,10 +59,10 @@ func (s *Server) handleGetUserSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Printf("DEBUG: Getting user settings for user ID: %s", userID)
+	log.Printf("DEBUG: Getting user settings for environment %s, user ID: %s", environment, userID)
 
 	// Get settings from service
-	settings, err := s.settingsService.GetUserSettings(r.Context(), userID)
+	settings, err := s.settingsService.GetUserSettings(r.Context(), environment, userID)
 	if err != nil {
 		log.Printf("ERROR: Failed to retrieve user settings: %v", err)
 		http.Error(w, "Failed to retrieve settings", http.StatusInternalServerError)
@@ -109,6 +117,14 @@ type UpdateUserSettingsRequest struct {
 
 // handleUpdateUserSettings updates the current user's settings
 func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request) {
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Get user ID from session/profile
 	userID, err := s.getUserIDFromSession(r)
 	if err != nil {
@@ -169,7 +185,7 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 		Preferences:         preferencesJSON,
 	}
 
-	if err := s.settingsService.UpdateUserSettings(r.Context(), userID, params, userID); err != nil {
+	if err := s.settingsService.UpdateUserSettings(r.Context(), environment, userID, params, userID); err != nil {
 		http.Error(w, "Failed to update settings", http.StatusInternalServerError)
 		return
 	}
@@ -180,11 +196,19 @@ func (s *Server) handleUpdateUserSettings(w http.ResponseWriter, r *http.Request
 
 // handleGetSystemSettings retrieves all system settings (admin only)
 func (s *Server) handleGetSystemSettings(w http.ResponseWriter, r *http.Request) {
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Admin check handled by middleware
-	log.Printf("DEBUG: handleGetSystemSettings called")
+	log.Printf("DEBUG: handleGetSystemSettings called for environment %s", environment)
 
 	// Get settings from service
-	settings, err := s.settingsService.GetSystemSettings(r.Context())
+	settings, err := s.settingsService.GetSystemSettings(r.Context(), environment)
 	if err != nil {
 		log.Printf("ERROR: Failed to retrieve system settings: %v", err)
 		http.Error(w, fmt.Sprintf("Failed to retrieve system settings: %v", err), http.StatusInternalServerError)
@@ -224,6 +248,14 @@ type UpdateSystemSettingsRequest struct {
 
 // handleUpdateSystemSettings updates system settings (admin only)
 func (s *Server) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Request) {
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
 	// Admin check handled by middleware
 
 	// Get user ID from session/profile
@@ -246,7 +278,7 @@ func (s *Server) handleUpdateSystemSettings(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Update settings
-	if err := s.settingsService.UpdateSystemSettings(r.Context(), req.Settings, userID); err != nil {
+	if err := s.settingsService.UpdateSystemSettings(r.Context(), environment, req.Settings, userID); err != nil {
 		http.Error(w, "Failed to update system settings", http.StatusInternalServerError)
 		return
 	}
