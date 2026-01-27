@@ -734,7 +734,7 @@ func (w *SnapshotWorker) publishDetectorJobs(req SnapshotRefreshMessage, totalCo
 	log.Printf("Found %d enabled detectors to run", totalDetectors)
 
 	// Create detection job record
-	if err := w.db.CreateIssueDetectionJob(ctx, req.JobID, totalDetectors); err != nil {
+	if err := w.db.CreateIssueDetectionJob(ctx, req.JobID, req.Environment, totalDetectors); err != nil {
 		return fmt.Errorf("failed to create detection job: %w", err)
 	}
 

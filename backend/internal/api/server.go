@@ -243,6 +243,10 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/snapshot/active-job", s.handleGetActiveJob).Methods("GET")
 	protected.HandleFunc("/snapshot/progress/{jobId}", s.handleSnapshotProgressSSE).Methods("GET")
 
+	// Detection management
+	protected.HandleFunc("/detection/detectors", s.handleListDetectors).Methods("GET")
+	protected.HandleFunc("/detection/trigger", s.handleTriggerDetection).Methods("POST")
+
 	// Production orders (unified MO/MOP view)
 	protected.HandleFunc("/production-orders", s.handleListProductionOrders).Methods("GET")
 	protected.HandleFunc("/production-orders/{id}", s.handleGetProductionOrder).Methods("GET")

@@ -58,6 +58,9 @@ type IssueDetector interface {
 	// Name returns the unique detector type identifier
 	Name() string
 
+	// Label returns a short, user-friendly display name
+	Label() string
+
 	// Description returns a human-readable description
 	Description() string
 

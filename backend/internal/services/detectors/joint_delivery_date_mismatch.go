@@ -23,12 +23,23 @@ func (d *JointDeliveryDateMismatchDetector) Name() string {
 	return "joint_delivery_date_mismatch"
 }
 
+func (d *JointDeliveryDateMismatchDetector) Label() string {
+	return "Joint Delivery Date Mismatches"
+}
+
 func (d *JointDeliveryDateMismatchDetector) Description() string {
 	return "Detects production orders within same joint delivery group (JDCD) with misaligned start dates"
 }
 
 func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries *db.Queries, environment, company, facility string) (int, error) {
 	log.Printf("[%s] Running detector for environment %s, facility %s", d.Name(), environment, facility)
+
+	// Get the latest refresh job ID for this environment (issues are always associated with refresh jobs)
+	latestRefreshJob, err := queries.GetLatestRefreshJobByEnvironment(ctx, environment)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get latest refresh job: %w", err)
+	}
+	refreshJobID := latestRefreshJob.ID
 
 	// Resolve tolerance_days threshold (use facility scope, no warehouse/MO type)
 	toleranceDaysRaw, foundTolerance, err := d.configService.ResolveThreshold(
@@ -63,7 +74,9 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 				po.prno as product_number,
 				po.orty as mo_type,
 				po.ordered_quantity as planned_quantity,
-				po.cono
+				po.cono,
+				col.codt as confirmed_delivery_date,
+				col.dwdt as requested_delivery_date
 			FROM production_orders po
 			INNER JOIN customer_order_lines col
 				ON po.linked_co_number = col.orno
@@ -93,25 +106,25 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 				MAX(CAST(planned_start_date AS INTEGER)) as max_date,
 				COUNT(DISTINCT co_line || '-' || co_suffix) as num_co_lines,
 				COUNT(*) as num_production_orders,
-				array_agg(DISTINCT planned_start_date ORDER BY planned_start_date) as dates,
-				array_agg(json_build_object(
+				json_agg(DISTINCT planned_start_date ORDER BY planned_start_date) as dates,
+				json_agg(json_build_object(
 					'number', production_order_number,
 					'type', production_order_type,
 					'date', planned_start_date,
 					'co_line', co_line || '-' || co_suffix,
 					'product_number', product_number,
 					'mo_type', mo_type,
-					'quantity', planned_quantity
+					'quantity', planned_quantity,
+					'confirmed_delivery_date', confirmed_delivery_date,
+					'requested_delivery_date', requested_delivery_date
 				) ORDER BY production_order_type, production_order_number) as orders
 			FROM jdcd_production_orders
 			GROUP BY co_number, jdcd, facility, warehouse, item_number, cono
 			-- Check if date variance exceeds tolerance (dates are YYYYMMDD strings)
 			HAVING (
-				-- Convert string dates to actual dates and check day difference
-				EXTRACT(DAY FROM (
-					TO_DATE(MAX(planned_start_date), 'YYYYMMDD') -
-					TO_DATE(MIN(planned_start_date), 'YYYYMMDD')
-				)) > %d
+				-- TO_DATE subtraction returns integer days directly, no EXTRACT needed
+				(TO_DATE(MAX(planned_start_date), 'YYYYMMDD') -
+				 TO_DATE(MIN(planned_start_date), 'YYYYMMDD')) > %d
 			)
 		)
 		SELECT
@@ -178,7 +191,7 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 			"company":                 cono,
 		}
 
-		if err := d.insertIssue(ctx, queries, environment, coNumber, jdcd, faci, whlo, issueData, orders); err != nil {
+		if err := d.insertIssue(ctx, queries, refreshJobID, environment, coNumber, jdcd, faci, whlo, issueData, orders); err != nil {
 			log.Printf("Error inserting issue: %v", err)
 			continue
 		}
@@ -190,51 +203,52 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 	return issuesFound, nil
 }
 
-func (d *JointDeliveryDateMismatchDetector) insertIssue(ctx context.Context, queries *db.Queries, environment, coNumber, jdcd, facility, warehouse string, issueData map[string]interface{}, orders []map[string]interface{}) error {
+func (d *JointDeliveryDateMismatchDetector) insertIssue(ctx context.Context, queries *db.Queries, refreshJobID, environment, coNumber, jdcd, facility, warehouse string, issueData map[string]interface{}, orders []map[string]interface{}) error {
 	issueDataJSON, _ := json.Marshal(issueData)
 
-	// Insert one issue per production order in the misaligned group
-	for _, order := range orders {
-		orderNumber, _ := order["number"].(string)
-		orderType, _ := order["type"].(string)
-		coLineKey, _ := order["co_line"].(string) // Already formatted as "line-suffix"
+	// Insert ONE issue per JDCD group (not per production order)
+	// This avoids cluttering the UI with duplicate rows for the same JDCD problem
 
-		query := `
-			INSERT INTO detected_issues (
-				environment, job_id, detector_type, facility, warehouse,
-				issue_key, production_order_number, production_order_type,
-				co_number, co_line, co_suffix,
-				issue_data
-			)
-			SELECT
-				$1, id, $2, $3, $4,
-				$5, $6, $7,
-				$8, $9, $10,
-				$11
-			FROM refresh_jobs
-			WHERE environment = $12
-			ORDER BY created_at DESC
-			LIMIT 1
-		`
-
-		// Parse co_line and co_suffix from coLineKey (format: "line-suffix")
-		var coLine, coSuffix string
-		fmt.Sscanf(coLineKey, "%[^-]-%s", &coLine, &coSuffix)
-
-		// Issue key is co_number + jdcd to group all orders in same JDCD group
-		issueKey := fmt.Sprintf("%s-JDCD-%s", coNumber, jdcd)
-
-		_, err := queries.DB().ExecContext(ctx, query,
-			environment, d.Name(), facility, warehouse,
-			issueKey, orderNumber, orderType,
-			coNumber, coLine, coSuffix,
-			issueDataJSON, environment, // $12 for WHERE clause
-		)
-
-		if err != nil {
-			return err
-		}
+	// Handle edge case: empty orders array
+	if len(orders) == 0 {
+		log.Printf("Warning: JDCD group %s-%s has no orders, skipping", coNumber, jdcd)
+		return nil
 	}
 
-	return nil
+	// Use first order for representative top-level fields
+	firstOrder := orders[0]
+	orderNumber, _ := firstOrder["number"].(string)
+	orderType, _ := firstOrder["type"].(string)
+	coLineKey, _ := firstOrder["co_line"].(string) // Already formatted as "line-suffix"
+
+	query := `
+		INSERT INTO detected_issues (
+			environment, job_id, detector_type, facility, warehouse,
+			issue_key, production_order_number, production_order_type,
+			co_number, co_line, co_suffix,
+			issue_data
+		)
+		VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8,
+			$9, $10, $11,
+			$12
+		)
+	`
+
+	// Parse co_line and co_suffix from coLineKey (format: "line-suffix")
+	var coLine, coSuffix string
+	fmt.Sscanf(coLineKey, "%[^-]-%s", &coLine, &coSuffix)
+
+	// Issue key is co_number + jdcd to group all orders in same JDCD group
+	issueKey := fmt.Sprintf("%s-JDCD-%s", coNumber, jdcd)
+
+	_, err := queries.DB().ExecContext(ctx, query,
+		environment, refreshJobID, d.Name(), facility, warehouse,
+		issueKey, orderNumber, orderType,
+		coNumber, coLine, coSuffix,
+		issueDataJSON,
+	)
+
+	return err
 }

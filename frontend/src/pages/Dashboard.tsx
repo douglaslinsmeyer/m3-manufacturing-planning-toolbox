@@ -7,6 +7,7 @@ import { useSnapshotProgress } from '../hooks/useSnapshotProgress';
 import { useContextManagement } from '../hooks/useContextManagement';
 import { IssueBreakdownHierarchy } from '../components/IssueBreakdownHierarchy';
 import PhaseProgressBar from '../components/PhaseProgressBar';
+import { DetectorTrigger } from '../components/DetectorTrigger';
 import type { SnapshotSummary, SnapshotStatus } from '../types';
 
 function ArrowPathIcon({ className }: { className?: string }) {
@@ -251,14 +252,24 @@ const Dashboard: React.FC = () => {
                 Overview of your manufacturing planning data
               </p>
             </div>
-            <button
-              onClick={handleRefresh}
-              disabled={refreshing || snapshotStatus?.status === 'running'}
-              className="inline-flex items-center gap-2 rounded-md bg-primary-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-all hover:bg-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <ArrowPathIcon className={`h-4 w-4 ${refreshing || snapshotStatus?.status === 'running' ? 'animate-spin' : ''}`} />
-              {refreshing || snapshotStatus?.status === 'running' ? 'Refreshing...' : 'Refresh Data'}
-            </button>
+            <div className="flex items-center gap-2">
+              <DetectorTrigger
+                environment={effectiveContext?.environment || 'PRD'}
+                disabled={refreshing || snapshotStatus?.status === 'running' || !summary}
+                onTrigger={(jobId) => {
+                  console.log('Detection triggered:', jobId);
+                  // TODO: Could add toast notification or tracking here
+                }}
+              />
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing || snapshotStatus?.status === 'running'}
+                className="inline-flex items-center gap-2 rounded-md bg-primary-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-all hover:bg-primary-500 focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <ArrowPathIcon className={`h-4 w-4 ${refreshing || snapshotStatus?.status === 'running' ? 'animate-spin' : ''}`} />
+                {refreshing || snapshotStatus?.status === 'running' ? 'Refreshing...' : 'Refresh Data'}
+              </button>
+            </div>
           </div>
         </div>
 

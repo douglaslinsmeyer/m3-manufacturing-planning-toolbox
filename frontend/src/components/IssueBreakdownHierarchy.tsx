@@ -1,18 +1,38 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { IssueSummary } from '../services/api';
 
-const DETECTOR_LABELS: Record<string, string> = {
-  'unlinked_production_orders': 'Unlinked Production Orders',
-  'start_date_mismatch': 'Start Date Mismatches',
-  'production_timing': 'Production Timing Issues',
-};
+interface Detector {
+  name: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+}
 
 interface Props {
   summary: IssueSummary;
 }
 
 export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
+  const [detectorLabels, setDetectorLabels] = useState<Record<string, string>>({});
+
+  // Fetch detector metadata to get labels
+  useEffect(() => {
+    const fetchDetectors = async () => {
+      try {
+        // Use TRN as default - detector labels are environment-agnostic
+        const response = await fetch('/api/detection/detectors?environment=TRN');
+        const detectors: Detector[] = await response.json();
+        const labels: Record<string, string> = {};
+        detectors.forEach(d => labels[d.name] = d.label);
+        setDetectorLabels(labels);
+      } catch (err) {
+        console.error('Failed to load detector labels:', err);
+      }
+    };
+    fetchDetectors();
+  }, []);
+
   // Extract facility/warehouse/detector hierarchy
   const facilityData = summary.by_facility_warehouse_detector;
 
@@ -69,7 +89,7 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
                     </th>
                     {summary.by_detector && Object.keys(summary.by_detector).map(detector => (
                       <th key={detector} className="px-4 py-3 text-center text-xs font-medium text-slate-700 uppercase tracking-wider">
-                        {DETECTOR_LABELS[detector] || detector}
+                        {detectorLabels[detector] || detector}
                       </th>
                     ))}
                     <th className="px-4 py-3 text-center text-xs font-medium text-slate-700 uppercase tracking-wider">

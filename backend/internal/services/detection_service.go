@@ -78,7 +78,7 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, environme
 	log.Printf("Running %d enabled detectors (total available: %d)", totalDetectors, len(allDetectors))
 
 	// Create detection job record
-	if err := s.db.CreateIssueDetectionJob(ctx, jobID, totalDetectors); err != nil {
+	if err := s.db.CreateIssueDetectionJob(ctx, jobID, environment, totalDetectors); err != nil {
 		return fmt.Errorf("failed to create detection job: %w", err)
 	}
 

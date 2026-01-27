@@ -3,6 +3,7 @@ import { AppLayout } from '../components/AppLayout';
 import { buildM3BookmarkURL, M3Config } from '../utils/m3Links';
 import { api } from '../services/api';
 import { ConfirmModal } from '../components/ConfirmModal';
+import { JointDeliveryDetailModal } from '../components/JointDeliveryDetailModal';
 import { ToastContainer } from '../components/Toast';
 import { useToast } from '../hooks/useToast';
 
@@ -23,6 +24,13 @@ interface Issue {
   isIgnored?: boolean;
 }
 
+interface Detector {
+  name: string;
+  label: string;
+  description: string;
+  enabled: boolean;
+}
+
 interface IssueSummary {
   total: number;
   by_detector: Record<string, number>;
@@ -38,11 +46,13 @@ function ExclamationTriangleIcon({ className }: { className?: string }) {
   );
 }
 
-const DETECTOR_LABELS: Record<string, string> = {
-  'unlinked_production_orders': 'Unlinked Production Orders',
-  'start_date_mismatch': 'Start Date Mismatches',
-  'production_timing': 'Production Timing Issues',
-};
+function InformationCircleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
+    </svg>
+  );
+}
 
 // Format M3 date (YYYYMMDD integer) to readable format
 function formatM3Date(dateStr: string | number): string {
@@ -103,12 +113,15 @@ const Inconsistencies: React.FC = () => {
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('');
   const [showIgnored, setShowIgnored] = useState<boolean>(false);
   const [m3Config, setM3Config] = useState<M3Config | null>(null);
+  const [detectorLabels, setDetectorLabels] = useState<Record<string, string>>({});
   const [deleteModalOpen, setDeleteModalOpen] = useState(false);
   const [issueToDelete, setIssueToDelete] = useState<Issue | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [closeMOModalOpen, setCloseMOModalOpen] = useState(false);
   const [issueToClose, setIssueToClose] = useState<Issue | null>(null);
   const [isClosing, setIsClosing] = useState(false);
+  const [detailModalOpen, setDetailModalOpen] = useState(false);
+  const [selectedIssueForDetail, setSelectedIssueForDetail] = useState<Issue | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
@@ -145,6 +158,23 @@ const Inconsistencies: React.FC = () => {
 
     // Mark as initialized to allow fetching
     setIsInitialized(true);
+  }, []);
+
+  // Fetch detector metadata for labels
+  useEffect(() => {
+    const fetchDetectors = async () => {
+      try {
+        // Use TRN as default - detector labels are environment-agnostic
+        const response = await fetch('/api/detection/detectors?environment=TRN');
+        const detectors: Detector[] = await response.json();
+        const labels: Record<string, string> = {};
+        detectors.forEach(d => labels[d.name] = d.label);
+        setDetectorLabels(labels);
+      } catch (err) {
+        console.error('Failed to load detector labels:', err);
+      }
+    };
+    fetchDetectors();
   }, []);
 
   // Reset to page 1 when filters change
@@ -374,7 +404,7 @@ const Inconsistencies: React.FC = () => {
             {Object.entries(summary.by_detector).slice(0, 3).map(([detector, count]) => (
               <div key={detector} className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
                 <div className="text-sm font-medium text-slate-500">
-                  {DETECTOR_LABELS[detector] || detector}
+                  {detectorLabels[detector] || detector}
                 </div>
                 <div className="mt-2 text-3xl font-semibold text-slate-900">{count}</div>
               </div>
@@ -397,7 +427,7 @@ const Inconsistencies: React.FC = () => {
                 <option value="">All Types</option>
                 {summary && Object.keys(summary.by_detector).map((detector) => (
                   <option key={detector} value={detector}>
-                    {DETECTOR_LABELS[detector] || detector} ({summary.by_detector[detector]})
+                    {detectorLabels[detector] || detector} ({summary.by_detector[detector]})
                   </option>
                 ))}
               </select>
@@ -479,7 +509,7 @@ const Inconsistencies: React.FC = () => {
                       className={issue.isIgnored ? 'bg-slate-100 opacity-75 hover:bg-slate-150' : 'hover:bg-slate-50'}
                     >
                       <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-slate-900">
-                        {DETECTOR_LABELS[issue.detectorType] || issue.detectorType}
+                        {detectorLabels[issue.detectorType] || issue.detectorType}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-500">
                         {issue.productionOrderNumber && (
@@ -524,7 +554,16 @@ const Inconsistencies: React.FC = () => {
                         {issue.warehouse && <div className="text-xs text-slate-400">{issue.warehouse}</div>}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-500">
-                        <IssueDetailsCell issueData={issue.issueData} detectorType={issue.detectorType} productionOrderType={issue.productionOrderType} />
+                        <IssueDetailsCell
+                          issueData={issue.issueData}
+                          detectorType={issue.detectorType}
+                          productionOrderType={issue.productionOrderType}
+                          issue={issue}
+                          onShowDetail={(issue) => {
+                            setSelectedIssueForDetail(issue);
+                            setDetailModalOpen(true);
+                          }}
+                        />
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm">
                         <div className="flex items-center gap-2">
@@ -673,13 +712,33 @@ const Inconsistencies: React.FC = () => {
           onCancel={handleCloseMOCancel}
           isDestructive={true}
         />
+
+        {/* Joint Delivery Detail Modal */}
+        {detailModalOpen && selectedIssueForDetail && (
+          <JointDeliveryDetailModal
+            isOpen={detailModalOpen}
+            onClose={() => {
+              setDetailModalOpen(false);
+              setSelectedIssueForDetail(null);
+            }}
+            issueData={selectedIssueForDetail.issueData}
+            coNumber={selectedIssueForDetail.coNumber}
+            currentOrderNumber={selectedIssueForDetail.productionOrderNumber}
+          />
+        )}
       </div>
     </AppLayout>
   );
 };
 
 // Helper component to display issue-specific details
-const IssueDetailsCell: React.FC<{ issueData: Record<string, any>; detectorType: string; productionOrderType?: string }> = ({ issueData, detectorType, productionOrderType }) => {
+const IssueDetailsCell: React.FC<{
+  issueData: Record<string, any>;
+  detectorType: string;
+  productionOrderType?: string;
+  issue?: Issue;
+  onShowDetail?: (issue: Issue) => void;
+}> = ({ issueData, detectorType, productionOrderType, issue, onShowDetail }) => {
   if (detectorType === 'unlinked_production_orders') {
     const startDate = issueData.start_date ? formatM3DateRelative(issueData.start_date) : null;
 
@@ -735,6 +794,18 @@ const IssueDetailsCell: React.FC<{ issueData: Record<string, any>; detectorType:
           <div className="text-slate-400">Type: {issueData.mo_type}</div>
         )}
       </div>
+    );
+  }
+
+  if (detectorType === 'joint_delivery_date_mismatch') {
+    return (
+      <button
+        onClick={() => issue && onShowDetail && onShowDetail(issue)}
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
+      >
+        <InformationCircleIcon className="h-4 w-4" />
+        Details
+      </button>
     );
   }
 

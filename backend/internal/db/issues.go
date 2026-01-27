@@ -46,12 +46,12 @@ type DetectedIssue struct {
 }
 
 // CreateIssueDetectionJob creates a new detection job
-func (q *Queries) CreateIssueDetectionJob(ctx context.Context, jobID string, totalDetectors int) error {
+func (q *Queries) CreateIssueDetectionJob(ctx context.Context, jobID string, environment string, totalDetectors int) error {
 	query := `
-		INSERT INTO issue_detection_jobs (job_id, status, total_detectors, started_at)
-		VALUES ($1, 'running', $2, NOW())
+		INSERT INTO issue_detection_jobs (job_id, environment, status, total_detectors, started_at)
+		VALUES ($1, $2, 'running', $3, NOW())
 	`
-	_, err := q.db.ExecContext(ctx, query, jobID, totalDetectors)
+	_, err := q.db.ExecContext(ctx, query, jobID, environment, totalDetectors)
 	return err
 }
 
@@ -115,6 +115,16 @@ func (q *Queries) FailDetectionJob(ctx context.Context, jobID string, errorMessa
 func (q *Queries) ClearIssuesForJob(ctx context.Context, jobID string) error {
 	query := `DELETE FROM detected_issues WHERE job_id = $1`
 	_, err := q.db.ExecContext(ctx, query, jobID)
+	return err
+}
+
+// ClearIssuesForDetector removes issues for a specific detector and job
+func (q *Queries) ClearIssuesForDetector(ctx context.Context, jobID, detectorType string) error {
+	query := `
+		DELETE FROM detected_issues
+		WHERE job_id = $1 AND detector_type = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, detectorType)
 	return err
 }
 

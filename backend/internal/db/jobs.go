@@ -281,3 +281,66 @@ func (q *Queries) GetActiveRefreshJob(ctx context.Context, environment string) (
 
 	return job, nil
 }
+
+// GetLatestRefreshJobByEnvironment gets the most recent completed refresh job for an environment
+func (q *Queries) GetLatestRefreshJobByEnvironment(ctx context.Context, environment string) (*RefreshJob, error) {
+	query := `
+		SELECT
+			id, environment, user_id, status,
+			current_step, total_steps, completed_steps, progress_percentage,
+			co_lines_processed, mos_processed, mops_processed,
+			records_per_second, estimated_seconds_remaining,
+			current_operation, current_batch, total_batches,
+			started_at, completed_at, duration_seconds,
+			error_message, retry_count, max_retries,
+			created_at, updated_at
+		FROM refresh_jobs
+		WHERE environment = $1
+		  AND status = 'completed'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	job := &RefreshJob{}
+	err := q.db.QueryRowContext(ctx, query, environment).Scan(
+		&job.ID, &job.Environment, &job.UserID, &job.Status,
+		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
+		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
+		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
+		&job.CurrentOperation, &job.CurrentBatch, &job.TotalBatches,
+		&job.StartedAt, &job.CompletedAt, &job.DurationSeconds,
+		&job.ErrorMessage, &job.RetryCount, &job.MaxRetries,
+		&job.CreatedAt, &job.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("no completed refresh job found for environment %s", environment)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest refresh job: %w", err)
+	}
+
+	return job, nil
+}
+
+// GetRefreshJobContext gets company and facility from the data loaded by a refresh job
+func (q *Queries) GetRefreshJobContext(ctx context.Context, jobID string) (company, facility string, err error) {
+	// Get company and facility from production_orders for this refresh job's environment
+	query := `
+		SELECT DISTINCT po.cono, po.faci
+		FROM production_orders po
+		INNER JOIN refresh_jobs rj ON rj.environment = po.environment
+		WHERE rj.id = $1
+		LIMIT 1
+	`
+
+	err = q.db.QueryRowContext(ctx, query, jobID).Scan(&company, &facility)
+	if err == sql.ErrNoRows {
+		return "", "", fmt.Errorf("no production orders found for refresh job %s", jobID)
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get refresh job context: %w", err)
+	}
+
+	return company, facility, nil
+}

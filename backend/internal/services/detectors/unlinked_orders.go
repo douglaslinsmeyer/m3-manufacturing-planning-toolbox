@@ -25,12 +25,23 @@ func (d *UnlinkedProductionOrdersDetector) Name() string {
 	return "unlinked_production_orders"
 }
 
+func (d *UnlinkedProductionOrdersDetector) Label() string {
+	return "Unlinked Production Orders"
+}
+
 func (d *UnlinkedProductionOrdersDetector) Description() string {
 	return "Detects manufacturing orders and planned orders without customer order links (with configurable filters)"
 }
 
 func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *db.Queries, environment, company, facility string) (int, error) {
 	log.Printf("[%s] Running detector for environment %s, facility %s", d.Name(), environment, facility)
+
+	// Get the latest refresh job ID for this environment (issues are always associated with refresh jobs)
+	latestRefreshJob, err := queries.GetLatestRefreshJobByEnvironment(ctx, environment)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get latest refresh job: %w", err)
+	}
+	refreshJobID := latestRefreshJob.ID
 
 	// Load global filters for this environment
 	filters, err := d.configService.LoadFilters(ctx, environment, d.Name())
@@ -119,7 +130,7 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			issueData["status"] = whst.String
 		}
 
-		if err := d.insertIssue(ctx, queries, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
+		if err := d.insertIssue(ctx, queries, refreshJobID, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
 			log.Printf("Error inserting MO issue: %v", err)
 			continue
 		}
@@ -193,7 +204,7 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			issueData["status"] = psts.String
 		}
 
-		if err := d.insertIssue(ctx, queries, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
+		if err := d.insertIssue(ctx, queries, refreshJobID, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
 			log.Printf("Error inserting MOP issue: %v", err)
 			continue
 		}
@@ -208,7 +219,7 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 	return issuesFound, nil
 }
 
-func (d *UnlinkedProductionOrdersDetector) insertIssue(ctx context.Context, queries *db.Queries, environment, orderNumber, orderType, facility, warehouse string, issueData map[string]interface{}) error {
+func (d *UnlinkedProductionOrdersDetector) insertIssue(ctx context.Context, queries *db.Queries, refreshJobID, environment, orderNumber, orderType, facility, warehouse string, issueData map[string]interface{}) error {
 	issueDataJSON, _ := json.Marshal(issueData)
 
 	query := `
@@ -217,22 +228,19 @@ func (d *UnlinkedProductionOrdersDetector) insertIssue(ctx context.Context, quer
 			issue_key, production_order_number, production_order_type,
 			issue_data
 		)
-		SELECT
-			$1, id, $2, $3, $4,
-			$5, $6, $7,
-			$8
-		FROM refresh_jobs
-		WHERE environment = $9
-		ORDER BY created_at DESC
-		LIMIT 1
+		VALUES (
+			$1, $2, $3, $4, $5,
+			$6, $7, $8,
+			$9
+		)
 	`
 
 	issueKey := orderNumber // Group by order number
 
 	_, err := queries.DB().ExecContext(ctx, query,
-		environment, d.Name(), facility, warehouse,
+		environment, refreshJobID, d.Name(), facility, warehouse,
 		issueKey, orderNumber, orderType,
-		issueDataJSON, environment, // $9 for WHERE clause
+		issueDataJSON,
 	)
 
 	return err
