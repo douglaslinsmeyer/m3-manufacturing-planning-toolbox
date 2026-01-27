@@ -63,6 +63,7 @@ type M3CustomerOrderTypeResponse struct {
 
 // EffectiveContextResponse represents the effective context
 type EffectiveContextResponse struct {
+	Environment           string                `json:"environment"`
 	Company               string                `json:"company"`
 	Division              string                `json:"division"`
 	Facility              string                `json:"facility"`
@@ -84,6 +85,12 @@ type TemporaryOverrideRequest struct {
 func (s *Server) handleGetEffectiveContext(w http.ResponseWriter, r *http.Request) {
 	session, _ := s.sessionStore.Get(r, "m3-session")
 
+	// Get environment from session
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		environment = "PRD" // Default fallback
+	}
+
 	// Get effective context
 	effective := s.contextService.GetEffectiveContext(session)
 	userDefaults := s.contextService.GetUserDefaults(session)
@@ -96,6 +103,7 @@ func (s *Server) handleGetEffectiveContext(w http.ResponseWriter, r *http.Reques
 	}
 
 	response := EffectiveContextResponse{
+		Environment:           environment,
 		Company:               effective.Company,
 		Division:              effective.Division,
 		Facility:              effective.Facility,
@@ -191,7 +199,13 @@ func (s *Server) handleRetryLoadContext(w http.ResponseWriter, r *http.Request) 
 	effective := s.contextService.GetEffectiveContext(session)
 	userDefaults := s.contextService.GetUserDefaults(session)
 
+	// Get environment (already fetched above on line 169)
+	if environment == "" {
+		environment = "PRD" // Default fallback
+	}
+
 	response := EffectiveContextResponse{
+		Environment:           environment,
 		Company:               effective.Company,
 		Division:              effective.Division,
 		Facility:              effective.Facility,

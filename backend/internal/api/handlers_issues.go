@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,9 +10,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/pinggolf/m3-planning-tools/internal/db"
+	"github.com/pinggolf/m3-planning-tools/internal/m3api"
 	"github.com/pinggolf/m3-planning-tools/internal/services"
 )
 
@@ -696,6 +699,316 @@ func (s *Server) handleCloseMO(w http.ResponseWriter, r *http.Request) {
 		"success":     true,
 		"m3_response": response,
 	})
+}
+
+// getCurrentDateYYYYMMDD returns current date in YYYYMMDD format
+func getCurrentDateYYYYMMDD() int {
+	now := time.Now()
+	return now.Year()*10000 + int(now.Month())*100 + now.Day()
+}
+
+// getNextBusinessDay returns next business day in YYYYMMDD format (skips weekends)
+func getNextBusinessDay() int {
+	now := time.Now()
+
+	// Start with tomorrow
+	next := now.AddDate(0, 0, 1)
+
+	// Skip Saturday and Sunday
+	for next.Weekday() == time.Saturday || next.Weekday() == time.Sunday {
+		next = next.AddDate(0, 0, 1)
+	}
+
+	// Return in YYYYMMDD format
+	return next.Year()*10000 + int(next.Month())*100 + next.Day()
+}
+
+// getAlignmentDate checks if date is in the past and adjusts to next business day if needed
+func getAlignmentDate(minDate int) (alignmentDate int, wasAdjusted bool) {
+	currentDate := getCurrentDateYYYYMMDD()
+
+	if minDate < currentDate {
+		// Earliest date is in the past, use next business day
+		return getNextBusinessDay(), true
+	}
+
+	// Earliest date is today or future, use it as-is
+	return minDate, false
+}
+
+// handleAlignEarliestMOs aligns all production orders in a JDCD group to the earliest date
+func (s *Server) handleAlignEarliestMOs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse issue ID from URL
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	issueID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid issue ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get issue details
+	issue, err := s.db.GetIssueByID(ctx, issueID)
+	if err != nil {
+		http.Error(w, "Issue not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify this is a joint delivery date mismatch issue
+	if issue.DetectorType != "joint_delivery_date_mismatch" {
+		http.Error(w, "This operation is only valid for joint delivery date mismatch issues", http.StatusBadRequest)
+		return
+	}
+
+	// Parse issue data
+	var issueData map[string]interface{}
+	if err := json.Unmarshal([]byte(issue.IssueData), &issueData); err != nil {
+		http.Error(w, "Failed to parse issue data", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract alignment target date and orders
+	minDate := int(issueData["min_date"].(float64))
+	orders, ok := issueData["orders"].([]interface{})
+	if !ok || len(orders) == 0 {
+		http.Error(w, "No orders found in issue data", http.StatusBadRequest)
+		return
+	}
+
+	// Check if min_date is in the past and adjust to next business day if needed
+	alignmentDate, dateAdjusted := getAlignmentDate(minDate)
+	alignmentDateStr := fmt.Sprintf("%d", alignmentDate)
+
+	if dateAdjusted {
+		log.Printf("Earliest date %d is in the past, adjusted to next business day: %d", minDate, alignmentDate)
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Process each order
+	alignedCount := 0
+	skippedCount := 0
+	failedCount := 0
+	failures := []map[string]string{}
+
+	for _, orderInterface := range orders {
+		order, ok := orderInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		orderNumber, _ := order["number"].(string)
+		orderType, _ := order["type"].(string)
+		currentDate, _ := order["date"].(string)
+
+		// Skip if already aligned to target date
+		if currentDate == alignmentDateStr {
+			skippedCount++
+			log.Printf("Skipping %s %s - already aligned to %s", orderType, orderNumber, alignmentDateStr)
+			continue
+		}
+
+		var alignErr error
+
+		if orderType == "MO" {
+			// Reschedule MO to alignment date (may be adjusted from min_date if past)
+			alignErr = s.rescheduleMO(ctx, m3Client, orderNumber, issue.Facility, alignmentDateStr)
+		} else if orderType == "MOP" {
+			// Update MOP dates (maintaining duration)
+			alignErr = s.updateMOPDates(ctx, m3Client, orderNumber, currentDate, alignmentDateStr)
+		} else {
+			alignErr = fmt.Errorf("unknown order type: %s", orderType)
+		}
+
+		if alignErr != nil {
+			failedCount++
+			failures = append(failures, map[string]string{
+				"order": orderNumber,
+				"type":  orderType,
+				"error": alignErr.Error(),
+			})
+			log.Printf("Failed to align %s %s: %v", orderType, orderNumber, alignErr)
+		} else {
+			alignedCount++
+			log.Printf("Successfully aligned %s %s to %s", orderType, orderNumber, alignmentDateStr)
+		}
+	}
+
+	// Create audit log for successful alignments
+	if alignedCount > 0 {
+		jdcd, _ := issueData["jdcd"].(string)
+
+		// Get environment from session
+		session, _ := s.sessionStore.Get(r, "m3-session")
+		environment, _ := session.Values["environment"].(string)
+
+		err = s.auditService.Log(ctx, services.AuditParams{
+			Environment: environment,
+			EntityType:  "jdcd_group",
+			EntityID:    jdcd,
+			Operation:   "align_earliest",
+			Facility:    issue.Facility,
+			Metadata: map[string]interface{}{
+				"aligned_count":     alignedCount,
+				"failed_count":      failedCount,
+				"skipped_count":     skippedCount,
+				"target_date":       alignmentDateStr,
+				"date_adjusted":     dateAdjusted,
+				"original_min_date": minDate,
+				"co_number":         issue.CONumber.String,
+				"jdcd":              jdcd,
+			},
+			IPAddress: getIPAddress(r),
+			UserAgent: r.Header.Get("User-Agent"),
+		})
+		if err != nil {
+			log.Printf("Failed to create audit log: %v", err)
+		}
+	}
+
+	// Return summary response with date adjustment info
+	response := map[string]interface{}{
+		"success":       failedCount == 0,
+		"aligned_count": alignedCount,
+		"skipped_count": skippedCount,
+		"failed_count":  failedCount,
+		"total_orders":  len(orders),
+		"target_date":   alignmentDateStr,
+		"date_adjusted": dateAdjusted,
+		"failures":      failures,
+	}
+
+	if dateAdjusted {
+		response["original_min_date"] = fmt.Sprintf("%d", minDate)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// rescheduleMO reschedules a manufacturing order to a new start date
+func (s *Server) rescheduleMO(ctx context.Context, m3Client *m3api.Client, mfno, facility, newStartDate string) error {
+	// Get MO details from production_orders view
+	moQuery := `
+		SELECT prno, ordered_quantity
+		FROM production_orders
+		WHERE order_number = $1 AND faci = $2 AND order_type = 'MO'
+		LIMIT 1
+	`
+	var prno, orqa string
+	err := s.db.DB().QueryRowContext(ctx, moQuery, mfno, facility).Scan(&prno, &orqa)
+	if err != nil {
+		return fmt.Errorf("failed to get MO details: %w", err)
+	}
+
+	// Call M3 API to reschedule
+	params := map[string]string{
+		"FACI": facility,
+		"PRNO": prno,
+		"MFNO": mfno,
+		"ORQA": orqa,
+		"WLDE": "0",           // Infinite/no bottlenecks
+		"STDT": newStartDate,  // New aligned start date
+		"DSP1": "1",           // Auto-approve: date earlier than today
+		"DSP2": "1",           // Auto-approve: MO connected to order
+		"DSP3": "1",           // Auto-approve: order contains subcontract
+		"DSP4": "1",           // Auto-approve: quantity not divisible
+	}
+
+	log.Printf("Rescheduling MO %s to %s (FACI: %s, PRNO: %s, ORQA: %s)", mfno, newStartDate, facility, prno, orqa)
+
+	response, err := m3Client.Execute(ctx, "PMS100MI", "Reschedule", params)
+	if err != nil {
+		return fmt.Errorf("M3 API error: %w", err)
+	}
+
+	// Log successful reschedule
+	if response != nil {
+		log.Printf("Successfully rescheduled MO %s to %s", mfno, newStartDate)
+	}
+
+	return nil
+}
+
+// updateMOPDates updates a MOP's start and finish dates (maintaining production duration)
+func (s *Server) updateMOPDates(ctx context.Context, m3Client *m3api.Client, plpnStr, currentStartDate, newStartDate string) error {
+	plpn, err := strconv.ParseInt(plpnStr, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid PLPN format: %w", err)
+	}
+
+	// Get MOP details for current finish date
+	mopQuery := `
+		SELECT stdt, fidt
+		FROM planned_manufacturing_orders
+		WHERE plpn = $1
+		LIMIT 1
+	`
+	var currentStart, currentFinish string
+	err = s.db.DB().QueryRowContext(ctx, mopQuery, plpn).Scan(&currentStart, &currentFinish)
+	if err != nil {
+		return fmt.Errorf("failed to get MOP details: %w", err)
+	}
+
+	// Validate dates
+	if currentStart == "" || currentStart == "0" {
+		currentStart = currentStartDate // Fall back to issue data
+	}
+	if currentFinish == "" || currentFinish == "0" {
+		return fmt.Errorf("MOP %d has no finish date, cannot calculate new finish", plpn)
+	}
+
+	// Calculate new finish date based on desired start date and maintaining production duration
+	startInt, err := strconv.Atoi(currentStart)
+	if err != nil {
+		return fmt.Errorf("invalid current start date: %w", err)
+	}
+	finishInt, err := strconv.Atoi(currentFinish)
+	if err != nil {
+		return fmt.Errorf("invalid current finish date: %w", err)
+	}
+	newStartInt, err := strconv.Atoi(newStartDate)
+	if err != nil {
+		return fmt.Errorf("invalid new start date: %w", err)
+	}
+
+	duration := finishInt - startInt
+	if duration < 0 {
+		log.Printf("Warning: MOP %d has negative duration (start %s > finish %s), using 0", plpn, currentStart, currentFinish)
+		duration = 0
+	}
+
+	newFinishInt := newStartInt + duration
+	newFinishDate := fmt.Sprintf("%d", newFinishInt)
+
+	log.Printf("Updating MOP %d: finish date %s → %s (maintaining %d day duration for target start %s)",
+		plpn, currentFinish, newFinishDate, duration, newStartDate)
+
+	// Call M3 API to update MOP - NOTE: MOPs can only update finish date, not start date
+	params := map[string]string{
+		"PLPN": plpnStr,
+		"FIDT": newFinishDate, // Only update finish date (calculated to align with desired start)
+		"IGWA": "1",           // Ignore warnings
+	}
+
+	response, err := m3Client.Execute(ctx, "PMS170MI", "Updat", params)
+	if err != nil {
+		return fmt.Errorf("M3 API error: %w", err)
+	}
+
+	// Log successful update
+	if response != nil {
+		log.Printf("Successfully updated MOP %d finish date to %s", plpn, newFinishDate)
+	}
+
+	return nil
 }
 
 // getIPAddress extracts the client IP address from the request

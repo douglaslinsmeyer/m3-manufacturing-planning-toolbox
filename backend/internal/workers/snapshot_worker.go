@@ -484,7 +484,7 @@ func (w *SnapshotWorker) handleDetectorJob(msg *nats.Msg) {
 	}
 
 	// Execute detector
-	issuesFound, err := detector.Detect(ctx, w.db, job.Environment, job.Company, job.Facility)
+	issuesFound, err := detector.Detect(ctx, w.db, job.ParentJobID, job.Environment, job.Company, job.Facility)
 
 	if err != nil {
 		log.Printf("Detector '%s' failed: %v", job.DetectorName, err)

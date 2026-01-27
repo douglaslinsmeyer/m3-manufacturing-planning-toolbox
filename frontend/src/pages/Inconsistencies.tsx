@@ -120,6 +120,9 @@ const Inconsistencies: React.FC = () => {
   const [closeMOModalOpen, setCloseMOModalOpen] = useState(false);
   const [issueToClose, setIssueToClose] = useState<Issue | null>(null);
   const [isClosing, setIsClosing] = useState(false);
+  const [alignModalOpen, setAlignModalOpen] = useState(false);
+  const [issueToAlign, setIssueToAlign] = useState<Issue | null>(null);
+  const [isAligning, setIsAligning] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [selectedIssueForDetail, setSelectedIssueForDetail] = useState<Issue | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -374,6 +377,82 @@ const Inconsistencies: React.FC = () => {
     setIssueToClose(null);
   };
 
+  // Helper to build alignment confirmation message
+  const getAlignmentMessage = (issue: Issue) => {
+    const minDate = issue.issueData?.min_date;
+    const numOrders = issue.issueData?.num_production_orders || 0;
+
+    if (!minDate) {
+      return `This will reschedule ${numOrders} production orders. Continue?`;
+    }
+
+    // Check if date is in the past
+    const minDateInt = parseInt(String(minDate));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const minDateObj = new Date(
+      Math.floor(minDateInt / 10000),
+      (Math.floor(minDateInt / 100) % 100) - 1,
+      minDateInt % 100
+    );
+
+    const isPast = minDateObj < today;
+
+    if (isPast) {
+      return `The earliest date (${formatM3Date(minDate)}) is in the past. This will reschedule ${numOrders} production orders to the next business day instead. Continue?`;
+    }
+
+    return `This will reschedule ${numOrders} production orders to align with the earliest date (${formatM3Date(minDate)}). This action will update orders in M3. Continue?`;
+  };
+
+  const handleAlignEarliestClick = (issue: Issue) => {
+    setIssueToAlign(issue);
+    setAlignModalOpen(true);
+  };
+
+  const handleAlignEarliestConfirm = async () => {
+    if (!issueToAlign) return;
+
+    setIsAligning(true);
+    try {
+      const result = await api.alignEarliestMOs(issueToAlign.id);
+
+      setAlignModalOpen(false);
+      setIssueToAlign(null);
+
+      // Refresh data
+      await Promise.all([fetchIssues(), fetchSummary()]);
+
+      // Build success message with date adjustment info
+      let successMessage = `Successfully aligned ${result.aligned_count} production orders to ${formatM3Date(result.target_date)}`;
+      if (result.date_adjusted && result.original_min_date) {
+        successMessage += ` (adjusted from ${formatM3Date(result.original_min_date)} to next business day)`;
+      }
+
+      // Show success/partial success message
+      if (result.failed_count === 0) {
+        toast.success(successMessage);
+      } else if (result.aligned_count > 0) {
+        const warningMsg = `Aligned ${result.aligned_count} orders, ${result.failed_count} failed.${result.date_adjusted ? ' Date adjusted to next business day.' : ''}`;
+        toast.warning(warningMsg);
+        console.error('Alignment failures:', result.failures);
+      } else {
+        toast.error('Failed to align any production orders. Please try again.');
+      }
+    } catch (error) {
+      console.error('Failed to align orders:', error);
+      toast.error('Failed to align production orders. Please try again.');
+    } finally {
+      setIsAligning(false);
+    }
+  };
+
+  const handleAlignEarliestCancel = () => {
+    setAlignModalOpen(false);
+    setIssueToAlign(null);
+  };
+
   return (
     <AppLayout>
       <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
@@ -613,6 +692,17 @@ const Inconsistencies: React.FC = () => {
                               Close
                             </button>
                           )}
+
+                          {/* Align Earliest button - only for joint_delivery_date_mismatch */}
+                          {issue.detectorType === 'joint_delivery_date_mismatch' && (
+                            <button
+                              onClick={() => handleAlignEarliestClick(issue)}
+                              className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                              title="Align all orders to earliest date"
+                            >
+                              Align Earliest
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -713,6 +803,18 @@ const Inconsistencies: React.FC = () => {
           isDestructive={true}
         />
 
+        {/* Align Earliest Confirmation Modal */}
+        <ConfirmModal
+          isOpen={alignModalOpen}
+          title="Align Production Orders to Earliest Date"
+          message={issueToAlign ? getAlignmentMessage(issueToAlign) : ''}
+          confirmLabel={isAligning ? 'Aligning...' : 'Align Orders'}
+          cancelLabel="Cancel"
+          onConfirm={handleAlignEarliestConfirm}
+          onCancel={handleAlignEarliestCancel}
+          isDestructive={false}
+        />
+
         {/* Joint Delivery Detail Modal */}
         {detailModalOpen && selectedIssueForDetail && (
           <JointDeliveryDetailModal
@@ -720,6 +822,10 @@ const Inconsistencies: React.FC = () => {
             onClose={() => {
               setDetailModalOpen(false);
               setSelectedIssueForDetail(null);
+            }}
+            onAlignEarliest={() => {
+              setDetailModalOpen(false);  // Close detail modal
+              handleAlignEarliestClick(selectedIssueForDetail);  // Open confirm modal
             }}
             issueData={selectedIssueForDetail.issueData}
             coNumber={selectedIssueForDetail.coNumber}

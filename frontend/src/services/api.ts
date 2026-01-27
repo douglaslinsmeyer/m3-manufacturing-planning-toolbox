@@ -239,6 +239,19 @@ class ApiService {
     return response.data;
   }
 
+  async alignEarliestMOs(issueId: number): Promise<{
+    success: boolean;
+    aligned_count: number;
+    skipped_count: number;
+    failed_count: number;
+    total_orders: number;
+    target_date: string;
+    failures?: Array<{ order: string; type: string; error: string }>;
+  }> {
+    const response = await this.client.post(`/issues/${issueId}/align-earliest`);
+    return response.data;
+  }
+
   async getTimeline(params?: {
     startDate?: string;
     endDate?: string;

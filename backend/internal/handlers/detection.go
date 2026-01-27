@@ -156,7 +156,7 @@ func HandleTriggerDetection(natsManager *queue.Manager, database *db.Queries) ht
 		for _, detectorName := range req.DetectorNames {
 			job := workers.DetectorJobMessage{
 				JobID:        fmt.Sprintf("%s-%s", detectionJobID, detectorName),
-				ParentJobID:  detectionJobID,
+				ParentJobID:  latestRefreshJob.ID, // Use refresh job ID so issues are associated correctly
 				DetectorName: detectorName,
 				Environment:  req.Environment,
 				Company:      company,

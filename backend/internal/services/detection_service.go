@@ -97,7 +97,7 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, environme
 		log.Printf("Running detector %d/%d: %s", i+1, totalDetectors, detector.Name())
 		s.reportProgress("detection", i, totalDetectors, fmt.Sprintf("Running %s detector", detector.Description()))
 
-		issuesFound, err := detector.Detect(ctx, s.db, environment, company, facility)
+		issuesFound, err := detector.Detect(ctx, s.db, jobID, environment, company, facility)
 		if err != nil {
 			log.Printf("Detector %s failed: %v", detector.Name(), err)
 			s.db.IncrementFailedDetectors(ctx, jobID)

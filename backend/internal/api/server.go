@@ -270,6 +270,7 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/issues/{id}/delete-mop", s.handleDeletePlannedMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/delete-mo", s.handleDeleteMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/close-mo", s.handleCloseMO).Methods("POST")
+	protected.HandleFunc("/issues/{id}/align-earliest", s.handleAlignEarliestMOs).Methods("POST")
 
 	// Settings routes (user settings - authenticated users only)
 	protected.HandleFunc("/settings/user", s.handleGetUserSettings).Methods("GET")

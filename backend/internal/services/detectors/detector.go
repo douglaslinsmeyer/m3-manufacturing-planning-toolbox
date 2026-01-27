@@ -66,7 +66,7 @@ type IssueDetector interface {
 
 	// Detect runs the detection logic and returns issues found
 	// Returns: issue count, error
-	Detect(ctx context.Context, queries *db.Queries, environment, company, facility string) (int, error)
+	Detect(ctx context.Context, queries *db.Queries, refreshJobID, environment, company, facility string) (int, error)
 }
 
 // DetectorRegistry manages all registered detectors

@@ -31,15 +31,8 @@ func (d *JointDeliveryDateMismatchDetector) Description() string {
 	return "Detects production orders within same joint delivery group (JDCD) with misaligned start dates"
 }
 
-func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries *db.Queries, environment, company, facility string) (int, error) {
-	log.Printf("[%s] Running detector for environment %s, facility %s", d.Name(), environment, facility)
-
-	// Get the latest refresh job ID for this environment (issues are always associated with refresh jobs)
-	latestRefreshJob, err := queries.GetLatestRefreshJobByEnvironment(ctx, environment)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get latest refresh job: %w", err)
-	}
-	refreshJobID := latestRefreshJob.ID
+func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries *db.Queries, refreshJobID, environment, company, facility string) (int, error) {
+	log.Printf("[%s] Running detector for environment %s, facility %s, refresh job %s", d.Name(), environment, facility, refreshJobID)
 
 	// Resolve tolerance_days threshold (use facility scope, no warehouse/MO type)
 	toleranceDaysRaw, foundTolerance, err := d.configService.ResolveThreshold(

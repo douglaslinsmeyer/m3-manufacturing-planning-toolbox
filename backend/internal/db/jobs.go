@@ -329,13 +329,20 @@ func (q *Queries) GetRefreshJobContext(ctx context.Context, jobID string) (compa
 	query := `
 		SELECT DISTINCT po.cono, po.faci
 		FROM production_orders po
-		INNER JOIN refresh_jobs rj ON rj.environment = po.environment
-		WHERE rj.id = $1
+		WHERE po.environment = (
+			SELECT environment FROM refresh_jobs WHERE id = $1
+		)
 		LIMIT 1
 	`
 
 	err = q.db.QueryRowContext(ctx, query, jobID).Scan(&company, &facility)
 	if err == sql.ErrNoRows {
+		// Get environment from refresh job for better error message
+		var env string
+		q.db.QueryRowContext(ctx, "SELECT environment FROM refresh_jobs WHERE id = $1", jobID).Scan(&env)
+		if env != "" {
+			return "", "", fmt.Errorf("no production orders found for environment %s (refresh job %s) - run data refresh first", env, jobID)
+		}
 		return "", "", fmt.Errorf("no production orders found for refresh job %s", jobID)
 	}
 	if err != nil {
