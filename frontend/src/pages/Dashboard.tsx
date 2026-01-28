@@ -11,6 +11,7 @@ import DetectorProgressBar from '../components/DetectorProgressBar';
 import { DetectorTrigger } from '../components/DetectorTrigger';
 import { ToastContainer } from '../components/Toast';
 import { useToast } from '../hooks/useToast';
+import { InfoButton } from '../components/InfoButton';
 import type { SnapshotSummary, SnapshotStatus, AnomalySummary } from '../types';
 
 function ArrowPathIcon({ className }: { className?: string }) {
@@ -87,7 +88,6 @@ const Dashboard: React.FC = () => {
   const [recovering, setRecovering] = useState(false);
   const [issueSummary, setIssueSummary] = useState<IssueSummary | null>(null);
   const [anomalySummary, setAnomalySummary] = useState<AnomalySummary | null>(null);
-  const [scopeInfoExpanded, setScopeInfoExpanded] = useState(false);
 
   // Use SSE hook for real-time progress updates
   const { status: sseStatus, isConnected, error: sseError } = useSnapshotProgress(currentJobId);
@@ -507,7 +507,39 @@ const Dashboard: React.FC = () => {
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-600">{stat.name}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-medium text-slate-600">{stat.name}</p>
+                      {stat.key === 'totalProductionOrders' && (
+                        <InfoButton title="Production Orders Data Scope">
+                          <div className="space-y-2 text-sm">
+                            <p>Includes both Manufacturing Orders (MOs) and Manufacturing Order Proposals (MOPs).</p>
+                            <div className="space-y-1">
+                              <p className="font-medium text-slate-700">Filters Applied:</p>
+                              <ul className="list-disc list-inside space-y-0.5 text-slate-600">
+                                <li>Manufacturing Orders: Only preliminary/released (WHST ≤ 20)</li>
+                                <li>Planned Orders (MOPs): Only firmed planned orders (PSTS = 20)</li>
+                              </ul>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-2">All data is scoped to facility: AZ1</p>
+                          </div>
+                        </InfoButton>
+                      )}
+                      {stat.key === 'totalCustomerOrderLines' && (
+                        <InfoButton title="CO Lines Data Scope">
+                          <div className="space-y-2 text-sm">
+                            <p>Customer Order Lines showing only reserved lines.</p>
+                            <div className="space-y-1">
+                              <p className="font-medium text-slate-700">Filters Applied:</p>
+                              <ul className="list-disc list-inside space-y-0.5 text-slate-600">
+                                <li>Only reserved lines (ORST 20-29)</li>
+                                <li>Excludes quotations, preliminary, and allocated orders</li>
+                              </ul>
+                            </div>
+                            <p className="text-xs text-slate-500 mt-2">All data is scoped to facility: AZ1</p>
+                          </div>
+                        </InfoButton>
+                      )}
+                    </div>
                     <p className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight ${isCritical ? 'text-red-600' : 'text-slate-900'}`}>
                       {typeof value === 'number' ? value.toLocaleString() : value}
                     </p>
@@ -543,67 +575,6 @@ const Dashboard: React.FC = () => {
           })}
         </div>
 
-        {/* Data Scope Disclosure */}
-        {summary && effectiveContext && (
-          <div className="mb-6 lg:mb-10 rounded-xl bg-blue-50 shadow-sm ring-1 ring-blue-200">
-            <div
-              className="px-6 py-4 cursor-pointer"
-              onClick={() => setScopeInfoExpanded(!scopeInfoExpanded)}
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="rounded-md bg-blue-100 p-2">
-                    <svg className="h-5 w-5 text-blue-600" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M11.25 11.25l.041-.02a.75.75 0 011.063.852l-.708 2.836a.75.75 0 001.063.853l.041-.021M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9-3.75h.008v.008H12V8.25z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <h3 className="text-sm font-semibold text-blue-900">Data Scope Information</h3>
-                    <p className="text-xs text-blue-700 mt-0.5">
-                      All data is scoped to facility: <span className="font-mono font-bold">{effectiveContext.facility}</span>
-                    </p>
-                  </div>
-                </div>
-                <svg
-                  className={`h-5 w-5 text-blue-600 transition-transform ${scopeInfoExpanded ? 'rotate-180' : ''}`}
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  strokeWidth={2}
-                  stroke="currentColor"
-                >
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                </svg>
-              </div>
-            </div>
-
-            {scopeInfoExpanded && (
-              <div className="px-6 pb-4 border-t border-blue-200 pt-4">
-                <h4 className="text-xs font-semibold text-blue-900 mb-2">Data Filters Applied:</h4>
-                <dl className="space-y-2 text-xs text-blue-800">
-                  <div className="flex gap-2">
-                    <dt className="font-semibold min-w-[140px]">Manufacturing Orders:</dt>
-                    <dd>Only preliminary/released (WHST ≤ 20)</dd>
-                  </div>
-                  <div className="flex gap-2">
-                    <dt className="font-semibold min-w-[140px]">Planned Orders:</dt>
-                    <dd>Only firmed planned orders (PSTS = 20)</dd>
-                  </div>
-                  <div className="flex gap-2">
-                    <dt className="font-semibold min-w-[140px]">Customer Order Lines:</dt>
-                    <dd>Only reserved lines (ORST 20-29)</dd>
-                  </div>
-                </dl>
-                <div className="mt-3 pt-3 border-t border-blue-200">
-                  <p className="text-xs text-blue-700">
-                    <strong>Note:</strong> This ensures you're viewing only the active planning data that requires attention.
-                    Completed orders, delivered items, and preliminary quotations are excluded.
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Issue Breakdown - Facility > Warehouse > Detector */}
         {issueSummary && issueSummary.total > 0 && (
           <div className="mb-6 lg:mb-10 rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
@@ -613,9 +584,6 @@ const Dashboard: React.FC = () => {
                 <h2 className="text-base font-semibold text-slate-900">
                   Issue Breakdown
                 </h2>
-                <span className="text-sm text-slate-500">
-                  ({issueSummary.total} {issueSummary.total === 1 ? 'issue' : 'issues'})
-                </span>
               </div>
             </div>
             <div className="p-6">
