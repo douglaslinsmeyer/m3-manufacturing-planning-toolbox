@@ -174,6 +174,30 @@ func (s *Server) handleGetAnomalySummary(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(summary)
 }
 
+// handleGetAnomalyCount returns count of active anomalies
+func (s *Server) handleGetAnomalyCount(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Get environment from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
+	count, err := s.db.GetActiveAnomalyCount(ctx, environment)
+	if err != nil {
+		http.Error(w, "Failed to fetch anomaly count", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"count": count,
+	})
+}
+
 // handleAcknowledgeAnomaly acknowledges an anomaly
 func (s *Server) handleAcknowledgeAnomaly(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()

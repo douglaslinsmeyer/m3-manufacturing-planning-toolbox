@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -146,18 +145,11 @@ func HandleTriggerDetection(natsManager *queue.Manager, database *db.Queries) ht
 			return
 		}
 
-		// Clear previous issues for selected detectors only
-		for _, detectorName := range req.DetectorNames {
-			if err := database.ClearIssuesForDetector(ctx, latestRefreshJob.ID, detectorName); err != nil {
-				log.Printf("Warning: failed to clear issues for detector %s: %v", detectorName, err)
-			}
-		}
-
 		// Publish detector jobs to NATS
 		for _, detectorName := range req.DetectorNames {
 			job := workers.DetectorJobMessage{
 				JobID:        fmt.Sprintf("%s-%s", detectionJobID, detectorName),
-				ParentJobID:  latestRefreshJob.ID, // Use refresh job ID so issues are associated correctly
+				ParentJobID:  detectionJobID, // Use detection job ID for progress tracking
 				DetectorName: detectorName,
 				Environment:  req.Environment,
 				Company:      company,
@@ -176,21 +168,26 @@ func HandleTriggerDetection(natsManager *queue.Manager, database *db.Queries) ht
 			log.Printf("Published detector job: %s to subject: %s", detectorName, subject)
 		}
 
-		// Also trigger anomaly detection (runs synchronously in background)
-		go func() {
-			log.Printf("Running anomaly detection for manual trigger job %s", detectionJobID)
-			detectorConfigService := services.NewDetectorConfigService(database)
-			detectionService := services.NewDetectionService(database, detectorConfigService)
+		// Publish coordinator job to NATS
+		coordinatorMsg := workers.DetectorCoordinatorMessage{
+			JobID:          detectionJobID,
+			Environment:    req.Environment,
+			DetectorNames:  req.DetectorNames,
+			TotalDetectors: len(req.DetectorNames),
+			Company:        company,
+			Facility:       facility,
+		}
 
-			// Wait a moment for issue detectors to complete
-			time.Sleep(5 * time.Second)
+		coordData, _ := json.Marshal(coordinatorMsg)
+		coordSubject := queue.GetDetectorCoordinateSubject(req.Environment)
+		if err := natsManager.Publish(coordSubject, coordData); err != nil {
+			log.Printf("Failed to publish coordinator job: %v", err)
+			database.FailDetectionJob(ctx, detectionJobID, fmt.Sprintf("Failed to publish coordinator job: %v", err))
+			http.Error(w, fmt.Sprintf("Failed to publish coordinator job: %v", err), http.StatusInternalServerError)
+			return
+		}
 
-			if err := detectionService.RunAnomalyDetectors(context.Background(), latestRefreshJob.ID, req.Environment, company, facility); err != nil {
-				log.Printf("Anomaly detection failed for manual trigger: %v", err)
-			} else {
-				log.Printf("Anomaly detection completed for manual trigger job %s", detectionJobID)
-			}
-		}()
+		log.Printf("Published coordinator job for detection %s to subject: %s", detectionJobID, coordSubject)
 
 		// Return success response
 		response := TriggerDetectionResponse{

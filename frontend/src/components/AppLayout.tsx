@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useContextManagement } from '../contexts/ContextManagementContext';
 import { ContextSwitcher } from './ContextSwitcher';
+import { api } from '../services/api';
 
 interface AppLayoutProps {
   children: React.ReactNode;
@@ -87,17 +88,31 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
   const { effectiveContext } = useContextManagement();
   const [contextSwitcherOpen, setContextSwitcherOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [anomalyCount, setAnomalyCount] = useState<number>(0);
 
   // Check if user is admin
   const isAdmin = userProfile?.groups?.some(
     g => g.type === 'Security Role' && g.display === 'Infor-SystemAdministrator'
   ) || false;
 
+  // Fetch anomaly count on mount
+  useEffect(() => {
+    const fetchAnomalyCount = async () => {
+      try {
+        const { count } = await api.getAnomalyCount();
+        setAnomalyCount(count);
+      } catch (error) {
+        console.error('Failed to fetch anomaly count:', error);
+      }
+    };
+    fetchAnomalyCount();
+  }, []);
+
   // Build navigation array conditionally
   const navigation = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
     { name: 'Issues', href: '/issues', icon: ExclamationIcon },
-    { name: 'Anomalies', href: '/anomalies', icon: AlertTriangleIcon },
+    { name: 'Anomalies', href: '/anomalies', icon: AlertTriangleIcon, count: anomalyCount },
     { name: 'Audit Log', href: '/audit-logs', icon: DocumentTextIcon },
     ...(isAdmin ? [{ name: 'Settings', href: '/settings', icon: CogIcon }] : []),
     { name: 'Profile', href: '/profile', icon: UserIcon },
@@ -208,7 +223,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
                   }`}
                 >
                   <item.icon className="h-5 w-5 shrink-0" />
-                  {item.name}
+                  <span className="flex-1">{item.name}</span>
+                  {'count' in item && item.count > 0 && (
+                    <span className="inline-flex items-center rounded-full bg-red-100 px-2 py-0.5 text-xs font-medium text-red-800">
+                      {item.count}
+                    </span>
+                  )}
                 </Link>
               );
             })}

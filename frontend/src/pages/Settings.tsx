@@ -12,7 +12,7 @@ const Settings: React.FC = () => {
   const navigate = useNavigate();
   const { userProfile } = useAuth();
   const toast = useToast();
-  const [activeTab, setActiveTab] = useState<'data-refresh' | 'detectors'>('data-refresh');
+  const [activeTab, setActiveTab] = useState<'data-refresh' | 'detectors' | 'anomalies'>('data-refresh');
   const [systemSettings, setSystemSettings] = useState<SystemSettingsGrouped | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -140,6 +140,16 @@ const Settings: React.FC = () => {
               >
                 Detectors
               </button>
+              <button
+                onClick={() => setActiveTab('anomalies')}
+                className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                  activeTab === 'anomalies'
+                    ? 'border-primary-500 text-primary-600'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                Anomalies
+              </button>
             </nav>
           </div>
 
@@ -172,7 +182,7 @@ interface SystemSettingsFormProps {
   onSettingsChange: (settings: SystemSettingsGrouped | null) => void;
   onSave: (e: React.FormEvent) => void;
   saving: boolean;
-  activeTab: 'data-refresh' | 'detectors';
+  activeTab: 'data-refresh' | 'detectors' | 'anomalies';
   cacheStatus: CacheStatus[] | null;
   refreshingCache: boolean;
   onRefreshCache: () => Promise<void>;
@@ -252,7 +262,7 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
             <div className="px-6 py-5 border-b border-slate-200">
               <h3 className="text-lg font-semibold text-slate-900 mb-2">Context Cache</h3>
               <p className="text-sm text-slate-600 mb-4">
-                Organizational hierarchy data (companies, divisions, facilities, warehouses) is cached for performance.
+                M3 organizational and reference data is cached for performance.
                 Refresh manually when M3 data changes.
               </p>
 
@@ -271,7 +281,14 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
                     <tbody>
                       {cacheStatus.map(status => (
                         <tr key={status.resourceType} className="border-b border-slate-200 last:border-0">
-                          <td className="py-2">{status.resourceType}</td>
+                          <td className="py-2">
+                            {status.resourceType}
+                            {status.resourceType === 'User Profiles' && (
+                              <span className="ml-2 text-xs text-slate-500">
+                                (all users)
+                              </span>
+                            )}
+                          </td>
                           <td className="text-right">{status.recordCount}</td>
                           <td className="text-right text-xs">{formatDateTime(status.lastRefresh)}</td>
                           <td className="text-right">
@@ -421,6 +438,87 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
             className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
           >
             {saving ? 'Saving...' : 'Save Detector Settings'}
+          </button>
+        </div>
+      </form>
+    );
+  }
+
+  // Special handling for anomalies tab - use custom detector sections
+  if (activeTab === 'anomalies' && settings.categories['anomaly_detection']) {
+    return (
+      <form onSubmit={onSave}>
+        <div className="space-y-6">
+          <div className="mb-6">
+            <h2 className="text-xl font-semibold text-slate-900 mb-2">
+              Anomaly Detection Settings
+            </h2>
+            <p className="text-sm text-slate-600">
+              Configure thresholds for statistical anomaly detection across aggregate data patterns. Anomaly detectors analyze patterns in the data to identify potential planning issues or data quality problems.
+            </p>
+          </div>
+
+          {/* Unlinked Concentration Detector */}
+          <DetectorSection
+            detectorName="unlinked_concentration"
+            detectorLabel="Unlinked Concentration"
+            detectorDescription="Detects when a single product accounts for an excessive percentage of unlinked MOPs, indicating potential runaway planning for that product."
+            settings={settings.categories['anomaly_detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['anomaly_detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+
+          {/* Date Clustering Detector */}
+          <DetectorSection
+            detectorName="date_clustering"
+            detectorLabel="Date Clustering"
+            detectorDescription="Detects when too many MOPs for a product are scheduled on the same date, indicating bulk planning issues or misconfiguration."
+            settings={settings.categories['anomaly_detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['anomaly_detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+
+          {/* MOP-to-Demand Ratio Detector */}
+          <DetectorSection
+            detectorName="mop_demand_ratio"
+            detectorLabel="MOP-to-Demand Ratio"
+            detectorDescription="Detects excessive unlinked MOPs relative to actual customer order demand, indicating over-planning."
+            settings={settings.categories['anomaly_detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['anomaly_detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+
+          {/* Absolute Volume Detector */}
+          <DetectorSection
+            detectorName="absolute_volume"
+            detectorLabel="Absolute Volume"
+            detectorDescription="Detects products with excessive absolute count of unlinked MOPs, regardless of percentages or ratios."
+            settings={settings.categories['anomaly_detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['anomaly_detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
+        </div>
+
+        {/* Save Button */}
+        <div className="mt-6 flex justify-end">
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+          >
+            {saving ? 'Saving...' : 'Save Anomaly Settings'}
           </button>
         </div>
       </form>

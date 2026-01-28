@@ -334,3 +334,25 @@ func (q *Queries) ClearAnomaliesForJob(ctx context.Context, jobID string) error 
 	_, err := q.db.ExecContext(ctx, query, jobID)
 	return err
 }
+
+// GetActiveAnomalyCount gets count of active anomalies for the latest job
+func (q *Queries) GetActiveAnomalyCount(ctx context.Context, environment string) (int, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM anomaly_alerts
+		WHERE environment = $1
+		  AND status = 'active'
+		  AND job_id = (
+		      SELECT id FROM refresh_jobs
+		      WHERE environment = $1
+		      ORDER BY created_at DESC
+		      LIMIT 1
+		  )
+	`
+	var count int
+	err := q.db.QueryRowContext(ctx, query, environment).Scan(&count)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return count, err
+}

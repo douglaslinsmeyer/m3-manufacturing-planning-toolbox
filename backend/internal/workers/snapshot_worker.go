@@ -159,6 +159,16 @@ type DetectorCompletionMessage struct {
 	DurationMs   int64  `json:"durationMs"`
 }
 
+// DetectorCoordinatorMessage triggers coordination of a manual detection job
+type DetectorCoordinatorMessage struct {
+	JobID          string   `json:"jobId"`          // Detection job ID (e.g., "det-123456789")
+	Environment    string   `json:"environment"`    // "TRN" or "PRD"
+	DetectorNames  []string `json:"detectorNames"`  // List of detectors being run
+	TotalDetectors int      `json:"totalDetectors"` // Total count for progress tracking
+	Company        string   `json:"company"`        // Company code
+	Facility       string   `json:"facility"`       // Facility code
+}
+
 // Start starts the snapshot worker and subscribes to NATS subjects
 func (w *SnapshotWorker) Start() error {
 	log.Println("Starting snapshot worker...")
@@ -228,6 +238,20 @@ func (w *SnapshotWorker) Start() error {
 		}
 		log.Printf("Subscribed to %d %s detector queues for parallel processing", len(detectorNames), env)
 	}
+
+	// Subscribe to manual detection coordinator jobs
+	for _, env := range environments {
+		coordSubject := queue.GetDetectorCoordinateSubject(env)
+		_, err := w.nats.QueueSubscribe(
+			coordSubject,
+			"detector-coordinators",
+			w.handleManualDetectionCoordinator,
+		)
+		if err != nil {
+			return fmt.Errorf("failed to subscribe to %s detection coordinator: %w", env, err)
+		}
+	}
+	log.Println("Subscribed to manual detection coordinator queues")
 
 	// Subscribe to cancellation requests (all workers should listen)
 	_, err = w.nats.Subscribe("snapshot.cancel.*", w.handleCancelRequest)
@@ -1088,6 +1112,11 @@ func (w *SnapshotWorker) publishDetectorJobs(req SnapshotRefreshMessage, totalCo
 		log.Printf("Warning: failed to clear previous issues: %v", err)
 	}
 
+	// Clear previous anomalies for this job
+	if err := w.db.ClearAnomaliesForJob(ctx, req.JobID); err != nil {
+		log.Printf("Warning: failed to clear previous anomalies: %v", err)
+	}
+
 	// Create detector records in database for tracking
 	for _, detectorName := range enabledDetectors {
 		detector := detectionService.GetDetectorByName(detectorName)
@@ -1408,4 +1437,248 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 			}
 		}
 	}
+}
+
+// coordinateManualDetection coordinates a manual detection job, aggregating detector progress and publishing updates
+func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessage) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	log.Printf("Coordinating manual detection job %s with %d detectors", req.JobID, req.TotalDetectors)
+
+	// Initialize detection service to get detector info
+	detectorConfigService := services.NewDetectorConfigService(w.db)
+	detectionService := services.NewDetectionService(w.db, detectorConfigService)
+
+	// Build detector labels map
+	detectorLabels := make(map[string]string)
+	for _, name := range req.DetectorNames {
+		detector := detectionService.GetDetectorByName(name)
+		if detector != nil {
+			detectorLabels[name] = detector.Label()
+		} else {
+			detectorLabels[name] = name
+		}
+	}
+
+	// Track detector states
+	detectorStates := make(map[string]*DetectorProgress)
+	for _, name := range req.DetectorNames {
+		detectorStates[name] = &DetectorProgress{
+			DetectorName: name,
+			DisplayLabel: detectorLabels[name],
+			Status:       "pending",
+		}
+	}
+
+	// Track completions
+	completedDetectors := 0
+	failedDetectors := 0
+	issuesByDetector := make(map[string]int)
+	var mu sync.Mutex
+
+	// Publish initial progress
+	initialDetectorStates := make([]DetectorProgress, 0, len(detectorStates))
+	for _, name := range req.DetectorNames {
+		initialDetectorStates = append(initialDetectorStates, *detectorStates[name])
+	}
+	w.publishDetailedProgress(req.JobID, "running", "Running issue detection", "Waiting for detectors to start",
+		0, 1, 0, 0, 0, 0, nil, initialDetectorStates, 0, 0, 0, 0)
+
+	// Subscribe to detector start events
+	startSubject := queue.GetDetectorStartSubject(req.JobID)
+	startSub, err := w.nats.Subscribe(startSubject, func(msg *nats.Msg) {
+		var start DetectorStartMessage
+		if err := json.Unmarshal(msg.Data, &start); err != nil {
+			log.Printf("Failed to parse detector start message: %v", err)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Update detector state to running
+		if state, exists := detectorStates[start.DetectorName]; exists {
+			state.Status = "running"
+			state.StartTime = start.StartTime
+		}
+
+		log.Printf("Detector started: %s (%s)", start.DetectorName, start.DisplayLabel)
+
+		// Convert detector states to slice for JSON
+		parallelDetectors := make([]DetectorProgress, 0, len(detectorStates))
+		for _, name := range req.DetectorNames {
+			parallelDetectors = append(parallelDetectors, *detectorStates[name])
+		}
+
+		// Calculate progress
+		progress := (completedDetectors * 100) / req.TotalDetectors
+
+		// Send progress update showing running status
+		w.publishDetailedProgress(req.JobID, "running", "Running issue detection",
+			fmt.Sprintf("Running %s detector", start.DisplayLabel),
+			0, 1, progress, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
+	})
+
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to subscribe to detector starts: %v", err)
+		w.publishError(req.JobID, errMsg)
+		w.db.FailDetectionJob(ctx, req.JobID, errMsg)
+		return fmt.Errorf(errMsg)
+	}
+	defer startSub.Unsubscribe()
+
+	// Subscribe to completion events
+	completeSubject := queue.GetDetectorCompleteSubject(req.JobID)
+	subscription, err := w.nats.Subscribe(completeSubject, func(msg *nats.Msg) {
+		var completion DetectorCompletionMessage
+		if err := json.Unmarshal(msg.Data, &completion); err != nil {
+			log.Printf("Failed to parse detector completion message: %v", err)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Update detector state
+		if state, exists := detectorStates[completion.DetectorName]; exists {
+			if !completion.Success {
+				state.Status = "failed"
+				state.Error = completion.Error
+				state.DurationMs = completion.DurationMs
+				state.EndTime = time.Now()
+				failedDetectors++
+
+				log.Printf("Detector %s failed: %s", completion.DetectorName, completion.Error)
+			} else {
+				state.Status = "completed"
+				state.IssuesFound = completion.IssuesFound
+				state.DurationMs = completion.DurationMs
+				state.EndTime = time.Now()
+
+				issuesByDetector[completion.DetectorName] = completion.IssuesFound
+				log.Printf("Detector %s found %d issues (duration: %dms)",
+					completion.DetectorName, completion.IssuesFound, completion.DurationMs)
+			}
+		}
+
+		completedDetectors++
+
+		// Calculate progress
+		progress := (completedDetectors * 100) / req.TotalDetectors
+
+		log.Printf("Detection progress: %d/%d detectors completed", completedDetectors, req.TotalDetectors)
+
+		// Convert detector states to slice for JSON
+		parallelDetectors := make([]DetectorProgress, 0, len(detectorStates))
+		for _, name := range req.DetectorNames {
+			parallelDetectors = append(parallelDetectors, *detectorStates[name])
+		}
+
+		w.publishDetailedProgress(req.JobID, "running", "Running issue detection",
+			fmt.Sprintf("Completed %s detector", completion.DetectorName),
+			0, 1, progress, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
+	})
+
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to subscribe to detector completions: %v", err)
+		w.publishError(req.JobID, errMsg)
+		w.db.FailDetectionJob(ctx, req.JobID, errMsg)
+		return fmt.Errorf(errMsg)
+	}
+	defer subscription.Unsubscribe()
+
+	// Wait for all detector jobs to complete
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			mu.Lock()
+			completed := completedDetectors
+			mu.Unlock()
+			if completed < req.TotalDetectors {
+				errMsg := fmt.Sprintf("timeout waiting for detector jobs (completed %d/%d)", completed, req.TotalDetectors)
+				w.publishError(req.JobID, errMsg)
+				w.db.FailDetectionJob(ctx, req.JobID, errMsg)
+				return fmt.Errorf(errMsg)
+			}
+		case <-ticker.C:
+			mu.Lock()
+			completed := completedDetectors
+			failed := failedDetectors
+			issues := make(map[string]int)
+			for k, v := range issuesByDetector {
+				issues[k] = v
+			}
+			mu.Unlock()
+
+			if completed >= req.TotalDetectors {
+				log.Printf("All %d detector jobs completed (%d failed)", req.TotalDetectors, failed)
+
+				// Calculate total issues
+				totalIssues := 0
+				for _, count := range issues {
+					totalIssues += count
+				}
+
+				// Finalize detection job in database
+				issuesByTypeJSON, _ := json.Marshal(issues)
+				dbCtx := context.Background()
+				if err := w.db.CompleteDetectionJob(dbCtx, req.JobID, totalIssues, string(issuesByTypeJSON)); err != nil {
+					log.Printf("Warning: failed to complete detection job: %v", err)
+				}
+
+				log.Printf("Detection complete: %d total issues found across %d detectors", totalIssues, len(issues))
+
+				// Run anomaly detection after issue detection completes
+				log.Printf("Running anomaly detection for job %s", req.JobID)
+				if err := detectionService.RunAnomalyDetectors(dbCtx, req.JobID, req.Environment, req.Company, req.Facility); err != nil {
+					log.Printf("Anomaly detection failed: %v", err)
+					// Don't fail the job if anomaly detection fails
+				} else {
+					log.Printf("Anomaly detection completed for job %s", req.JobID)
+				}
+
+				// Convert final detector states to slice for JSON
+				parallelDetectors := make([]DetectorProgress, 0, len(detectorStates))
+				for _, name := range req.DetectorNames {
+					parallelDetectors = append(parallelDetectors, *detectorStates[name])
+				}
+
+				// Publish final progress
+				statusMsg := "Detection completed"
+				if failed > 0 {
+					statusMsg = fmt.Sprintf("Detection completed (%d detectors failed)", failed)
+				}
+
+				w.publishDetailedProgress(req.JobID, "completed", statusMsg,
+					fmt.Sprintf("All detectors finished (%d issues found)", totalIssues),
+					1, 1, 100, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
+				w.publishComplete(req.JobID)
+
+				log.Printf("Manual detection job %s completed successfully", req.JobID)
+				return nil
+			}
+		}
+	}
+}
+
+// handleManualDetectionCoordinator handles a manual detection coordinator request
+func (w *SnapshotWorker) handleManualDetectionCoordinator(msg *nats.Msg) {
+	var req DetectorCoordinatorMessage
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		log.Printf("Failed to parse coordinator request: %v", err)
+		return
+	}
+
+	log.Printf("Coordinating manual detection job: %s", req.JobID)
+
+	// Run coordinator in goroutine (non-blocking)
+	go func() {
+		if err := w.coordinateManualDetection(req); err != nil {
+			log.Printf("Manual detection coordination failed for job %s: %v", req.JobID, err)
+		}
+	}()
 }

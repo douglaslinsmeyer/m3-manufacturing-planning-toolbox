@@ -29,6 +29,7 @@ export interface IssueSummary {
   by_facility: Record<string, number>;
   by_warehouse: Record<string, number>;
   by_facility_warehouse_detector: Record<string, Record<string, Record<string, number>>>;
+  warehouse_names?: Record<string, string>;
 }
 
 // PaginatedResponse represents a paginated API response
@@ -348,6 +349,11 @@ class ApiService {
     by_detector: Record<string, number>;
   }> {
     const response = await this.client.get('/anomalies/summary');
+    return response.data;
+  }
+
+  async getAnomalyCount(): Promise<{ count: number }> {
+    const response = await this.client.get('/anomalies/count');
     return response.data;
   }
 

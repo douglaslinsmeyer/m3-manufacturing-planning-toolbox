@@ -446,6 +446,7 @@ func (q *Queries) GetIssueSummary(ctx context.Context, environment string, inclu
 			di.detector_type,
 			di.facility,
 			COALESCE(di.warehouse, '') as warehouse,
+			wh.warehouse_name,
 			COUNT(*) as issue_count
 		FROM detected_issues di
 		LEFT JOIN ignored_issues ig
@@ -464,6 +465,9 @@ func (q *Queries) GetIssueSummary(ctx context.Context, environment string, inclu
 			AND di.production_order_type = 'MO'
 			AND mo.mfno = di.production_order_number
 			AND mo.faci = di.facility
+		LEFT JOIN m3_warehouses wh
+			ON di.environment = wh.environment
+			AND di.warehouse = wh.warehouse
 		WHERE di.environment = $1
 		AND di.job_id = (
 			SELECT id FROM refresh_jobs
@@ -479,7 +483,7 @@ func (q *Queries) GetIssueSummary(ctx context.Context, environment string, inclu
 	}
 
 	query += `
-		GROUP BY di.detector_type, di.facility, di.warehouse
+		GROUP BY di.detector_type, di.facility, di.warehouse, wh.warehouse_name
 		ORDER BY di.facility, di.warehouse, di.detector_type
 	`
 
@@ -493,15 +497,17 @@ func (q *Queries) GetIssueSummary(ctx context.Context, environment string, inclu
 	byDetector := make(map[string]int)
 	byFacility := make(map[string]int)
 	byWarehouse := make(map[string]int)
+	byWarehouseNames := make(map[string]string)
 	// Nested: facility -> warehouse -> detector -> count
 	byFacilityWarehouseDetector := make(map[string]map[string]map[string]int)
 	total := 0
 
 	for rows.Next() {
 		var detectorType, facility, warehouse string
+		var warehouseName sql.NullString
 		var count int
 
-		if err := rows.Scan(&detectorType, &facility, &warehouse, &count); err != nil {
+		if err := rows.Scan(&detectorType, &facility, &warehouse, &warehouseName, &count); err != nil {
 			return nil, err
 		}
 
@@ -514,6 +520,10 @@ func (q *Queries) GetIssueSummary(ctx context.Context, environment string, inclu
 		// Aggregate by warehouse
 		if warehouse != "" {
 			byWarehouse[warehouse] += count
+			// Store warehouse name mapping
+			if warehouseName.Valid && warehouseName.String != "" {
+				byWarehouseNames[warehouse] = warehouseName.String
+			}
 		}
 
 		// Build nested hierarchy: facility -> warehouse -> detector
@@ -533,6 +543,7 @@ func (q *Queries) GetIssueSummary(ctx context.Context, environment string, inclu
 	summary["by_facility"] = byFacility
 	summary["by_warehouse"] = byWarehouse
 	summary["by_facility_warehouse_detector"] = byFacilityWarehouseDetector
+	summary["warehouse_names"] = byWarehouseNames
 
 	return summary, nil
 }

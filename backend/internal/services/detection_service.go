@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/pinggolf/m3-planning-tools/internal/db"
@@ -89,6 +90,11 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, environme
 	// Clear previous issues for this job
 	if err := s.db.ClearIssuesForJob(ctx, jobID); err != nil {
 		log.Printf("Warning: failed to clear previous issues: %v", err)
+	}
+
+	// Clear previous anomalies for this job
+	if err := s.db.ClearAnomaliesForJob(ctx, jobID); err != nil {
+		log.Printf("Warning: failed to clear previous anomalies: %v", err)
 	}
 
 	s.reportProgress("detection", 0, totalDetectors, "Starting issue detection")
@@ -323,11 +329,53 @@ type AnomalyDetectorSettings struct {
 	}
 }
 
-// loadAnomalyDetectorSettings loads anomaly detector settings with defaults
+// loadAnomalyDetectorSettings loads anomaly detector settings from database
 func (s *DetectionService) loadAnomalyDetectorSettings(ctx context.Context, environment string) AnomalyDetectorSettings {
 	settings := AnomalyDetectorSettings{}
 
-	// Set defaults
+	// Load settings from database
+	systemSettings, err := s.db.GetSystemSettings(ctx, environment)
+	if err != nil {
+		log.Printf("Failed to load anomaly settings, using defaults: %v", err)
+		return s.getDefaultAnomalySettings()
+	}
+
+	// Build settings map for easy lookup
+	settingsMap := make(map[string]string)
+	for _, setting := range systemSettings {
+		settingsMap[setting.SettingKey] = setting.SettingValue
+	}
+
+	// UnlinkedConcentration
+	settings.UnlinkedConcentration.Enabled = parseBool(settingsMap, "anomaly_unlinked_concentration_enabled", true)
+	settings.UnlinkedConcentration.WarningThreshold = parseHierarchicalFloat(settingsMap, "anomaly_unlinked_concentration_warning_threshold", 10.0)
+	settings.UnlinkedConcentration.CriticalThreshold = parseHierarchicalFloat(settingsMap, "anomaly_unlinked_concentration_critical_threshold", 50.0)
+	settings.UnlinkedConcentration.MinAffectedCount = parseInt(settingsMap, "anomaly_unlinked_concentration_min_affected_count", 100)
+
+	// DateClustering
+	settings.DateClustering.Enabled = parseBool(settingsMap, "anomaly_date_clustering_enabled", true)
+	settings.DateClustering.WarningThreshold = parseHierarchicalFloat(settingsMap, "anomaly_date_clustering_warning_threshold", 80.0)
+	settings.DateClustering.CriticalThreshold = parseHierarchicalFloat(settingsMap, "anomaly_date_clustering_critical_threshold", 95.0)
+	settings.DateClustering.MinAffectedCount = parseInt(settingsMap, "anomaly_date_clustering_min_affected_count", 100)
+
+	// MOPDemandRatio
+	settings.MOPDemandRatio.Enabled = parseBool(settingsMap, "anomaly_mop_demand_ratio_enabled", true)
+	settings.MOPDemandRatio.WarningMOPsPerCOLine = parseHierarchicalFloat(settingsMap, "anomaly_mop_demand_ratio_warning_mops_per_co_line", 10.0)
+	settings.MOPDemandRatio.CriticalMOPsPerCOLine = parseHierarchicalFloat(settingsMap, "anomaly_mop_demand_ratio_critical_mops_per_co_line", 50.0)
+	settings.MOPDemandRatio.CriticalMOPsPerUnitDemand = parseHierarchicalFloat(settingsMap, "anomaly_mop_demand_ratio_critical_mops_per_unit_demand", 5.0)
+
+	// AbsoluteVolume
+	settings.AbsoluteVolume.Enabled = parseBool(settingsMap, "anomaly_absolute_volume_enabled", true)
+	settings.AbsoluteVolume.WarningThreshold = parseInt(settingsMap, "anomaly_absolute_volume_warning_threshold", 1000)
+	settings.AbsoluteVolume.CriticalThreshold = parseInt(settingsMap, "anomaly_absolute_volume_critical_threshold", 10000)
+
+	return settings
+}
+
+// getDefaultAnomalySettings returns hardcoded default settings as fallback
+func (s *DetectionService) getDefaultAnomalySettings() AnomalyDetectorSettings {
+	settings := AnomalyDetectorSettings{}
+
 	settings.UnlinkedConcentration.Enabled = true
 	settings.UnlinkedConcentration.WarningThreshold = 10.0
 	settings.UnlinkedConcentration.CriticalThreshold = 50.0
@@ -347,8 +395,36 @@ func (s *DetectionService) loadAnomalyDetectorSettings(ctx context.Context, envi
 	settings.AbsoluteVolume.WarningThreshold = 1000
 	settings.AbsoluteVolume.CriticalThreshold = 10000
 
-	// TODO: Load from system_settings table and override defaults
-	// For now, using hardcoded defaults
-
 	return settings
+}
+
+// parseHierarchicalFloat extracts global value from hierarchical JSON setting
+func parseHierarchicalFloat(settings map[string]string, key string, defaultValue float64) float64 {
+	if val, exists := settings[key]; exists {
+		var hier struct {
+			Global float64 `json:"global"`
+		}
+		if err := json.Unmarshal([]byte(val), &hier); err == nil {
+			return hier.Global
+		}
+	}
+	return defaultValue
+}
+
+// parseInt parses an integer setting
+func parseInt(settings map[string]string, key string, defaultValue int) int {
+	if val, exists := settings[key]; exists {
+		if i, err := strconv.Atoi(val); err == nil {
+			return i
+		}
+	}
+	return defaultValue
+}
+
+// parseBool parses a boolean setting
+func parseBool(settings map[string]string, key string, defaultValue bool) bool {
+	if val, exists := settings[key]; exists {
+		return val == "true"
+	}
+	return defaultValue
 }

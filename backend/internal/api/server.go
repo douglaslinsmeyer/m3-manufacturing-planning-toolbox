@@ -280,6 +280,7 @@ func (s *Server) setupRoutes() {
 	// Anomaly detection endpoints
 	protected.HandleFunc("/anomalies", s.handleListAnomalies).Methods("GET")
 	protected.HandleFunc("/anomalies/summary", s.handleGetAnomalySummary).Methods("GET")
+	protected.HandleFunc("/anomalies/count", s.handleGetAnomalyCount).Methods("GET")
 	protected.HandleFunc("/anomalies/{id}/acknowledge", s.handleAcknowledgeAnomaly).Methods("POST")
 	protected.HandleFunc("/anomalies/{id}/resolve", s.handleResolveAnomaly).Methods("POST")
 	protected.HandleFunc("/issues/{id}/close-mo", s.handleCloseMO).Methods("POST")

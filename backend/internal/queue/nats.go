@@ -105,6 +105,10 @@ const (
 	SubjectDetectorStart         = "snapshot.detector.start.%s"    // snapshot.detector.start.{parentJobId}
 	SubjectDetectorComplete      = "snapshot.detector.complete.%s" // snapshot.detector.complete.{parentJobId}
 
+	// Detector coordinator subjects (for manual detection triggers)
+	SubjectDetectorCoordinateTRN = "snapshot.detector.coordinate.TRN" // Coordinator jobs for TRN
+	SubjectDetectorCoordinatePRD = "snapshot.detector.coordinate.PRD" // Coordinator jobs for PRD
+
 	// Analysis subjects
 	SubjectAnalysisRun           = "analysis.run"
 	SubjectAnalysisProgress      = "analysis.progress.%s"      // analysis.progress.{jobID}
@@ -183,4 +187,17 @@ func GetDetectorStartSubject(parentJobID string) string {
 // All detector completions for a job go to the same subject
 func GetDetectorCompleteSubject(parentJobID string) string {
 	return fmt.Sprintf(SubjectDetectorComplete, parentJobID)
+}
+
+// GetDetectorCoordinateSubject returns the subject for detector coordinator jobs
+// Example: GetDetectorCoordinateSubject("TRN") → "snapshot.detector.coordinate.TRN"
+func GetDetectorCoordinateSubject(environment string) string {
+	switch environment {
+	case "TRN":
+		return SubjectDetectorCoordinateTRN
+	case "PRD":
+		return SubjectDetectorCoordinatePRD
+	default:
+		return fmt.Sprintf("snapshot.detector.coordinate.%s", environment)
+	}
 }

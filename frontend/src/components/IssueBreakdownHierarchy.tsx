@@ -74,7 +74,7 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
               <h3 className="text-sm font-semibold text-slate-700">
                 Facility: {facility}
                 <span className="ml-2 text-slate-500 font-normal">
-                  ({summary.by_facility[facility]} {summary.by_facility[facility] === 1 ? 'issue' : 'issues'})
+                  ({summary.by_facility[facility].toLocaleString()} {summary.by_facility[facility] === 1 ? 'issue' : 'issues'})
                 </span>
               </h3>
             </div>
@@ -104,7 +104,10 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
 
                     return (
                       <tr key={warehouse} className="hover:bg-slate-50 transition-colors">
-                        <td className="px-4 py-3 text-sm font-medium text-slate-900">
+                        <td
+                          className="px-4 py-3 text-sm font-medium text-slate-900"
+                          title={summary.warehouse_names?.[warehouse] || warehouse}
+                        >
                           {warehouse}
                         </td>
                         {summary.by_detector && Object.keys(summary.by_detector).map(detector => {
@@ -119,7 +122,7 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
                                                count > 5 ? 'bg-orange-100 text-orange-800 hover:bg-orange-200' :
                                                'bg-yellow-100 text-yellow-800 hover:bg-yellow-200'}`}
                                 >
-                                  {count}
+                                  {count.toLocaleString()}
                                 </Link>
                               ) : (
                                 <span className="text-slate-300">—</span>
@@ -128,7 +131,7 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
                           );
                         })}
                         <td className="px-4 py-3 text-center text-sm font-semibold text-slate-900">
-                          {warehouseTotal}
+                          {warehouseTotal.toLocaleString()}
                         </td>
                       </tr>
                     );

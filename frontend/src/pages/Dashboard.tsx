@@ -11,7 +11,7 @@ import DetectorProgressBar from '../components/DetectorProgressBar';
 import { DetectorTrigger } from '../components/DetectorTrigger';
 import { ToastContainer } from '../components/Toast';
 import { useToast } from '../hooks/useToast';
-import type { SnapshotSummary, SnapshotStatus } from '../types';
+import type { SnapshotSummary, SnapshotStatus, AnomalySummary } from '../types';
 
 function ArrowPathIcon({ className }: { className?: string }) {
   return (
@@ -73,7 +73,7 @@ const stats = [
   { name: 'Current Facility', key: 'currentFacility', href: '#', icon: BuildingIcon, color: 'info' },
   { name: 'Production Orders', key: 'totalProductionOrders', href: '#', icon: CubeIcon, color: 'primary' },
   { name: 'CO Lines', key: 'totalCustomerOrderLines', href: '#', icon: ShoppingCartIcon, color: 'success' },
-  { name: 'Issues', key: 'issuesCount', href: '/issues', icon: ExclamationTriangleIcon, color: 'warning' },
+  { name: 'Anomalies', key: 'anomaliesCount', href: '/anomalies', icon: ExclamationTriangleIcon, color: 'danger' },
 ];
 
 const Dashboard: React.FC = () => {
@@ -86,6 +86,7 @@ const Dashboard: React.FC = () => {
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [recovering, setRecovering] = useState(false);
   const [issueSummary, setIssueSummary] = useState<IssueSummary | null>(null);
+  const [anomalySummary, setAnomalySummary] = useState<AnomalySummary | null>(null);
   const [scopeInfoExpanded, setScopeInfoExpanded] = useState(false);
 
   // Use SSE hook for real-time progress updates
@@ -149,14 +150,16 @@ const Dashboard: React.FC = () => {
 
   const loadDashboardData = async () => {
     try {
-      const [summaryData, statusData, issueData] = await Promise.all([
+      const [summaryData, statusData, issueData, anomalyData] = await Promise.all([
         api.getSnapshotSummary(),
         api.getSnapshotStatus(),
         api.getIssueSummary(),
+        api.getAnomalySummary(),
       ]);
       setSummary(summaryData);
       setFallbackStatus(statusData);
       setIssueSummary(issueData);
+      setAnomalySummary(anomalyData);
     } catch (error) {
       console.error('Failed to load dashboard data:', error);
     } finally {
@@ -209,9 +212,9 @@ const Dashboard: React.FC = () => {
       return effectiveContext?.facility || '---';
     }
 
-    // Use real count from issue summary for issues
-    if (key === 'issuesCount' && issueSummary) {
-      return issueSummary.total;
+    // Use real count from anomaly summary for anomalies
+    if (key === 'anomaliesCount' && anomalySummary) {
+      return anomalySummary.total;
     }
 
     return (summary as any)[key] || 0;
@@ -223,6 +226,7 @@ const Dashboard: React.FC = () => {
       info: { bg: 'bg-info-50', icon: 'text-info-600', text: 'text-info-600' },
       success: { bg: 'bg-success-50', icon: 'text-success-600', text: 'text-success-600' },
       warning: { bg: 'bg-warning-50', icon: 'text-warning-600', text: 'text-warning-600' },
+      danger: { bg: 'bg-red-50', icon: 'text-red-600', text: 'text-red-600' },
     };
     return colors[color] || colors.primary;
   };
@@ -488,7 +492,9 @@ const Dashboard: React.FC = () => {
           {stats.map((stat) => {
             const colors = getColorClasses(stat.color);
             const value = getStatValue(stat.key);
-            const isWarning = stat.key === 'issuesCount' && typeof value === 'number' && value > 0;
+            const isCritical = stat.key === 'anomaliesCount' &&
+                               anomalySummary?.by_severity?.critical &&
+                               anomalySummary.by_severity.critical > 0;
 
             return (
               <Link
@@ -496,13 +502,13 @@ const Dashboard: React.FC = () => {
                 to={stat.href}
                 onClick={(e) => stat.href === '#' && e.preventDefault()}
                 className={`relative overflow-hidden rounded-lg bg-white p-4 sm:p-5 lg:p-8 shadow-sm transition-all duration-200 hover:shadow-md no-underline ${
-                  isWarning ? 'ring-1 ring-warning-400 hover:ring-warning-500' : 'ring-1 ring-slate-200 hover:ring-primary-400'
+                  isCritical ? 'ring-1 ring-red-400 hover:ring-red-500' : 'ring-1 ring-slate-200 hover:ring-primary-400'
                 } ${stat.href === '#' ? 'cursor-default' : ''}`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium text-slate-600">{stat.name}</p>
-                    <p className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight ${isWarning ? 'text-warning-600' : 'text-slate-900'}`}>
+                    <p className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight ${isCritical ? 'text-red-600' : 'text-slate-900'}`}>
                       {typeof value === 'number' ? value.toLocaleString() : value}
                     </p>
 
@@ -529,8 +535,8 @@ const Dashboard: React.FC = () => {
                     <stat.icon className={`h-5 w-5 sm:h-6 sm:w-6 ${colors.icon}`} />
                   </div>
                 </div>
-                {isWarning && (
-                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-warning-400" />
+                {isCritical && (
+                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-red-400" />
                 )}
               </Link>
             );
