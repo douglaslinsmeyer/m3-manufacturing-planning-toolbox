@@ -278,15 +278,27 @@ export interface PhaseProgress {
   error?: string;
 }
 
+export interface DetectorProgress {
+  detectorName: string;             // "unlinked_production_orders"
+  displayLabel: string;             // "Unlinked Production Orders"
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  issuesFound?: number;
+  durationMs?: number;
+  startTime?: string;
+  endTime?: string;
+  error?: string;
+}
+
 export interface SnapshotStatus {
   jobId?: string;
-  status: 'idle' | 'running' | 'completed' | 'failed';
+  status: 'idle' | 'running' | 'completed' | 'failed' | 'cancelled';
   lastUpdate?: string;
   progress: number;
   currentStep?: string;
   completedSteps?: number;
   totalSteps?: number;
-  parallelPhases?: PhaseProgress[];  // NEW: Parallel phase tracking
+  parallelPhases?: PhaseProgress[];      // Parallel data loading tracking
+  parallelDetectors?: DetectorProgress[]; // Parallel detector tracking
   coLinesProcessed?: number;
   mosProcessed?: number;
   mopsProcessed?: number;
@@ -315,13 +327,6 @@ export interface UserSettings {
   defaultFacility?: string;
   defaultDivision?: string;
   defaultCompany?: string;
-  itemsPerPage: number;
-  theme: 'light' | 'dark' | 'auto';
-  dateFormat: string;
-  timeFormat: '12h' | '24h';
-  enableNotifications: boolean;
-  notificationSound: boolean;
-  preferences: Record<string, any>;
 }
 
 export interface SystemSetting {
@@ -335,4 +340,21 @@ export interface SystemSetting {
 
 export interface SystemSettingsGrouped {
   categories: Record<string, SystemSetting[]>;
+}
+
+export interface CacheStatus {
+  resourceType: string;
+  recordCount: number;
+  lastRefresh: string;
+  isStale: boolean;
+}
+
+export interface RefreshResult {
+  status: 'success' | 'failed';
+  message: string;
+  companiesRefreshed?: number;
+  divisionsRefreshed?: number;
+  facilitiesRefreshed?: number;
+  warehousesRefreshed?: number;
+  durationMs?: number;
 }

@@ -23,24 +23,37 @@ type PhaseProgress struct {
 	Error       string    `json:"error,omitempty"`
 }
 
+// DetectorProgress represents the status of a single parallel detector
+type DetectorProgress struct {
+	DetectorName string    `json:"detectorName"`
+	DisplayLabel string    `json:"displayLabel"`
+	Status       string    `json:"status"`
+	IssuesFound  int       `json:"issuesFound"`
+	DurationMs   int64     `json:"durationMs"`
+	StartTime    time.Time `json:"startTime,omitempty"`
+	EndTime      time.Time `json:"endTime,omitempty"`
+	Error        string    `json:"error,omitempty"`
+}
+
 // ProgressUpdate represents a progress update message
 type ProgressUpdate struct {
-	JobID                     string          `json:"jobId"`
-	Status                    string          `json:"status"`
-	Progress                  int             `json:"progress"`
-	CurrentStep               string          `json:"currentStep,omitempty"`
-	CompletedSteps            int             `json:"completedSteps,omitempty"`
-	TotalSteps                int             `json:"totalSteps,omitempty"`
-	ParallelPhases            []PhaseProgress `json:"parallelPhases,omitempty"` // Parallel phase tracking
-	COLinesProcessed          int             `json:"coLinesProcessed,omitempty"`
-	MOsProcessed              int             `json:"mosProcessed,omitempty"`
-	MOPsProcessed             int             `json:"mopsProcessed,omitempty"`
-	RecordsPerSecond          float64         `json:"recordsPerSecond,omitempty"`
-	EstimatedSecondsRemaining int             `json:"estimatedTimeRemaining,omitempty"`
-	CurrentOperation          string          `json:"currentOperation,omitempty"`
-	CurrentBatch              int             `json:"currentBatch,omitempty"`
-	TotalBatches              int             `json:"totalBatches,omitempty"`
-	Error                     string          `json:"error,omitempty"`
+	JobID                     string             `json:"jobId"`
+	Status                    string             `json:"status"`
+	Progress                  int                `json:"progress"`
+	CurrentStep               string             `json:"currentStep,omitempty"`
+	CompletedSteps            int                `json:"completedSteps,omitempty"`
+	TotalSteps                int                `json:"totalSteps,omitempty"`
+	ParallelPhases            []PhaseProgress    `json:"parallelPhases,omitempty"`    // Parallel data loading tracking
+	ParallelDetectors         []DetectorProgress `json:"parallelDetectors,omitempty"` // Parallel detector tracking
+	COLinesProcessed          int                `json:"coLinesProcessed,omitempty"`
+	MOsProcessed              int                `json:"mosProcessed,omitempty"`
+	MOPsProcessed             int                `json:"mopsProcessed,omitempty"`
+	RecordsPerSecond          float64            `json:"recordsPerSecond,omitempty"`
+	EstimatedSecondsRemaining int                `json:"estimatedTimeRemaining,omitempty"`
+	CurrentOperation          string             `json:"currentOperation,omitempty"`
+	CurrentBatch              int                `json:"currentBatch,omitempty"`
+	TotalBatches              int                `json:"totalBatches,omitempty"`
+	Error                     string             `json:"error,omitempty"`
 }
 
 // handleSnapshotProgressSSE streams real-time progress updates via Server-Sent Events
@@ -169,12 +182,14 @@ func (s *Server) handleSnapshotProgressSSE(w http.ResponseWriter, r *http.Reques
 				eventType = "complete"
 			} else if update.Status == "failed" {
 				eventType = "error"
+			} else if update.Status == "cancelled" {
+				eventType = "progress" // Send as progress event with cancelled status
 			}
 
 			sendSSEEvent(w, flusher, rc, eventType, update)
 
-			// If job is completed or failed, close the connection after a brief delay
-			if update.Status == "completed" || update.Status == "failed" {
+			// If job is completed, failed, or cancelled, close the connection after a brief delay
+			if update.Status == "completed" || update.Status == "failed" || update.Status == "cancelled" {
 				time.Sleep(500 * time.Millisecond)
 				return
 			}

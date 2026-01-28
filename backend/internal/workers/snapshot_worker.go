@@ -18,17 +18,20 @@ import (
 
 // SnapshotWorker handles async snapshot refresh jobs
 type SnapshotWorker struct {
-	nats   *queue.Manager
-	db     *db.Queries
-	config *config.Config
+	nats           *queue.Manager
+	db             *db.Queries
+	config         *config.Config
+	jobContexts    map[string]context.CancelFunc // Track job cancellation contexts
+	jobContextsMux sync.RWMutex                  // Protect concurrent access
 }
 
 // NewSnapshotWorker creates a new snapshot worker
 func NewSnapshotWorker(nats *queue.Manager, database *db.Queries, cfg *config.Config) *SnapshotWorker {
 	return &SnapshotWorker{
-		nats:   nats,
-		db:     database,
-		config: cfg,
+		nats:        nats,
+		db:          database,
+		config:      cfg,
+		jobContexts: make(map[string]context.CancelFunc),
 	}
 }
 
@@ -52,24 +55,37 @@ type PhaseProgress struct {
 	Error       string    `json:"error,omitempty"`
 }
 
+// DetectorProgress represents the status of a single parallel detector
+type DetectorProgress struct {
+	DetectorName string    `json:"detectorName"`       // "unlinked_production_orders"
+	DisplayLabel string    `json:"displayLabel"`       // "Unlinked Production Orders"
+	Status       string    `json:"status"`             // "pending", "running", "completed", "failed"
+	IssuesFound  int       `json:"issuesFound"`        // Issues detected
+	DurationMs   int64     `json:"durationMs"`         // Execution time
+	StartTime    time.Time `json:"startTime,omitempty"`
+	EndTime      time.Time `json:"endTime,omitempty"`
+	Error        string    `json:"error,omitempty"`
+}
+
 // ProgressUpdate represents a progress update message
 type ProgressUpdate struct {
-	JobID                     string          `json:"jobId"`
-	Status                    string          `json:"status"`
-	Progress                  int             `json:"progress"`
-	CurrentStep               string          `json:"currentStep"`
-	CompletedSteps            int             `json:"completedSteps"`
-	TotalSteps                int             `json:"totalSteps"`
-	ParallelPhases            []PhaseProgress `json:"parallelPhases,omitempty"` // NEW: Parallel phase tracking
-	COLinesProcessed          int             `json:"coLinesProcessed,omitempty"`
-	MOsProcessed              int             `json:"mosProcessed,omitempty"`
-	MOPsProcessed             int             `json:"mopsProcessed,omitempty"`
-	RecordsPerSecond          float64         `json:"recordsPerSecond,omitempty"`
-	EstimatedSecondsRemaining int             `json:"estimatedTimeRemaining,omitempty"`
-	CurrentOperation          string          `json:"currentOperation,omitempty"`
-	CurrentBatch              int             `json:"currentBatch,omitempty"`
-	TotalBatches              int             `json:"totalBatches,omitempty"`
-	Error                     string          `json:"error,omitempty"`
+	JobID                     string             `json:"jobId"`
+	Status                    string             `json:"status"`
+	Progress                  int                `json:"progress"`
+	CurrentStep               string             `json:"currentStep"`
+	CompletedSteps            int                `json:"completedSteps"`
+	TotalSteps                int                `json:"totalSteps"`
+	ParallelPhases            []PhaseProgress    `json:"parallelPhases,omitempty"`    // Parallel data loading tracking
+	ParallelDetectors         []DetectorProgress `json:"parallelDetectors,omitempty"` // Parallel detector tracking
+	COLinesProcessed          int                `json:"coLinesProcessed,omitempty"`
+	MOsProcessed              int                `json:"mosProcessed,omitempty"`
+	MOPsProcessed             int                `json:"mopsProcessed,omitempty"`
+	RecordsPerSecond          float64            `json:"recordsPerSecond,omitempty"`
+	EstimatedSecondsRemaining int                `json:"estimatedTimeRemaining,omitempty"`
+	CurrentOperation          string             `json:"currentOperation,omitempty"`
+	CurrentBatch              int                `json:"currentBatch,omitempty"`
+	TotalBatches              int                `json:"totalBatches,omitempty"`
+	Error                     string             `json:"error,omitempty"`
 }
 
 
@@ -82,6 +98,14 @@ type DataBatchJobMessage struct {
 	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
+}
+
+// BatchStartMessage signals that a worker has picked up a batch job
+type BatchStartMessage struct {
+	JobID       string    `json:"jobId"`
+	ParentJobID string    `json:"parentJobId"`
+	DataType    string    `json:"dataType"` // "mops", "mos", "cos"
+	StartTime   time.Time `json:"startTime"`
 }
 
 // BatchCompletionMessage signals data type loading completion
@@ -99,9 +123,19 @@ type DetectorJobMessage struct {
 	JobID        string `json:"jobId"`        // "abc123-unlinked"
 	ParentJobID  string `json:"parentJobId"`  // "abc123"
 	DetectorName string `json:"detectorName"` // "unlinked_production_orders"
+	DisplayLabel string `json:"displayLabel"` // "Unlinked Production Orders"
 	Environment  string `json:"environment"`  // "TRN" or "PRD"
 	Company      string `json:"company"`      // "100"
 	Facility     string `json:"facility"`     // "AZ1"
+}
+
+// DetectorStartMessage signals that a worker has picked up a detector job
+type DetectorStartMessage struct {
+	JobID        string    `json:"jobId"`
+	ParentJobID  string    `json:"parentJobId"`
+	DetectorName string    `json:"detectorName"`
+	DisplayLabel string    `json:"displayLabel"`
+	StartTime    time.Time `json:"startTime"`
 }
 
 // DetectorCompletionMessage signals detector execution completion
@@ -180,12 +214,76 @@ func (w *SnapshotWorker) Start() error {
 		return fmt.Errorf("failed to subscribe to PRD detector jobs: %w", err)
 	}
 
+	// Subscribe to cancellation requests (all workers should listen)
+	_, err = w.nats.Subscribe("snapshot.cancel.*", w.handleCancelRequest)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to cancellation requests: %w", err)
+	}
+
 	// IMPORTANT: Limit concurrent message processing by handling synchronously
 	// Each worker will process one message at a time, allowing NATS to distribute
 	// the remaining messages to other available workers
 
-	log.Println("Snapshot worker started and listening for jobs, phase work, and batch work")
+	log.Println("Snapshot worker started and listening for jobs, phase work, batch work, and cancellation requests")
 	return nil
+}
+
+// createJobContext creates and stores a cancellable context for a job
+func (w *SnapshotWorker) createJobContext(jobID string) context.Context {
+	w.jobContextsMux.Lock()
+	defer w.jobContextsMux.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	w.jobContexts[jobID] = cancel
+	log.Printf("Created cancellable context for job: %s", jobID)
+	return ctx
+}
+
+// cancelJobContext cancels the context for a job
+func (w *SnapshotWorker) cancelJobContext(jobID string) {
+	w.jobContextsMux.Lock()
+	defer w.jobContextsMux.Unlock()
+
+	if cancel, exists := w.jobContexts[jobID]; exists {
+		cancel()
+		delete(w.jobContexts, jobID)
+		log.Printf("Cancelled context for job: %s", jobID)
+	}
+}
+
+// getJobContext retrieves the context for a job (returns Background if not found)
+func (w *SnapshotWorker) getJobContext(jobID string) context.Context {
+	w.jobContextsMux.RLock()
+	defer w.jobContextsMux.RUnlock()
+
+	// Note: In distributed environment, contexts are not shared across workers
+	// Each worker maintains its own context map
+	// For batch/detector jobs, we check DB status instead
+	return context.Background()
+}
+
+// isJobCancelled checks if a job has been cancelled in the database
+func (w *SnapshotWorker) isJobCancelled(jobID string) bool {
+	ctx := context.Background()
+	job, err := w.db.GetRefreshJob(ctx, jobID)
+	if err != nil {
+		return false
+	}
+	return job.Status == "cancelled"
+}
+
+// handleCancelRequest handles a cancellation request for a job
+func (w *SnapshotWorker) handleCancelRequest(msg *nats.Msg) {
+	// Extract jobID from subject (format: snapshot.cancel.{jobID})
+	parts := len("snapshot.cancel.")
+	if len(msg.Subject) <= parts {
+		log.Printf("Invalid cancel subject: %s", msg.Subject)
+		return
+	}
+	jobID := msg.Subject[parts:]
+
+	log.Printf("Received cancellation request for job: %s", jobID)
+	w.cancelJobContext(jobID)
 }
 
 // handleRefreshRequest handles a snapshot refresh request
@@ -251,7 +349,10 @@ func (w *SnapshotWorker) processRefreshWithRetry(req SnapshotRefreshMessage) err
 // processRefresh coordinates parallel data refresh using NATS batch distribution with ID range partitioning
 // Optimized for Apache Spark: Uses predicate pushdown (WHERE ID >= X AND ID < Y) instead of OFFSET/LIMIT
 func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
-	ctx := context.Background()
+	// Create cancellable context for this job
+	ctx := w.createJobContext(req.JobID)
+	defer w.cancelJobContext(req.JobID) // Clean up context when done
+
 	log.Printf("Coordinating refresh job %s with parallel ID range batching", req.JobID)
 
 	// Start the job
@@ -259,20 +360,37 @@ func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 		return fmt.Errorf("failed to start job: %w", err)
 	}
 
+	// Check for cancellation before starting
+	if ctx.Err() != nil {
+		log.Printf("Job %s cancelled before starting", req.JobID)
+		return fmt.Errorf("job cancelled: %w", ctx.Err())
+	}
+
 	// Phase 0: Truncate database (must complete first)
 	log.Printf("Phase 0: Truncating database for job %s", req.JobID)
 	w.publishDetailedProgress(req.JobID, "running", "Preparing database", "Truncating tables",
-		0, 6, 0, 0, 0, 0, 0, 0, 0, 0)
+		0, 6, 0, 0, 0, 0, nil, nil, 0, 0, 0, 0)
 
 	if err := w.db.TruncateAnalysisTables(ctx, req.Environment); err != nil {
+		// Check if error is due to cancellation
+		if ctx.Err() != nil {
+			log.Printf("Job %s cancelled during truncate", req.JobID)
+			return fmt.Errorf("job cancelled: %w", ctx.Err())
+		}
 		w.publishError(req.JobID, fmt.Sprintf("Truncate failed: %v", err))
 		w.db.FailJob(ctx, req.JobID, err.Error())
 		return fmt.Errorf("truncate failed: %w", err)
 	}
 
+	// Check for cancellation after truncate
+	if ctx.Err() != nil {
+		log.Printf("Job %s cancelled after truncate", req.JobID)
+		return fmt.Errorf("job cancelled: %w", ctx.Err())
+	}
+
 	log.Printf("Phase 0 complete: Database truncated")
 	w.publishDetailedProgress(req.JobID, "running", "Database prepared", "Publishing data jobs",
-		1, 4, 20, 0, 0, 0, 0, 0, 0, 0)
+		1, 4, 20, 0, 0, 0, nil, nil, 0, 0, 0, 0)
 
 	// Phase 1: Publish 3 data jobs to NATS (one per data type) and wait for completion
 	log.Printf("Phase 1: Publishing 3 data jobs (MOPs, MOs, COs) to NATS...")
@@ -280,7 +398,7 @@ func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 }
 
 // publishDetailedProgress publishes a detailed progress update with extended metrics
-func (w *SnapshotWorker) publishDetailedProgress(jobID, status, currentStep, currentOperation string, completedSteps, totalSteps, progressPct, coLines, mos, mops int, recordsPerSec float64, estimatedSecsRemaining, currentBatch, totalBatches int) {
+func (w *SnapshotWorker) publishDetailedProgress(jobID, status, currentStep, currentOperation string, completedSteps, totalSteps, progressPct, coLines, mos, mops int, parallelPhases []PhaseProgress, parallelDetectors []DetectorProgress, recordsPerSec float64, estimatedSecsRemaining, currentBatch, totalBatches int) {
 	update := ProgressUpdate{
 		JobID:                     jobID,
 		Status:                    status,
@@ -288,6 +406,8 @@ func (w *SnapshotWorker) publishDetailedProgress(jobID, status, currentStep, cur
 		CurrentStep:               currentStep,
 		CompletedSteps:            completedSteps,
 		TotalSteps:                totalSteps,
+		ParallelPhases:            parallelPhases,
+		ParallelDetectors:         parallelDetectors,
 		COLinesProcessed:          coLines,
 		MOsProcessed:              mos,
 		MOPsProcessed:             mops,
@@ -356,13 +476,23 @@ func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
 	ctx := context.Background()
 
 	// Check if parent job has been cancelled
-	parentJob, err := w.db.GetRefreshJob(ctx, job.ParentJobID)
-	if err != nil {
-		log.Printf("Failed to check parent job status: %v", err)
-		// Continue processing if we can't check status (assume not cancelled)
-	} else if parentJob != nil && parentJob.Status == "failed" && parentJob.ErrorMessage.Valid && parentJob.ErrorMessage.String == "Cancelled by user" {
+	if w.isJobCancelled(job.ParentJobID) {
 		log.Printf("Parent job %s was cancelled, skipping %s batch", job.ParentJobID, job.DataType)
 		return
+	}
+
+	// Publish batch start notification
+	startMsg := BatchStartMessage{
+		JobID:       job.JobID,
+		ParentJobID: job.ParentJobID,
+		DataType:    job.DataType,
+		StartTime:   time.Now(),
+	}
+	startData, _ := json.Marshal(startMsg)
+	startSubject := queue.GetBatchStartSubject(job.ParentJobID)
+	if err := w.nats.Publish(startSubject, startData); err != nil {
+		log.Printf("Failed to publish batch start notification: %v", err)
+		// Non-fatal, continue processing
 	}
 
 	// Get environment config
@@ -445,13 +575,24 @@ func (w *SnapshotWorker) handleDetectorJob(msg *nats.Msg) {
 	ctx := context.Background()
 
 	// Check if parent job has been cancelled
-	parentJob, err := w.db.GetRefreshJob(ctx, job.ParentJobID)
-	if err != nil {
-		log.Printf("Failed to check parent job status: %v", err)
-		// Continue processing if we can't check status (assume not cancelled)
-	} else if parentJob != nil && parentJob.Status == "failed" && parentJob.ErrorMessage.Valid && parentJob.ErrorMessage.String == "Cancelled by user" {
+	if w.isJobCancelled(job.ParentJobID) {
 		log.Printf("Parent job %s was cancelled, skipping detector %s", job.ParentJobID, job.DetectorName)
 		return
+	}
+
+	// Publish detector start notification
+	startMsg := DetectorStartMessage{
+		JobID:        job.JobID,
+		ParentJobID:  job.ParentJobID,
+		DetectorName: job.DetectorName,
+		DisplayLabel: job.DisplayLabel,
+		StartTime:    startTime,
+	}
+	startData, _ := json.Marshal(startMsg)
+	startSubject := queue.GetDetectorStartSubject(job.ParentJobID)
+	if err := w.nats.Publish(startSubject, startData); err != nil {
+		log.Printf("Failed to publish detector start notification: %v", err)
+		// Non-fatal, continue processing
 	}
 
 	// Initialize detector services
@@ -527,11 +668,27 @@ func (w *SnapshotWorker) publishDataJobs(req SnapshotRefreshMessage) error {
 	defer cancel()
 
 	log.Printf("Phase 1: Publishing 3 data jobs to NATS queue...")
+
+	// Initialize parallel phases as pending
+	initialPhases := []PhaseProgress{
+		{Phase: "mops", Status: "pending"},
+		{Phase: "mos", Status: "pending"},
+		{Phase: "cos", Status: "pending"},
+	}
+
+	// Create phase records in database for tracking
+	dataTypes := []string{"mops", "mos", "cos"}
+	for _, phaseType := range dataTypes {
+		if err := w.db.CreateRefreshJobPhase(ctx, req.JobID, phaseType); err != nil {
+			log.Printf("Warning: failed to create phase record for %s: %v", phaseType, err)
+			// Non-fatal, continue
+		}
+	}
+
 	w.publishDetailedProgress(req.JobID, "running", "Publishing data jobs", "Distributing work to workers",
-		1, 4, 25, 0, 0, 0, 0, 0, 0, 3)
+		1, 4, 25, 0, 0, 0, initialPhases, nil, 0, 0, 0, 3)
 
 	// Publish 3 jobs (one per data type)
-	dataTypes := []string{"mops", "mos", "cos"}
 
 	for _, dataType := range dataTypes {
 		job := DataBatchJobMessage{
@@ -574,7 +731,65 @@ func (w *SnapshotWorker) waitForDataJobs(req SnapshotRefreshMessage) error {
 		"mos":  0,
 		"cos":  0,
 	}
+
+	// Track parallel phase states
+	phaseStates := map[string]*PhaseProgress{
+		"mops": {Phase: "mops", Status: "pending"},
+		"mos":  {Phase: "mos", Status: "pending"},
+		"cos":  {Phase: "cos", Status: "pending"},
+	}
 	var mu sync.Mutex
+
+	// Subscribe to batch start events
+	startSubject := queue.GetBatchStartSubject(req.JobID)
+	startSub, err := w.nats.Subscribe(startSubject, func(msg *nats.Msg) {
+		var start BatchStartMessage
+		if err := json.Unmarshal(msg.Data, &start); err != nil {
+			log.Printf("Failed to parse batch start message: %v", err)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Update phase state to running
+		phaseStates[start.DataType].Status = "running"
+		phaseStates[start.DataType].StartTime = start.StartTime
+
+		// Persist phase start to database
+		dbCtx := context.Background()
+		if err := w.db.StartRefreshJobPhase(dbCtx, req.JobID, start.DataType); err != nil {
+			log.Printf("Warning: failed to persist phase start for %s: %v", start.DataType, err)
+			// Non-fatal, continue
+		}
+
+		log.Printf("Data job started: %s", start.DataType)
+
+		// Convert phase states to slice for JSON
+		parallelPhases := make([]PhaseProgress, 0, 3)
+		for _, phase := range []string{"mops", "mos", "cos"} {
+			parallelPhases = append(parallelPhases, *phaseStates[phase])
+		}
+
+		// Send progress update showing running status
+		totalMops := recordsByType["mops"]
+		totalMos := recordsByType["mos"]
+		totalCos := recordsByType["cos"]
+		progress := 25 + (completedJobs * 15)
+
+		w.publishDetailedProgress(req.JobID, "running", "Loading data",
+			fmt.Sprintf("Loading %s", start.DataType),
+			2, 4, progress,
+			totalCos, totalMos, totalMops,
+			parallelPhases,
+			nil,
+			0, 0, completedJobs, 3)
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to batch starts: %w", err)
+	}
+	defer startSub.Unsubscribe()
 
 	// Subscribe to completion events
 	completeSubject := queue.GetBatchCompleteSubject(req.JobID)
@@ -591,10 +806,34 @@ func (w *SnapshotWorker) waitForDataJobs(req SnapshotRefreshMessage) error {
 		if !completion.Success {
 			errMsg := fmt.Sprintf("Data job %s failed: %s", completion.DataType, completion.Error)
 			log.Printf(errMsg)
+
+			// Update phase state to failed
+			phaseStates[completion.DataType].Status = "failed"
+			phaseStates[completion.DataType].Error = completion.Error
+			phaseStates[completion.DataType].EndTime = time.Now()
+
+			// Persist phase failure to database
+			dbCtx := context.Background()
+			if err := w.db.FailRefreshJobPhase(dbCtx, req.JobID, completion.DataType, completion.Error); err != nil {
+				log.Printf("Warning: failed to persist phase failure for %s: %v", completion.DataType, err)
+			}
+
 			w.publishError(req.JobID, errMsg)
 			w.db.FailJob(ctx, req.JobID, completion.Error)
 			cancel() // Cancel context to abort
 			return
+		}
+
+		// Update phase state to completed
+		phaseStates[completion.DataType].Status = "completed"
+		phaseStates[completion.DataType].RecordCount = completion.RecordCount
+		phaseStates[completion.DataType].EndTime = time.Now()
+
+		// Persist phase completion to database
+		dbCtx := context.Background()
+		if err := w.db.CompleteRefreshJobPhase(dbCtx, req.JobID, completion.DataType, completion.RecordCount); err != nil {
+			log.Printf("Warning: failed to persist phase completion for %s: %v", completion.DataType, err)
+			// Non-fatal, continue
 		}
 
 		completedJobs++
@@ -610,10 +849,18 @@ func (w *SnapshotWorker) waitForDataJobs(req SnapshotRefreshMessage) error {
 		log.Printf("Data job completed: %s (%d records), total: %d/3 jobs",
 			completion.DataType, completion.RecordCount, completedJobs)
 
+		// Convert phase states to slice for JSON
+		parallelPhases := make([]PhaseProgress, 0, 3)
+		for _, phase := range []string{"mops", "mos", "cos"} {
+			parallelPhases = append(parallelPhases, *phaseStates[phase])
+		}
+
 		w.publishDetailedProgress(req.JobID, "running", "Loading data",
 			fmt.Sprintf("Loaded %s", completion.DataType),
 			2, 4, progress,
 			totalCos, totalMos, totalMops,
+			parallelPhases,
+			nil,
 			0, 0, completedJobs, 3)
 	})
 
@@ -666,6 +913,8 @@ func (w *SnapshotWorker) runFinalize(req SnapshotRefreshMessage, totalCos, total
 	w.publishDetailedProgress(req.JobID, "running", "Finalizing data", "Updating production orders view",
 		3, 4, 75,
 		totalCos, totalMos, totalMops,
+		nil,
+		nil,
 		0, 0, 0, 0)
 
 	if err := w.db.UpdateProductionOrdersFromMOPs(ctx); err != nil {
@@ -687,6 +936,8 @@ func (w *SnapshotWorker) runFinalize(req SnapshotRefreshMessage, totalCos, total
 	w.publishDetailedProgress(req.JobID, "running", "Starting issue detection", "Publishing detector jobs",
 		4, 4, 85,
 		totalCos, totalMos, totalMops,
+		nil,
+		nil,
 		0, 0, 0, 0)
 
 	return w.publishDetectorJobs(req, totalCos, totalMos, totalMops)
@@ -726,7 +977,7 @@ func (w *SnapshotWorker) publishDetectorJobs(req SnapshotRefreshMessage, totalCo
 		w.db.CompleteJob(ctx, req.JobID)
 		w.publishDetailedProgress(req.JobID, "completed", "Data refresh completed",
 			"All data loaded successfully (detection skipped)",
-			4, 4, 100, totalCos, totalMos, totalMops, 0, 0, 0, 0)
+			4, 4, 100, totalCos, totalMos, totalMops, nil, nil, 0, 0, 0, 0)
 		w.publishComplete(req.JobID)
 		return nil
 	}
@@ -743,12 +994,33 @@ func (w *SnapshotWorker) publishDetectorJobs(req SnapshotRefreshMessage, totalCo
 		log.Printf("Warning: failed to clear previous issues: %v", err)
 	}
 
+	// Create detector records in database for tracking
+	for _, detectorName := range enabledDetectors {
+		detector := detectionService.GetDetectorByName(detectorName)
+		displayLabel := detectorName
+		if detector != nil {
+			displayLabel = detector.Label()
+		}
+		if err := w.db.CreateRefreshJobDetector(ctx, req.JobID, detectorName, displayLabel); err != nil {
+			log.Printf("Warning: failed to create detector record for %s: %v", detectorName, err)
+			// Non-fatal, continue
+		}
+	}
+
 	// Publish detector jobs
 	for _, detectorName := range enabledDetectors {
+		// Get detector label for UI display
+		detector := detectionService.GetDetectorByName(detectorName)
+		displayLabel := detectorName // Fallback to name
+		if detector != nil {
+			displayLabel = detector.Label()
+		}
+
 		job := DetectorJobMessage{
 			JobID:        fmt.Sprintf("%s-%s", req.JobID, detectorName),
 			ParentJobID:  req.JobID,
 			DetectorName: detectorName,
+			DisplayLabel: displayLabel,
 			Environment:  req.Environment,
 			Company:      req.Company,
 			Facility:     req.Facility,
@@ -778,11 +1050,100 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 
 	log.Printf("Waiting for %d detector jobs to complete...", totalDetectors)
 
+	// Initialize detector services to get detector info
+	detectorConfigService := services.NewDetectorConfigService(w.db)
+	detectionService := services.NewDetectionService(w.db, detectorConfigService)
+
+	// Get all enabled detector names
+	allDetectorNames := detectionService.GetAllDetectorNames()
+	enabledDetectors := make([]string, 0)
+	detectorLabels := make(map[string]string) // Map name to display label
+
+	for _, name := range allDetectorNames {
+		isEnabled, err := detectionService.IsDetectorEnabled(ctx, req.Environment, name)
+		if err != nil || !isEnabled {
+			continue
+		}
+		enabledDetectors = append(enabledDetectors, name)
+
+		// Get display label
+		detector := detectionService.GetDetectorByName(name)
+		if detector != nil {
+			detectorLabels[name] = detector.Label()
+		} else {
+			detectorLabels[name] = name
+		}
+	}
+
+	// Track detector states
+	detectorStates := make(map[string]*DetectorProgress)
+	for _, name := range enabledDetectors {
+		detectorStates[name] = &DetectorProgress{
+			DetectorName: name,
+			DisplayLabel: detectorLabels[name],
+			Status:       "pending",
+		}
+	}
+
 	// Track completions
 	completedDetectors := 0
 	failedDetectors := 0
 	issuesByDetector := make(map[string]int)
 	var mu sync.Mutex
+
+	// Subscribe to detector start events
+	startSubject := queue.GetDetectorStartSubject(req.JobID)
+	startSub, err := w.nats.Subscribe(startSubject, func(msg *nats.Msg) {
+		var start DetectorStartMessage
+		if err := json.Unmarshal(msg.Data, &start); err != nil {
+			log.Printf("Failed to parse detector start message: %v", err)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Update detector state to running
+		if state, exists := detectorStates[start.DetectorName]; exists {
+			state.Status = "running"
+			state.StartTime = start.StartTime
+		}
+
+		// Persist detector start to database
+		dbCtx := context.Background()
+		if err := w.db.StartRefreshJobDetector(dbCtx, req.JobID, start.DetectorName); err != nil {
+			log.Printf("Warning: failed to persist detector start for %s: %v", start.DetectorName, err)
+			// Non-fatal, continue
+		}
+
+		log.Printf("Detector started: %s (%s)", start.DetectorName, start.DisplayLabel)
+
+		// Convert detector states to slice for JSON
+		parallelDetectors := make([]DetectorProgress, 0, len(detectorStates))
+		for _, name := range enabledDetectors {
+			parallelDetectors = append(parallelDetectors, *detectorStates[name])
+		}
+
+		// Calculate progress
+		progress := 85 + (15 * completedDetectors / totalDetectors)
+
+		// Send progress update showing running status
+		w.publishDetailedProgress(req.JobID, "running", "Running issue detection",
+			fmt.Sprintf("Running %s detector", start.DisplayLabel),
+			4, 4, progress,
+			totalCos, totalMos, totalMops,
+			nil,
+			parallelDetectors,
+			0, 0, 0, 0)
+	})
+
+	if err != nil {
+		errMsg := fmt.Sprintf("failed to subscribe to detector starts: %w", err)
+		w.publishError(req.JobID, errMsg)
+		w.db.FailJob(ctx, req.JobID, errMsg)
+		return fmt.Errorf(errMsg)
+	}
+	defer startSub.Unsubscribe()
 
 	// Subscribe to completion events
 	completeSubject := queue.GetDetectorCompleteSubject(req.JobID)
@@ -796,20 +1157,45 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 		mu.Lock()
 		defer mu.Unlock()
 
-		if !completion.Success {
-			errMsg := fmt.Sprintf("Detector %s failed: %s", completion.DetectorName, completion.Error)
-			log.Printf(errMsg)
-			failedDetectors++
-
-			// Update failed detector count in DB
+		// Update detector state
+		if state, exists := detectorStates[completion.DetectorName]; exists {
 			dbCtx := context.Background()
-			w.db.IncrementFailedDetectors(dbCtx, req.JobID)
 
-			// Continue processing other detectors (don't abort)
-		} else {
-			issuesByDetector[completion.DetectorName] = completion.IssuesFound
-			log.Printf("Detector %s found %d issues (duration: %dms)",
-				completion.DetectorName, completion.IssuesFound, completion.DurationMs)
+			if !completion.Success {
+				state.Status = "failed"
+				state.Error = completion.Error
+				state.DurationMs = completion.DurationMs
+				state.EndTime = time.Now()
+				failedDetectors++
+
+				errMsg := fmt.Sprintf("Detector %s failed: %s", completion.DetectorName, completion.Error)
+				log.Printf(errMsg)
+
+				// Persist detector failure to database
+				if err := w.db.FailRefreshJobDetector(dbCtx, req.JobID, completion.DetectorName, completion.Error, completion.DurationMs); err != nil {
+					log.Printf("Warning: failed to persist detector failure for %s: %v", completion.DetectorName, err)
+				}
+
+				// Update failed detector count in DB
+				w.db.IncrementFailedDetectors(dbCtx, req.JobID)
+
+				// Continue processing other detectors (don't abort)
+			} else {
+				state.Status = "completed"
+				state.IssuesFound = completion.IssuesFound
+				state.DurationMs = completion.DurationMs
+				state.EndTime = time.Now()
+
+				// Persist detector completion to database
+				if err := w.db.CompleteRefreshJobDetector(dbCtx, req.JobID, completion.DetectorName, completion.IssuesFound, completion.DurationMs); err != nil {
+					log.Printf("Warning: failed to persist detector completion for %s: %v", completion.DetectorName, err)
+					// Non-fatal, continue
+				}
+
+				issuesByDetector[completion.DetectorName] = completion.IssuesFound
+				log.Printf("Detector %s found %d issues (duration: %dms)",
+					completion.DetectorName, completion.IssuesFound, completion.DurationMs)
+			}
 		}
 
 		completedDetectors++
@@ -823,10 +1209,18 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 
 		log.Printf("Detection progress: %d/%d detectors completed", completedDetectors, totalDetectors)
 
+		// Convert detector states to slice for JSON
+		parallelDetectors := make([]DetectorProgress, 0, len(detectorStates))
+		for _, name := range enabledDetectors {
+			parallelDetectors = append(parallelDetectors, *detectorStates[name])
+		}
+
 		w.publishDetailedProgress(req.JobID, "running", "Running issue detection",
 			fmt.Sprintf("Completed %s detector", completion.DetectorName),
 			4, 4, progress,
 			totalCos, totalMos, totalMops,
+			nil,
+			parallelDetectors,
 			0, 0, 0, 0)
 	})
 
@@ -890,9 +1284,17 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 					statusMsg = fmt.Sprintf("Data refresh completed (%d detectors failed)", failed)
 				}
 
+				// Convert final detector states to slice for JSON
+				parallelDetectors := make([]DetectorProgress, 0, len(detectorStates))
+				for _, name := range enabledDetectors {
+					parallelDetectors = append(parallelDetectors, *detectorStates[name])
+				}
+
 				w.publishDetailedProgress(req.JobID, "completed", statusMsg,
 					fmt.Sprintf("All data loaded and analyzed successfully (%d issues found)", totalIssues),
 					4, 4, 100, totalCos, totalMos, totalMops,
+					nil,
+					parallelDetectors,
 					0, 0, totalDetectors, totalDetectors)
 				w.publishComplete(req.JobID)
 

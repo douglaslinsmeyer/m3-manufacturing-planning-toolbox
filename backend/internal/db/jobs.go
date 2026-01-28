@@ -150,6 +150,34 @@ func (q *Queries) FailJob(ctx context.Context, jobID, errorMsg string) error {
 	return err
 }
 
+// CancelJob marks a job as cancelled
+func (q *Queries) CancelJob(ctx context.Context, jobID, message string) error {
+	query := `
+		UPDATE refresh_jobs
+		SET status = 'cancelled',
+		    error_message = $1,
+		    completed_at = NOW(),
+		    duration_seconds = EXTRACT(EPOCH FROM (NOW() - started_at))::INTEGER,
+		    updated_at = NOW()
+		WHERE id = $2 AND status IN ('pending', 'running')
+	`
+	result, err := q.db.ExecContext(ctx, query, message, jobID)
+	if err != nil {
+		return err
+	}
+
+	// Check if any rows were updated
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("job not found or not in cancellable state")
+	}
+
+	return nil
+}
+
 // IncrementRetryCount increments the retry count for a job
 func (q *Queries) IncrementRetryCount(ctx context.Context, jobID string) error {
 	query := `
@@ -351,3 +379,120 @@ func (q *Queries) GetRefreshJobContext(ctx context.Context, jobID string) (compa
 
 	return company, facility, nil
 }
+
+// ========================================
+// Refresh Job Phase Tracking
+// ========================================
+
+// CreateRefreshJobPhase creates a new phase record in pending state
+func (q *Queries) CreateRefreshJobPhase(ctx context.Context, jobID, phaseType string) error {
+	query := `
+		INSERT INTO refresh_job_phases (job_id, phase_type, status)
+		VALUES ($1, $2, 'pending')
+		ON CONFLICT (job_id, phase_type) DO NOTHING
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, phaseType)
+	return err
+}
+
+// StartRefreshJobPhase marks a phase as started
+func (q *Queries) StartRefreshJobPhase(ctx context.Context, jobID, phaseType string) error {
+	query := `
+		UPDATE refresh_job_phases
+		SET status = 'running',
+		    started_at = NOW(),
+		    updated_at = NOW()
+		WHERE job_id = $1 AND phase_type = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, phaseType)
+	return err
+}
+
+// CompleteRefreshJobPhase marks a phase as completed
+func (q *Queries) CompleteRefreshJobPhase(ctx context.Context, jobID, phaseType string, recordCount int) error {
+	query := `
+		UPDATE refresh_job_phases
+		SET status = 'completed',
+		    record_count = $3,
+		    completed_at = NOW(),
+		    duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000,
+		    updated_at = NOW()
+		WHERE job_id = $1 AND phase_type = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, phaseType, recordCount)
+	return err
+}
+
+// FailRefreshJobPhase marks a phase as failed
+func (q *Queries) FailRefreshJobPhase(ctx context.Context, jobID, phaseType, errorMsg string) error {
+	query := `
+		UPDATE refresh_job_phases
+		SET status = 'failed',
+		    error_message = $3,
+		    completed_at = NOW(),
+		    duration_ms = EXTRACT(EPOCH FROM (NOW() - started_at)) * 1000,
+		    updated_at = NOW()
+		WHERE job_id = $1 AND phase_type = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, phaseType, errorMsg)
+	return err
+}
+
+// ========================================
+// Refresh Job Detector Tracking
+// ========================================
+
+// CreateRefreshJobDetector creates a new detector record in pending state
+func (q *Queries) CreateRefreshJobDetector(ctx context.Context, jobID, detectorName, displayLabel string) error {
+	query := `
+		INSERT INTO refresh_job_detectors (job_id, detector_name, display_label, status)
+		VALUES ($1, $2, $3, 'pending')
+		ON CONFLICT (job_id, detector_name) DO NOTHING
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, detectorName, displayLabel)
+	return err
+}
+
+// StartRefreshJobDetector marks a detector as started
+func (q *Queries) StartRefreshJobDetector(ctx context.Context, jobID, detectorName string) error {
+	query := `
+		UPDATE refresh_job_detectors
+		SET status = 'running',
+		    started_at = NOW(),
+		    updated_at = NOW()
+		WHERE job_id = $1 AND detector_name = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, detectorName)
+	return err
+}
+
+// CompleteRefreshJobDetector marks a detector as completed
+func (q *Queries) CompleteRefreshJobDetector(ctx context.Context, jobID, detectorName string, issuesFound int, durationMs int64) error {
+	query := `
+		UPDATE refresh_job_detectors
+		SET status = 'completed',
+		    issues_found = $3,
+		    duration_ms = $4,
+		    completed_at = NOW(),
+		    updated_at = NOW()
+		WHERE job_id = $1 AND detector_name = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, detectorName, issuesFound, durationMs)
+	return err
+}
+
+// FailRefreshJobDetector marks a detector as failed
+func (q *Queries) FailRefreshJobDetector(ctx context.Context, jobID, detectorName, errorMsg string, durationMs int64) error {
+	query := `
+		UPDATE refresh_job_detectors
+		SET status = 'failed',
+		    error_message = $3,
+		    duration_ms = $4,
+		    completed_at = NOW(),
+		    updated_at = NOW()
+		WHERE job_id = $1 AND detector_name = $2
+	`
+	_, err := q.db.ExecContext(ctx, query, jobID, detectorName, errorMsg, durationMs)
+	return err
+}
+

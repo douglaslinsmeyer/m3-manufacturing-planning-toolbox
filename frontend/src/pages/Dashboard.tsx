@@ -7,7 +7,10 @@ import { useSnapshotProgress } from '../hooks/useSnapshotProgress';
 import { useContextManagement } from '../hooks/useContextManagement';
 import { IssueBreakdownHierarchy } from '../components/IssueBreakdownHierarchy';
 import PhaseProgressBar from '../components/PhaseProgressBar';
+import DetectorProgressBar from '../components/DetectorProgressBar';
 import { DetectorTrigger } from '../components/DetectorTrigger';
+import { ToastContainer } from '../components/Toast';
+import { useToast } from '../hooks/useToast';
 import type { SnapshotSummary, SnapshotStatus } from '../types';
 
 function ArrowPathIcon({ className }: { className?: string }) {
@@ -76,6 +79,7 @@ const stats = [
 const Dashboard: React.FC = () => {
   const { isAuthenticated, loading: authLoading } = useAuth();
   const { effectiveContext, loadEffectiveContext } = useContextManagement();
+  const toast = useToast();
   const [summary, setSummary] = useState<SnapshotSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -183,21 +187,17 @@ const Dashboard: React.FC = () => {
     if (!currentJobId) return;
 
     try {
-      const response = await fetch(`/api/data/snapshot/refresh/${currentJobId}/cancel`, {
-        method: 'POST',
-        credentials: 'include',
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to cancel refresh');
-      }
+      await api.cancelRefresh(currentJobId);
 
       console.log('Refresh cancelled successfully');
+      toast.success('Data refresh cancelled successfully');
       setCurrentJobId(null);
-      // Reload status to reflect cancellation
-      loadSnapshotStatus();
+
+      // Reload dashboard data to reflect cancellation
+      await loadDashboardData();
     } catch (error) {
       console.error('Failed to cancel refresh:', error);
+      toast.error('Failed to cancel data refresh');
     }
   };
 
@@ -380,6 +380,21 @@ const Dashboard: React.FC = () => {
               </div>
             )}
 
+            {/* Parallel Detectors Display */}
+            {snapshotStatus.parallelDetectors && snapshotStatus.parallelDetectors.length > 0 && (
+              <div className="space-y-3 mb-4 pt-4 border-t border-slate-200">
+                <h4 className="text-sm font-medium text-slate-700 mb-3">
+                  Running Issue Detectors
+                </h4>
+                {snapshotStatus.parallelDetectors.map((detector) => (
+                  <DetectorProgressBar
+                    key={detector.detectorName}
+                    detector={detector}
+                  />
+                ))}
+              </div>
+            )}
+
             {/* Performance Metrics */}
             {(snapshotStatus.recordsPerSecond || snapshotStatus.estimatedTimeRemaining) && (
               <div className="pt-3 border-t border-slate-200 flex flex-wrap gap-4 text-sm text-slate-600 mb-3">
@@ -413,6 +428,21 @@ const Dashboard: React.FC = () => {
                 {isConnected ? 'Live updates' : 'Connecting...'}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Refresh Cancelled Message */}
+        {snapshotStatus?.status === 'cancelled' && (
+          <div className="mb-6 lg:mb-10 rounded-lg bg-yellow-50 p-6 shadow-sm ring-1 ring-yellow-200">
+            <div className="flex items-start gap-3">
+              <ExclamationTriangleIcon className="h-6 w-6 text-yellow-600 flex-shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-yellow-900 mb-2">Data Refresh Cancelled</h3>
+                <p className="text-sm text-yellow-700">
+                  The data refresh was cancelled and did not complete.
+                </p>
+              </div>
+            </div>
           </div>
         )}
 
@@ -637,6 +667,7 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
       </div>
+      <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
     </AppLayout>
   );
 };

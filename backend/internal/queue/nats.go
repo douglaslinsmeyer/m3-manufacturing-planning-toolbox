@@ -91,15 +91,18 @@ const (
 	SubjectSnapshotProgress      = "snapshot.progress.%s"      // snapshot.progress.{jobID}
 	SubjectSnapshotComplete      = "snapshot.complete.%s"      // snapshot.complete.{jobID}
 	SubjectSnapshotError         = "snapshot.error.%s"         // snapshot.error.{jobID}
+	SubjectSnapshotCancel        = "snapshot.cancel.%s"        // snapshot.cancel.{jobID}
 
 	// Batch distribution subjects (for parallel data loading)
 	SubjectSnapshotBatchTRN      = "snapshot.batch.TRN.>"      // Wildcard for all TRN batch jobs
 	SubjectSnapshotBatchPRD      = "snapshot.batch.PRD.>"      // Wildcard for all PRD batch jobs
+	SubjectBatchStart            = "snapshot.batch.start.%s"    // snapshot.batch.start.{parentJobId}
 	SubjectBatchComplete         = "snapshot.batch.complete.%s" // snapshot.batch.complete.{parentJobId}
 
 	// Detector distribution subjects (for parallel detector execution)
 	SubjectSnapshotDetectorTRN   = "snapshot.detector.TRN.>"      // Wildcard for all TRN detector jobs
 	SubjectSnapshotDetectorPRD   = "snapshot.detector.PRD.>"      // Wildcard for all PRD detector jobs
+	SubjectDetectorStart         = "snapshot.detector.start.%s"    // snapshot.detector.start.{parentJobId}
 	SubjectDetectorComplete      = "snapshot.detector.complete.%s" // snapshot.detector.complete.{parentJobId}
 
 	// Analysis subjects
@@ -146,6 +149,12 @@ func GetBatchSubject(environment, phase string) string {
 	return fmt.Sprintf("snapshot.batch.%s.%s", environment, phase)
 }
 
+// GetBatchStartSubject returns the subject for batch start events
+// All batch start notifications for a job go to the same subject
+func GetBatchStartSubject(parentJobID string) string {
+	return fmt.Sprintf(SubjectBatchStart, parentJobID)
+}
+
 // GetBatchCompleteSubject returns the subject for batch completion events
 // All batch completions for a job go to the same subject
 func GetBatchCompleteSubject(parentJobID string) string {
@@ -156,6 +165,12 @@ func GetBatchCompleteSubject(parentJobID string) string {
 // Example: GetDetectorSubject("TRN", "unlinked_production_orders") → "snapshot.detector.TRN.unlinked_production_orders"
 func GetDetectorSubject(environment, detectorName string) string {
 	return fmt.Sprintf("snapshot.detector.%s.%s", environment, detectorName)
+}
+
+// GetDetectorStartSubject returns the subject for detector start events
+// All detector start notifications for a job go to the same subject
+func GetDetectorStartSubject(parentJobID string) string {
+	return fmt.Sprintf(SubjectDetectorStart, parentJobID)
 }
 
 // GetDetectorCompleteSubject returns the subject for detector completion events
