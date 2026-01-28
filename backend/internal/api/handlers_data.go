@@ -66,7 +66,7 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 		userID = "anonymous"
 	}
 
-	if err := s.db.CreateRefreshJob(ctx, jobID, environment, userID.(string)); err != nil {
+	if err := s.db.CreateRefreshJob(ctx, jobID, environment, userID.(string), "snapshot_refresh"); err != nil {
 		http.Error(w, "Failed to create job", http.StatusInternalServerError)
 		return
 	}
@@ -299,9 +299,9 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM planned_manufacturing_orders WHERE environment = $1", environment).Scan(&mopCount)
 	s.db.DB().QueryRowContext(ctx, "SELECT COUNT(*) FROM customer_order_lines WHERE environment = $1", environment).Scan(&coLinesCount)
 
-	// Get last refresh time from most recent completed job
+	// Get last refresh time from most recent completed snapshot_refresh job (excludes manual_detection)
 
-	job, _ := s.db.GetLatestRefreshJob(ctx, environment)
+	job, _ := s.db.GetLatestSnapshotRefreshJob(ctx, environment)
 
 	var lastRefresh interface{}
 	if job != nil && job.CompletedAt.Valid {

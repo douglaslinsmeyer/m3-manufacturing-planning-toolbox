@@ -43,7 +43,6 @@ func (d *MOPDemandRatioDetector) Detect(ctx context.Context, env string) ([]*Ano
 			FROM customer_order_lines
 			WHERE environment = $1
 			  AND orst >= '20' AND orst < '66'
-			  AND deleted_remotely = false
 			GROUP BY itno, whlo
 		),
 		unlinked_mops AS (

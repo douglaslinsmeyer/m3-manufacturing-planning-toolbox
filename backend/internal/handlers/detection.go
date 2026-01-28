@@ -140,7 +140,7 @@ func HandleTriggerDetection(natsManager *queue.Manager, database *db.Queries) ht
 		}
 
 		// Create detection job record
-		if err := database.CreateIssueDetectionJob(ctx, detectionJobID, req.Environment, len(req.DetectorNames)); err != nil {
+		if err := database.CreateManualDetectionJob(ctx, detectionJobID, req.Environment, len(req.DetectorNames)); err != nil {
 			http.Error(w, fmt.Sprintf("Failed to create detection job: %v", err), http.StatusInternalServerError)
 			return
 		}

@@ -74,7 +74,7 @@ const stats = [
   { name: 'Current Facility', key: 'currentFacility', href: '#', icon: BuildingIcon, color: 'info' },
   { name: 'Production Orders', key: 'totalProductionOrders', href: '#', icon: CubeIcon, color: 'primary' },
   { name: 'CO Lines', key: 'totalCustomerOrderLines', href: '#', icon: ShoppingCartIcon, color: 'success' },
-  { name: 'Anomalies', key: 'anomaliesCount', href: '/anomalies', icon: ExclamationTriangleIcon, color: 'danger' },
+  { name: 'Data Status', key: 'lastRefresh', href: '#', icon: ArrowTrendingUpIcon, color: 'info' },
 ];
 
 const Dashboard: React.FC = () => {
@@ -212,6 +212,24 @@ const Dashboard: React.FC = () => {
       return effectiveContext?.facility || '---';
     }
 
+    // Special handling for last refresh time
+    if (key === 'lastRefresh') {
+      if (!summary?.lastRefresh) return 'Never';
+
+      // Format as relative time
+      const refreshDate = new Date(summary.lastRefresh);
+      const now = new Date();
+      const diffMs = now.getTime() - refreshDate.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      if (diffMins < 1) return 'Just now';
+      if (diffMins < 60) return `${diffMins}m ago`;
+      const diffHours = Math.floor(diffMins / 60);
+      if (diffHours < 24) return `${diffHours}h ago`;
+      const diffDays = Math.floor(diffHours / 24);
+      return `${diffDays}d ago`;
+    }
+
     // Use real count from anomaly summary for anomalies
     if (key === 'anomaliesCount' && anomalySummary) {
       return anomalySummary.total;
@@ -262,7 +280,8 @@ const Dashboard: React.FC = () => {
                 disabled={refreshing || snapshotStatus?.status === 'running' || !summary}
                 onTrigger={(jobId) => {
                   console.log('Detection triggered:', jobId);
-                  // TODO: Could add toast notification or tracking here
+                  setCurrentJobId(jobId);
+                  toast.info('Detection started - running detectors...');
                 }}
               />
               <button
@@ -492,18 +511,13 @@ const Dashboard: React.FC = () => {
           {stats.map((stat) => {
             const colors = getColorClasses(stat.color);
             const value = getStatValue(stat.key);
-            const isCritical = stat.key === 'anomaliesCount' &&
-                               anomalySummary?.by_severity?.critical &&
-                               anomalySummary.by_severity.critical > 0;
 
             return (
               <Link
                 key={stat.name}
                 to={stat.href}
                 onClick={(e) => stat.href === '#' && e.preventDefault()}
-                className={`relative overflow-hidden rounded-lg bg-white p-4 sm:p-5 lg:p-8 shadow-sm transition-all duration-200 hover:shadow-md no-underline ${
-                  isCritical ? 'ring-1 ring-red-400 hover:ring-red-500' : 'ring-1 ring-slate-200 hover:ring-primary-400'
-                } ${stat.href === '#' ? 'cursor-default' : ''}`}
+                className={`relative overflow-hidden rounded-lg bg-white p-4 sm:p-5 lg:p-8 shadow-sm transition-all duration-200 hover:shadow-md no-underline ring-1 ring-slate-200 hover:ring-primary-400 ${stat.href === '#' ? 'cursor-default' : ''}`}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0 flex-1">
@@ -540,7 +554,7 @@ const Dashboard: React.FC = () => {
                         </InfoButton>
                       )}
                     </div>
-                    <p className={`mt-1 text-2xl sm:text-3xl font-bold tracking-tight ${isCritical ? 'text-red-600' : 'text-slate-900'}`}>
+                    <p className="mt-1 text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
                       {typeof value === 'number' ? value.toLocaleString() : value}
                     </p>
 
@@ -567,9 +581,6 @@ const Dashboard: React.FC = () => {
                     <stat.icon className={`h-5 w-5 sm:h-6 sm:w-6 ${colors.icon}`} />
                   </div>
                 </div>
-                {isCritical && (
-                  <div className="absolute bottom-0 left-0 right-0 h-1 bg-red-400" />
-                )}
               </Link>
             );
           })}
@@ -592,54 +603,6 @@ const Dashboard: React.FC = () => {
           </div>
         )}
 
-        {/* Secondary Content */}
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:gap-8">
-          {/* Last Refresh Info */}
-          <div className="rounded-lg bg-white p-4 sm:p-5 lg:p-8 shadow-sm ring-1 ring-slate-200">
-            <div className="flex items-center gap-2 mb-3">
-              <div className="rounded-md bg-slate-100 p-1.5">
-                <ArrowTrendingUpIcon className="h-4 w-4 text-slate-600" />
-              </div>
-              <h2 className="text-base font-semibold text-slate-900">Data Status</h2>
-            </div>
-            <dl className="space-y-2">
-              <div className="flex justify-between">
-                <dt className="text-sm text-slate-500">Last refreshed</dt>
-                <dd className="text-sm font-medium text-slate-900">
-                  {summary?.lastRefresh
-                    ? new Date(summary.lastRefresh).toLocaleString()
-                    : 'Never'}
-                </dd>
-              </div>
-              <div className="flex justify-between">
-                <dt className="text-sm text-slate-500">Status</dt>
-                <dd className="text-sm font-medium">
-                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${
-                    snapshotStatus?.status === 'running'
-                      ? 'bg-primary-100 text-primary-700'
-                      : 'bg-success-100 text-success-700'
-                  }`}>
-                    {snapshotStatus?.status === 'running' ? 'Refreshing' : 'Ready'}
-                  </span>
-                </dd>
-              </div>
-            </dl>
-          </div>
-
-          {/* Quick Actions */}
-          <div className="rounded-lg bg-white p-4 sm:p-5 lg:p-8 shadow-sm ring-1 ring-slate-200">
-            <h2 className="text-base font-semibold text-slate-900 mb-3">Quick Actions</h2>
-            <div className="grid grid-cols-1 gap-2">
-              <Link
-                to="/issues"
-                className="flex items-center gap-2 rounded-md border border-slate-200 p-2.5 transition-colors hover:bg-slate-50 no-underline"
-              >
-                <ExclamationTriangleIcon className="h-4 w-4 text-slate-400" />
-                <span className="text-sm font-medium text-slate-700">Review Issues</span>
-              </Link>
-            </div>
-          </div>
-        </div>
       </div>
       <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
     </AppLayout>

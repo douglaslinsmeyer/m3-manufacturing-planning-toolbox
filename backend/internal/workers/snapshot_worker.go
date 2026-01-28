@@ -1483,7 +1483,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 		initialDetectorStates = append(initialDetectorStates, *detectorStates[name])
 	}
 	w.publishDetailedProgress(req.JobID, "running", "Running issue detection", "Waiting for detectors to start",
-		0, 1, 0, 0, 0, 0, nil, initialDetectorStates, 0, 0, 0, 0)
+		0, req.TotalDetectors, 0, 0, 0, 0, nil, initialDetectorStates, 0, 0, 0, 0)
 
 	// Subscribe to detector start events
 	startSubject := queue.GetDetectorStartSubject(req.JobID)
@@ -1517,7 +1517,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 		// Send progress update showing running status
 		w.publishDetailedProgress(req.JobID, "running", "Running issue detection",
 			fmt.Sprintf("Running %s detector", start.DisplayLabel),
-			0, 1, progress, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
+			0, req.TotalDetectors, progress, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
 	})
 
 	if err != nil {
@@ -1577,7 +1577,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 
 		w.publishDetailedProgress(req.JobID, "running", "Running issue detection",
 			fmt.Sprintf("Completed %s detector", completion.DetectorName),
-			0, 1, progress, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
+			0, req.TotalDetectors, progress, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
 	})
 
 	if err != nil {
@@ -1630,6 +1630,11 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 					log.Printf("Warning: failed to complete detection job: %v", err)
 				}
 
+				// Mark refresh job as completed
+				if err := w.db.CompleteJob(dbCtx, req.JobID); err != nil {
+					log.Printf("Warning: failed to complete refresh job: %v", err)
+				}
+
 				log.Printf("Detection complete: %d total issues found across %d detectors", totalIssues, len(issues))
 
 				// Run anomaly detection after issue detection completes
@@ -1655,7 +1660,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 
 				w.publishDetailedProgress(req.JobID, "completed", statusMsg,
 					fmt.Sprintf("All detectors finished (%d issues found)", totalIssues),
-					1, 1, 100, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
+					req.TotalDetectors, req.TotalDetectors, 100, 0, 0, 0, nil, parallelDetectors, 0, 0, 0, 0)
 				w.publishComplete(req.JobID)
 
 				log.Printf("Manual detection job %s completed successfully", req.JobID)

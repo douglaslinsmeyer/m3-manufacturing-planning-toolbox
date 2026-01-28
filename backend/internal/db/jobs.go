@@ -11,6 +11,7 @@ import (
 type RefreshJob struct {
 	ID                        string
 	Environment               string
+	JobType                   string // 'snapshot_refresh' or 'manual_detection'
 	UserID                    sql.NullString
 	Status                    string
 	CurrentStep               sql.NullString
@@ -36,13 +37,13 @@ type RefreshJob struct {
 }
 
 // CreateRefreshJob creates a new refresh job
-func (q *Queries) CreateRefreshJob(ctx context.Context, jobID, environment, userID string) error {
+func (q *Queries) CreateRefreshJob(ctx context.Context, jobID, environment, userID, jobType string) error {
 	query := `
 		INSERT INTO refresh_jobs (
-			id, environment, user_id, status, total_steps, max_retries
-		) VALUES ($1, $2, $3, 'pending', 3, 3)
+			id, environment, user_id, job_type, status, total_steps, max_retries
+		) VALUES ($1, $2, $3, $4, 'pending', 3, 3)
 	`
-	_, err := q.db.ExecContext(ctx, query, jobID, environment, userID)
+	_, err := q.db.ExecContext(ctx, query, jobID, environment, userID, jobType)
 	return err
 }
 
@@ -194,7 +195,7 @@ func (q *Queries) IncrementRetryCount(ctx context.Context, jobID string) error {
 func (q *Queries) GetRefreshJob(ctx context.Context, jobID string) (*RefreshJob, error) {
 	query := `
 		SELECT
-			id, environment, user_id, status,
+			id, environment, job_type, user_id, status,
 			current_step, total_steps, completed_steps, progress_percentage,
 			co_lines_processed, mos_processed, mops_processed,
 			records_per_second, estimated_seconds_remaining,
@@ -208,7 +209,7 @@ func (q *Queries) GetRefreshJob(ctx context.Context, jobID string) (*RefreshJob,
 
 	job := &RefreshJob{}
 	err := q.db.QueryRowContext(ctx, query, jobID).Scan(
-		&job.ID, &job.Environment, &job.UserID, &job.Status,
+		&job.ID, &job.Environment, &job.JobType, &job.UserID, &job.Status,
 		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
 		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
 		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
@@ -232,7 +233,7 @@ func (q *Queries) GetRefreshJob(ctx context.Context, jobID string) (*RefreshJob,
 func (q *Queries) GetLatestRefreshJob(ctx context.Context, environment string) (*RefreshJob, error) {
 	query := `
 		SELECT
-			id, environment, user_id, status,
+			id, environment, job_type, user_id, status,
 			current_step, total_steps, completed_steps, progress_percentage,
 			co_lines_processed, mos_processed, mops_processed,
 			records_per_second, estimated_seconds_remaining,
@@ -248,7 +249,7 @@ func (q *Queries) GetLatestRefreshJob(ctx context.Context, environment string) (
 
 	job := &RefreshJob{}
 	err := q.db.QueryRowContext(ctx, query, environment).Scan(
-		&job.ID, &job.Environment, &job.UserID, &job.Status,
+		&job.ID, &job.Environment, &job.JobType, &job.UserID, &job.Status,
 		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
 		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
 		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
@@ -268,12 +269,54 @@ func (q *Queries) GetLatestRefreshJob(ctx context.Context, environment string) (
 	return job, nil
 }
 
+// GetLatestSnapshotRefreshJob gets the most recent snapshot_refresh job for an environment
+// This excludes manual_detection jobs
+func (q *Queries) GetLatestSnapshotRefreshJob(ctx context.Context, environment string) (*RefreshJob, error) {
+	query := `
+		SELECT
+			id, environment, job_type, user_id, status,
+			current_step, total_steps, completed_steps, progress_percentage,
+			co_lines_processed, mos_processed, mops_processed,
+			records_per_second, estimated_seconds_remaining,
+			current_operation, current_batch, total_batches,
+			started_at, completed_at, duration_seconds,
+			error_message, retry_count, max_retries,
+			created_at, updated_at
+		FROM refresh_jobs
+		WHERE environment = $1
+		  AND job_type = 'snapshot_refresh'
+		ORDER BY created_at DESC
+		LIMIT 1
+	`
+
+	job := &RefreshJob{}
+	err := q.db.QueryRowContext(ctx, query, environment).Scan(
+		&job.ID, &job.Environment, &job.JobType, &job.UserID, &job.Status,
+		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
+		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
+		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
+		&job.CurrentOperation, &job.CurrentBatch, &job.TotalBatches,
+		&job.StartedAt, &job.CompletedAt, &job.DurationSeconds,
+		&job.ErrorMessage, &job.RetryCount, &job.MaxRetries,
+		&job.CreatedAt, &job.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // No snapshot refresh jobs yet
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get latest snapshot refresh job: %w", err)
+	}
+
+	return job, nil
+}
+
 // GetActiveRefreshJob gets the currently running or pending refresh job for an environment
 // Returns nil if no active job exists
 func (q *Queries) GetActiveRefreshJob(ctx context.Context, environment string) (*RefreshJob, error) {
 	query := `
 		SELECT
-			id, environment, user_id, status,
+			id, environment, job_type, user_id, status,
 			current_step, total_steps, completed_steps, progress_percentage,
 			co_lines_processed, mos_processed, mops_processed,
 			records_per_second, estimated_seconds_remaining,
@@ -290,7 +333,7 @@ func (q *Queries) GetActiveRefreshJob(ctx context.Context, environment string) (
 
 	job := &RefreshJob{}
 	err := q.db.QueryRowContext(ctx, query, environment).Scan(
-		&job.ID, &job.Environment, &job.UserID, &job.Status,
+		&job.ID, &job.Environment, &job.JobType, &job.UserID, &job.Status,
 		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
 		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
 		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
@@ -314,7 +357,7 @@ func (q *Queries) GetActiveRefreshJob(ctx context.Context, environment string) (
 func (q *Queries) GetLatestRefreshJobByEnvironment(ctx context.Context, environment string) (*RefreshJob, error) {
 	query := `
 		SELECT
-			id, environment, user_id, status,
+			id, environment, job_type, user_id, status,
 			current_step, total_steps, completed_steps, progress_percentage,
 			co_lines_processed, mos_processed, mops_processed,
 			records_per_second, estimated_seconds_remaining,
@@ -331,7 +374,7 @@ func (q *Queries) GetLatestRefreshJobByEnvironment(ctx context.Context, environm
 
 	job := &RefreshJob{}
 	err := q.db.QueryRowContext(ctx, query, environment).Scan(
-		&job.ID, &job.Environment, &job.UserID, &job.Status,
+		&job.ID, &job.Environment, &job.JobType, &job.UserID, &job.Status,
 		&job.CurrentStep, &job.TotalSteps, &job.CompletedSteps, &job.ProgressPct,
 		&job.COLinesProcessed, &job.MOsProcessed, &job.MOPsProcessed,
 		&job.RecordsPerSecond, &job.EstimatedSecondsRemaining,
@@ -378,6 +421,34 @@ func (q *Queries) GetRefreshJobContext(ctx context.Context, jobID string) (compa
 	}
 
 	return company, facility, nil
+}
+
+// CreateManualDetectionJob creates a manual detection job in both tables atomically
+func (q *Queries) CreateManualDetectionJob(ctx context.Context, jobID, environment string, totalDetectors int) error {
+	tx, err := q.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Create in refresh_jobs with manual_detection type
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO refresh_jobs (id, environment, user_id, job_type, status, total_steps, max_retries)
+		VALUES ($1, $2, '', 'manual_detection', 'running', $3, 3)
+	`, jobID, environment, totalDetectors); err != nil {
+		return fmt.Errorf("failed to create refresh_job: %w", err)
+	}
+
+	// Create in issue_detection_jobs for backward compatibility
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO issue_detection_jobs (job_id, environment, status, total_detectors, started_at)
+		VALUES ($1, $2, 'running', $3, NOW())
+	`, jobID, environment, totalDetectors); err != nil {
+		return fmt.Errorf("failed to create issue_detection_job: %w", err)
+	}
+
+	// Commit transaction
+	return tx.Commit()
 }
 
 // ========================================

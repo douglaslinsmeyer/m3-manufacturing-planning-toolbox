@@ -12,7 +12,7 @@ import { useToast } from '../hooks/useToast';
 import { BulkActionToolbar, BulkAction } from '../components/BulkActionToolbar';
 import { BulkOperationModal, BulkOperationResult } from '../components/BulkOperationModal';
 import { IssueActionsMenu } from '../components/IssueActionsMenu';
-import { Trash2, XCircle, Calendar, AlertTriangle } from 'lucide-react';
+import { Trash2, XCircle, Calendar } from 'lucide-react';
 
 interface Detector {
   name: string;
@@ -97,7 +97,6 @@ function formatM3DateRelative(dateStr: string | number): { relative: string; abs
 
 const Issues: React.FC = () => {
   const [summary, setSummary] = useState<IssueSummary | null>(null);
-  const [anomalySummary, setAnomalySummary] = useState<AnomalySummary | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDetector, setSelectedDetector] = useState<string>('');
@@ -163,7 +162,6 @@ const Issues: React.FC = () => {
     // Fetch config and summary once on mount
     fetchM3Config();
     fetchSummary();
-    fetchAnomalySummary();
 
     // Mark as initialized to allow fetching
     setIsInitialized(true);
@@ -232,15 +230,6 @@ const Issues: React.FC = () => {
       setSummary(data);
     } catch (error) {
       console.error('Failed to fetch issue summary:', error);
-    }
-  };
-
-  const fetchAnomalySummary = async () => {
-    try {
-      const data = await api.getAnomalySummary();
-      setAnomalySummary(data);
-    } catch (error) {
-      console.error('Failed to fetch anomaly summary:', error);
     }
   };
 
@@ -809,32 +798,6 @@ const Issues: React.FC = () => {
             </div>
           </div>
         </div>
-
-        {/* Anomaly Banner */}
-        {anomalySummary && anomalySummary.by_severity?.critical > 0 && (
-          <div className="mb-6 rounded-xl bg-red-50 p-4 border-l-4 border-red-500 shadow-sm">
-            <div className="flex items-start">
-              <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
-              <div className="ml-3 flex-1">
-                <h3 className="text-sm font-semibold text-red-800">
-                  {anomalySummary.by_severity.critical} Critical Anomal{anomalySummary.by_severity.critical === 1 ? 'y' : 'ies'} Detected
-                </h3>
-                <p className="mt-1 text-sm text-red-700">
-                  Statistical anomalies have been detected in your production data that may indicate planning issues or data quality problems.
-                </p>
-                <Link
-                  to="/anomalies"
-                  className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition-colors"
-                >
-                  View Anomalies
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </Link>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Summary Cards */}
         {summary && (
