@@ -26,6 +26,7 @@ services:
       - APP_PORT=8080
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/m3_planning?sslmode=disable
       - NATS_URL=nats://nats:4222
+      - RUN_MIGRATIONS=true
     env_file:
       - .env
     depends_on:
@@ -44,6 +45,7 @@ services:
       - APP_PORT=8080
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/m3_planning?sslmode=disable
       - NATS_URL=nats://nats:4222
+      - RUN_MIGRATIONS=false
     env_file:
       - .env
     depends_on:

@@ -13,6 +13,7 @@ type Config struct {
 	AppEnv      string
 	AppPort     int
 	FrontendURL string
+	RunMigrations bool
 
 	// Database settings
 	DatabaseURL                  string
@@ -123,6 +124,8 @@ func Load() (*Config, error) {
 		MaxQueryRecords:      getEnvAsInt("MAX_QUERY_RECORDS", 100000),
 		QueryTimeout:         getEnvAsInt("QUERY_TIMEOUT", 300),
 		MaxConcurrentQueries: getEnvAsInt("MAX_CONCURRENT_QUERIES", 5),
+
+		RunMigrations: getEnvAsBool("RUN_MIGRATIONS", false),
 	}
 
 	// Validate required configuration

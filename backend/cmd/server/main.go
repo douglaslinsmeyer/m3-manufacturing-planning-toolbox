@@ -56,12 +56,16 @@ func main() {
 	}
 	log.Println("Database connection established")
 
-	// Run database migrations
-	log.Println("Running database migrations...")
-	if err := db.RunMigrations(database, "migrations"); err != nil {
-		log.Fatalf("Failed to run migrations: %v", err)
+	// Run database migrations (only if enabled)
+	if cfg.RunMigrations {
+		log.Println("Running database migrations...")
+		if err := db.RunMigrations(database, "migrations"); err != nil {
+			log.Fatalf("Failed to run migrations: %v", err)
+		}
+		log.Println("Database migrations completed successfully")
+	} else {
+		log.Println("Skipping migrations (RUN_MIGRATIONS=false)")
 	}
-	log.Println("Database migrations completed successfully")
 
 	// Initialize database layer
 	queries := db.New(database)
