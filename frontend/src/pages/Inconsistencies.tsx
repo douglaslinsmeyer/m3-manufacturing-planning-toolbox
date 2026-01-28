@@ -531,14 +531,15 @@ const Inconsistencies: React.FC = () => {
             </div>
 
             <div className="flex items-end">
-              <label className="flex items-center cursor-pointer">
+              <label className="relative inline-flex items-center cursor-pointer">
                 <input
                   type="checkbox"
                   checked={showIgnored}
                   onChange={(e) => setShowIgnored(e.target.checked)}
-                  className="h-4 w-4 text-primary-600 focus:ring-primary-500 border-slate-300 rounded"
+                  className="sr-only peer"
                 />
-                <span className="ml-2 text-sm text-slate-700">Show Ignored Issues</span>
+                <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-primary-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-primary-600"></div>
+                <span className="ml-3 text-sm font-medium text-slate-700">Show Ignored Issues</span>
               </label>
             </div>
           </div>
@@ -867,35 +868,6 @@ const IssueDetailsCell: React.FC<{
             </span>
           </div>
         )}
-        {issueData.mo_type && (
-          <div className="text-slate-400">Type: {issueData.mo_type}</div>
-        )}
-      </div>
-    );
-  }
-
-  if (detectorType === 'start_date_mismatch') {
-    return (
-      <div className="text-xs">
-        {issueData.dates && issueData.dates.length > 0 && (
-          <div>Dates: {issueData.dates.join(', ')}</div>
-        )}
-        {issueData.orders && issueData.orders.length > 0 && issueData.orders[0].mo_type && (
-          <div className="text-slate-400">Type: {issueData.orders[0].mo_type}</div>
-        )}
-      </div>
-    );
-  }
-
-  if (detectorType === 'production_timing') {
-    return (
-      <div className="text-xs">
-        <div className="font-medium text-warning-600">
-          {issueData.timing_issue === 'too_early' ? 'Starts Too Early' : 'Starts Too Late'}
-        </div>
-        <div>Start: {issueData.start_date}</div>
-        <div>Delivery: {issueData.delivery_date}</div>
-        <div>Difference: {issueData.days_difference} days</div>
         {issueData.mo_type && (
           <div className="text-slate-400">Type: {issueData.mo_type}</div>
         )}
