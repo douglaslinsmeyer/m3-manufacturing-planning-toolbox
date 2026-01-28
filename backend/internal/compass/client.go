@@ -48,6 +48,10 @@ type QueryStatusResponse struct {
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
+// PaginationProgressCallback is called during pagination to report progress
+// Parameters: page, totalPages, pageRecords, totalFetched, totalRecords
+type PaginationProgressCallback func(page, totalPages, pageRecords, totalFetched, totalRecords int)
+
 // QueryResult represents the raw result from Compass
 type QueryResult struct {
 	Records []map[string]interface{} `json:"records"`
@@ -300,7 +304,8 @@ func (c *Client) WaitForQueryCompletion(ctx context.Context, jobID string, pollI
 // ExecuteQueryWithPagination executes a query with automatic pagination when results exceed page size
 // Returns: (data []byte, totalRecords int, error)
 // Optimized for Apache Spark Data Fabric - submits with maxRecords=0 (unlimited) and paginates results
-func (c *Client) ExecuteQueryWithPagination(ctx context.Context, query string, pageSize int) ([]byte, int, error) {
+// progressCallback is optional (can be nil) and will be called after each page is fetched
+func (c *Client) ExecuteQueryWithPagination(ctx context.Context, query string, pageSize int, progressCallback PaginationProgressCallback) ([]byte, int, error) {
 	// Submit query with unlimited records (Spark will execute full query)
 	submitResp, err := c.SubmitQuery(ctx, query, 0)
 	if err != nil {
@@ -327,6 +332,9 @@ func (c *Client) ExecuteQueryWithPagination(ctx context.Context, query string, p
 	// GetQueryResult returns raw array, which is what we want
 	if totalRecords <= pageSize {
 		data, err := c.GetQueryResult(ctx, submitResp.JobID, 0, totalRecords)
+		if err == nil && progressCallback != nil {
+			progressCallback(1, 1, totalRecords, totalRecords, totalRecords)
+		}
 		return data, totalRecords, err
 	}
 
@@ -359,6 +367,11 @@ func (c *Client) ExecuteQueryWithPagination(ctx context.Context, query string, p
 
 		// Append records
 		allRecords = append(allRecords, pageRecords...)
+
+		// Report pagination progress
+		if progressCallback != nil {
+			progressCallback(page+1, numPages, len(pageRecords), len(allRecords), totalRecords)
+		}
 
 		fmt.Printf("Page %d/%d: %d records (total: %d/%d)\n",
 			page+1, numPages, len(pageRecords), len(allRecords), totalRecords)

@@ -24,16 +24,16 @@ type UserInfo struct {
 // M3 Company from MNS095MI/Lst
 type M3Company struct {
 	CompanyNumber string `json:"CONO"`
-	CompanyName   string `json:"CONM"`
-	Currency      string `json:"LOCD"`
-	Database      string `json:"DIVI"` // Database name
+	CompanyName   string `json:"TX40"` // Company description field
+	Currency      string `json:"CCUC"` // Company currency
+	Database      string `json:"DBAS"` // Database name
 }
 
 // M3 Division from MNS100MI/LstDivisions
 type M3Division struct {
 	CompanyNumber string `json:"CONO"`
 	Division      string `json:"DIVI"`
-	DivisionName  string `json:"DINM"`
+	DivisionName  string `json:"TX15"` // Division description field
 	Facility      string `json:"FACI"`
 	Warehouse     string `json:"WHLO"`
 }
@@ -133,11 +133,14 @@ func ListCompanies(ctx context.Context, m3Client *m3api.Client) ([]M3Company, er
 		if val, ok := record["CONO"].(string); ok {
 			company.CompanyNumber = strings.TrimSpace(val)
 		}
-		if val, ok := record["CONM"].(string); ok {
+		if val, ok := record["TX40"].(string); ok {
 			company.CompanyName = strings.TrimSpace(val)
 		}
-		if val, ok := record["LOCD"].(string); ok {
+		if val, ok := record["CCUC"].(string); ok {
 			company.Currency = strings.TrimSpace(val)
+		}
+		if val, ok := record["DBAS"].(string); ok {
+			company.Database = strings.TrimSpace(val)
 		}
 
 		// Skip company 1 (system/template company)
@@ -171,7 +174,7 @@ func ListDivisions(ctx context.Context, m3Client *m3api.Client, companyNumber st
 		if val, ok := record["DIVI"].(string); ok {
 			division.Division = strings.TrimSpace(val)
 		}
-		if val, ok := record["DINM"].(string); ok {
+		if val, ok := record["TX15"].(string); ok {
 			division.DivisionName = strings.TrimSpace(val)
 		}
 		if val, ok := record["FACI"].(string); ok {

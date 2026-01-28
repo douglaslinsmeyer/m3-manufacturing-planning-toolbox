@@ -7,9 +7,11 @@ import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ManufacturingOrderDetail from './pages/ManufacturingOrderDetail';
 import PlannedOrderDetail from './pages/PlannedOrderDetail';
-import Inconsistencies from './pages/Inconsistencies';
+import Issues from './pages/Issues';
+import Anomalies from './pages/Anomalies';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
+import AuditLogs from './pages/AuditLogs';
 
 // Protected route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -61,10 +63,18 @@ function App() {
             }
           />
           <Route
-            path="/inconsistencies"
+            path="/issues"
             element={
               <ProtectedRoute>
-                <Inconsistencies />
+                <Issues />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/anomalies"
+            element={
+              <ProtectedRoute>
+                <Anomalies />
               </ProtectedRoute>
             }
           />
@@ -81,6 +91,14 @@ function App() {
             element={
               <ProtectedRoute>
                 <Profile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/audit-logs"
+            element={
+              <ProtectedRoute>
+                <AuditLogs />
               </ProtectedRoute>
             }
           />

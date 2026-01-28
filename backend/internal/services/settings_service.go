@@ -23,25 +23,18 @@ func NewSettingsService(queries *db.Queries, auditService *AuditService) *Settin
 	}
 }
 
-// GetUserSettings retrieves user settings for a specific environment, returning defaults if none exist
+// GetUserSettings retrieves user settings for a specific environment, returning empty settings if none exist
 func (s *SettingsService) GetUserSettings(ctx context.Context, environment, userID string) (*db.UserSettings, error) {
 	settings, err := s.queries.GetUserSettings(ctx, environment, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Return default settings if none exist
+	// Return empty settings if none exist (all defaults will be null/unset)
 	if settings == nil {
 		settings = &db.UserSettings{
-			Environment:         environment,
-			UserID:              userID,
-			ItemsPerPage:        20,
-			Theme:               "light",
-			DateFormat:          "YYYY-MM-DD",
-			TimeFormat:          "24h",
-			EnableNotifications: true,
-			NotificationSound:   false,
-			Preferences:         []byte("{}"),
+			Environment: environment,
+			UserID:      userID,
 		}
 	}
 

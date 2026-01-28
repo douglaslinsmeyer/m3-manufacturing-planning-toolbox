@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/pinggolf/m3-planning-tools/internal/services"
 )
 
 // Placeholder handlers for data endpoints
@@ -123,6 +124,12 @@ func (s *Server) handleCancelRefresh(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 
+	// Get environment and user context from session
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+	userID, _ := session.Values["user_profile_id"].(string)
+	userName, _ := session.Values["user_full_name"].(string)
+
 	// Get job to verify it exists and is cancellable
 	job, err := s.db.GetRefreshJob(ctx, jobID)
 	if err != nil {
@@ -141,10 +148,38 @@ func (s *Server) handleCancelRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Mark job as failed with cancellation message
-	if err := s.db.FailJob(ctx, jobID, "Cancelled by user"); err != nil {
+	// Mark job as cancelled
+	if err := s.db.CancelJob(ctx, jobID, "Cancelled by user"); err != nil {
 		http.Error(w, "Failed to cancel job", http.StatusInternalServerError)
 		return
+	}
+
+	// Create audit log entry
+	err = s.auditService.Log(ctx, services.AuditParams{
+		Environment: environment,
+		EntityType:  "refresh_job",
+		EntityID:    jobID,
+		Operation:   "cancel",
+		UserID:      userID,
+		UserName:    userName,
+		Metadata: map[string]interface{}{
+			"previous_status": job.Status,
+			"progress_pct":    job.ProgressPct,
+			"reason":          "Cancelled by user",
+		},
+		IPAddress: getIPAddress(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+	if err != nil {
+		// Log error but don't fail the request (follows existing pattern)
+		log.Printf("Failed to create audit log for job cancellation: %v", err)
+	}
+
+	// Publish cancellation message to NATS to trigger immediate context cancellation
+	cancelSubject := fmt.Sprintf("snapshot.cancel.%s", jobID)
+	if err := s.natsManager.Publish(cancelSubject, []byte{}); err != nil {
+		log.Printf("Failed to publish cancellation message: %v", err)
+		// Don't fail the request - job is already marked as cancelled in DB
 	}
 
 	log.Printf("Snapshot refresh job %s cancelled by user", jobID)
@@ -273,7 +308,7 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 		lastRefresh = job.CompletedAt.Time
 	}
 
-	// Get inconsistency count from latest detection job
+	// Get issue count from latest detection job
 	issueCount, err := s.db.GetIssueCountForLatestJob(ctx, environment)
 	if err != nil {
 		log.Printf("Warning: failed to get issue count: %v", err)
@@ -287,7 +322,7 @@ func (s *Server) handleSnapshotSummary(w http.ResponseWriter, r *http.Request) {
 		"totalPlannedOrders":       mopCount,
 		"totalCustomerOrderLines":  coLinesCount,
 		"lastRefresh":              lastRefresh,
-		"inconsistenciesCount":     issueCount,
+		"issuesCount":              issueCount,
 	})
 }
 
@@ -339,15 +374,6 @@ func (s *Server) handleGetPlannedOrder(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{
 		"id": id,
 	})
-}
-
-// handleListInconsistencies lists detected planning inconsistencies
-func (s *Server) handleListInconsistencies(w http.ResponseWriter, r *http.Request) {
-	// TODO: Run analysis logic to detect inconsistencies
-	// Compare production order dates with CO delivery dates
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode([]interface{}{})
 }
 
 // handleGetTimeline returns timeline view of production orders

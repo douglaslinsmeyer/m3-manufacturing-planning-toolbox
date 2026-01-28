@@ -99,6 +99,9 @@ type CustomerOrderLineRecord struct {
 	// M3 Customer References
 	CUNO, CUOR, CUPO, CUSX string
 
+	// Enrichment: Customer Name (from OCUSMA)
+	CustomerName string
+
 	// M3 Product/Model
 	PRNO, HDPR, POPN, ALWT, ALWQ string
 
@@ -113,6 +116,18 @@ type CustomerOrderLineRecord struct {
 
 	// M3 Joint Delivery
 	JDCD string
+
+	// M3 Delivery Number
+	DLIX string
+
+	// M3 Order Type
+	ORTP string
+
+	// Enrichment: CO Type Description (from OOTYPE)
+	COTypeDescription string
+
+	// Enrichment: Delivery Method (from OOHEAD)
+	DeliveryMethod string
 
 	// M3 Attributes (ATV1-ATV0)
 	ATV1, ATV2, ATV3, ATV4, ATV5 string
@@ -228,6 +243,9 @@ func ParseCustomerOrderLine(record map[string]interface{}) (*CustomerOrderLineRe
 		CUPO: getStringFromAny(record, "CUPO"),
 		CUSX: getStringFromAny(record, "CUSX"),
 
+		// Enrichment: Customer Name
+		CustomerName: getString(record, "customer_name"),
+
 		// Product/Model
 		PRNO: getString(record, "PRNO"),
 		HDPR: getString(record, "HDPR"),
@@ -258,6 +276,18 @@ func ParseCustomerOrderLine(record map[string]interface{}) (*CustomerOrderLineRe
 
 		// Joint Delivery
 		JDCD: getString(record, "JDCD"),
+
+		// Delivery Number
+		DLIX: getString(record, "DLIX"),
+
+		// Order Type
+		ORTP: getString(record, "ORTP"),
+
+		// Enrichment: CO Type Description
+		COTypeDescription: getString(record, "co_type_description"),
+
+		// Enrichment: Delivery Method
+		DeliveryMethod: getString(record, "delivery_method"),
 
 		// Attributes (ATV1-ATV0)
 		ATV1: getStringFromAny(record, "ATV1"),

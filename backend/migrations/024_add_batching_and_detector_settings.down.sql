@@ -9,7 +9,5 @@ DELETE FROM system_settings WHERE setting_key IN (
     'compass_over_partition_factor',
 
     -- Detector toggles
-    'detector_unlinked_production_orders_enabled',
-    'detector_start_date_mismatch_enabled',
-    'detector_production_timing_enabled'
+    'detector_unlinked_production_orders_enabled'
 );

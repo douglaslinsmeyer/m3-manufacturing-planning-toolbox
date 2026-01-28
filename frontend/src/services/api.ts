@@ -5,7 +5,7 @@ import type {
   UserProfile,
   ManufacturingOrder,
   PlannedManufacturingOrder,
-  Inconsistency,
+  Issue,
   SnapshotStatus,
   SnapshotSummary,
   EffectiveContext,
@@ -16,6 +16,10 @@ import type {
   M3Warehouse,
   UserSettings,
   SystemSettingsGrouped,
+  CacheStatus,
+  RefreshResult,
+  AuditLog,
+  AuditLogFilters,
 } from '../types';
 
 // IssueSummary represents aggregated issue counts from the backend
@@ -156,6 +160,17 @@ class ApiService {
     return response.data;
   }
 
+  // Context Cache Management
+  async getContextCacheStatus(): Promise<CacheStatus[]> {
+    const response = await this.client.get('/context/cache-status');
+    return response.data;
+  }
+
+  async refreshContextCache(resourceType: 'all' | 'companies' | 'divisions' | 'facilities' | 'warehouses'): Promise<RefreshResult> {
+    const response = await this.client.post(`/context/refresh/${resourceType}`);
+    return response.data;
+  }
+
   // Snapshot Management
   async refreshSnapshot(): Promise<{ jobId: string; status: string; message: string }> {
     const response = await this.client.post('/snapshot/refresh');
@@ -169,6 +184,11 @@ class ApiService {
 
   async getSnapshotSummary(): Promise<SnapshotSummary> {
     const response = await this.client.get('/snapshot/summary');
+    return response.data;
+  }
+
+  async cancelRefresh(jobId: string): Promise<{ status: string; message: string }> {
+    const response = await this.client.post(`/snapshot/refresh/${jobId}/cancel`);
     return response.data;
   }
 
@@ -189,21 +209,21 @@ class ApiService {
     return response.data;
   }
 
-  // Issues / Inconsistencies
+  // Issues
   async getIssueSummary(includeIgnored: boolean = false): Promise<IssueSummary> {
     const params = includeIgnored ? { include_ignored: 'true' } : {};
     const response = await this.client.get('/issues/summary', { params });
     return response.data;
   }
 
-  async listInconsistencies(params?: {
+  async listIssues(params?: {
     severity?: string;
     type?: string;
     warehouse?: string;
     includeIgnored?: boolean;
     page?: number;
     pageSize?: number;
-  }): Promise<PaginatedResponse<Inconsistency>> {
+  }): Promise<PaginatedResponse<Issue>> {
     const queryParams: any = {};
     if (params?.severity) queryParams.severity = params.severity;
     if (params?.type) queryParams.detector_type = params.type;
@@ -246,10 +266,113 @@ class ApiService {
     failed_count: number;
     total_orders: number;
     target_date: string;
+    date_adjusted?: boolean;
+    original_min_date?: string;
     failures?: Array<{ order: string; type: string; error: string }>;
   }> {
     const response = await this.client.post(`/issues/${issueId}/align-earliest`);
     return response.data;
+  }
+
+  async alignLatestMOs(issueId: number): Promise<{
+    success: boolean;
+    aligned_count: number;
+    skipped_count: number;
+    failed_count: number;
+    total_orders: number;
+    target_date: string;
+    date_adjusted?: boolean;
+    original_max_date?: string;
+    failures?: Array<{ order: string; type: string; error: string }>;
+  }> {
+    const response = await this.client.post(`/issues/${issueId}/align-latest`);
+    return response.data;
+  }
+
+  // Bulk Issue Operations
+  async bulkDelete(issueIds: number[]): Promise<{
+    total: number;
+    successful: number;
+    failed: number;
+    results: Array<{
+      issue_id: number;
+      production_order: string;
+      status: 'success' | 'error';
+      message?: string;
+      error?: string;
+    }>;
+  }> {
+    const response = await this.client.post('/issues/bulk-delete', { issue_ids: issueIds });
+    return response.data;
+  }
+
+  async bulkClose(issueIds: number[]): Promise<{
+    total: number;
+    successful: number;
+    failed: number;
+    results: Array<{
+      issue_id: number;
+      production_order: string;
+      status: 'success' | 'error';
+      message?: string;
+      error?: string;
+    }>;
+  }> {
+    const response = await this.client.post('/issues/bulk-close', { issue_ids: issueIds });
+    return response.data;
+  }
+
+  async bulkReschedule(issueIds: number[], newDate: string): Promise<{
+    total: number;
+    successful: number;
+    failed: number;
+    results: Array<{
+      issue_id: number;
+      production_order: string;
+      status: 'success' | 'error';
+      message?: string;
+      error?: string;
+    }>;
+  }> {
+    const response = await this.client.post('/issues/bulk-reschedule', {
+      issue_ids: issueIds,
+      params: { new_date: newDate },
+    });
+    return response.data;
+  }
+
+  // Anomalies
+  async getAnomalySummary(): Promise<{
+    total: number;
+    by_severity: Record<string, number>;
+    by_detector: Record<string, number>;
+  }> {
+    const response = await this.client.get('/anomalies/summary');
+    return response.data;
+  }
+
+  async listAnomalies(params?: {
+    severity?: string;
+    detectorType?: string;
+    page?: number;
+    pageSize?: number;
+  }): Promise<PaginatedResponse<any>> {
+    const queryParams: any = {};
+    if (params?.severity) queryParams.severity = params.severity;
+    if (params?.detectorType) queryParams.detector_type = params.detectorType;
+    if (params?.page) queryParams.page = params.page;
+    if (params?.pageSize) queryParams.page_size = params.pageSize;
+
+    const response = await this.client.get('/anomalies', { params: queryParams });
+    return response.data;
+  }
+
+  async acknowledgeAnomaly(anomalyId: number, notes?: string): Promise<void> {
+    await this.client.post(`/anomalies/${anomalyId}/acknowledge`, { notes: notes || '' });
+  }
+
+  async resolveAnomaly(anomalyId: number, notes?: string): Promise<void> {
+    await this.client.post(`/anomalies/${anomalyId}/resolve`, { notes: notes || '' });
   }
 
   async getTimeline(params?: {
@@ -279,6 +402,22 @@ class ApiService {
 
   async updateSystemSettings(settings: Record<string, string>): Promise<void> {
     await this.client.put('/settings/system', { settings });
+  }
+
+  // Audit Logs
+  async listAuditLogs(filters?: AuditLogFilters): Promise<PaginatedResponse<AuditLog>> {
+    const params = new URLSearchParams();
+    if (filters?.entityType) params.append('entity_type', filters.entityType);
+    if (filters?.operation) params.append('operation', filters.operation);
+    if (filters?.userId) params.append('user_id', filters.userId);
+    if (filters?.facility) params.append('facility', filters.facility);
+    if (filters?.startTime) params.append('start_time', filters.startTime);
+    if (filters?.endTime) params.append('end_time', filters.endTime);
+    if (filters?.page) params.append('page', filters.page.toString());
+    if (filters?.pageSize) params.append('page_size', filters.pageSize.toString());
+
+    const response = await this.client.get(`/audit-logs?${params}`);
+    return response.data;
   }
 }
 

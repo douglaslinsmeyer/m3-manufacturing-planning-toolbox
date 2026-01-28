@@ -46,12 +46,15 @@ type CreateAuditLogParams struct {
 
 // GetAuditLogsParams contains parameters for querying audit logs
 type GetAuditLogsParams struct {
-	EntityType sql.NullString
-	Operation  sql.NullString
-	UserID     sql.NullString
-	StartTime  sql.NullTime
-	EndTime    sql.NullTime
-	Limit      int32
+	Environment sql.NullString
+	Facility    sql.NullString
+	EntityType  sql.NullString
+	Operation   sql.NullString
+	UserID      sql.NullString
+	StartTime   sql.NullTime
+	EndTime     sql.NullTime
+	Limit       int32
+	Offset      int32
 }
 
 // ========================================

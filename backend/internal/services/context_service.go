@@ -13,6 +13,7 @@ import (
 type ContextService struct {
 	repository         *ContextRepository
 	userProfileService *UserProfileService
+	settingsService    *SettingsService
 }
 
 // NewContextService creates a new context service
@@ -27,6 +28,11 @@ func (s *ContextService) SetUserProfileService(userProfileService *UserProfileSe
 	s.userProfileService = userProfileService
 }
 
+// SetSettingsService sets the settings service (for accessing user custom defaults)
+func (s *ContextService) SetSettingsService(settingsService *SettingsService) {
+	s.settingsService = settingsService
+}
+
 // EffectiveContext represents the calculated effective context
 type EffectiveContext struct {
 	Company   string
@@ -35,56 +41,121 @@ type EffectiveContext struct {
 	Warehouse string
 }
 
-// LoadUserDefaults fetches user defaults from M3 and stores in session
-// Optimized to check profile cache first to avoid duplicate API calls
+// LoadUserDefaults fetches user defaults and stores in session
+// Priority order: user_settings (custom) → profile cache (M3) → M3 API
 func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions.Session, m3Client *m3api.Client) error {
-	// Priority 1: Try to get M3 defaults from profile cache (no API call)
-	if s.userProfileService != nil {
-		if userProfileID, ok := session.Values["user_profile_id"].(string); ok && userProfileID != "" {
-			if profile, err := s.userProfileService.GetProfile(ctx, userProfileID); err == nil && profile != nil {
-				if profile.M3Info != nil {
-					fmt.Printf("INFO: Loading user defaults from profile cache (no API call)\n")
-					session.Values["user_company"] = profile.M3Info.DefaultCompany
-					session.Values["user_division"] = profile.M3Info.DefaultDivision
-					session.Values["user_facility"] = profile.M3Info.DefaultFacility
-					session.Values["user_warehouse"] = profile.M3Info.DefaultWarehouse
-					session.Values["user_full_name"] = profile.M3Info.FullName
+	// Initialize with empty defaults that will be populated from various sources
+	var company, division, facility, warehouse, fullName string
 
-					fmt.Printf("DEBUG LoadUserDefaults: Loaded from cache - Company: %s, Div: %s, Fac: %s, Whse: %s\n",
-						profile.M3Info.DefaultCompany,
-						profile.M3Info.DefaultDivision,
-						profile.M3Info.DefaultFacility,
-						profile.M3Info.DefaultWarehouse)
-					return nil
+	// Priority 1: Check user_settings for custom defaults
+	if s.settingsService != nil {
+		if environment, ok := session.Values["environment"].(string); ok {
+			if userID, ok := session.Values["user_profile_id"].(string); ok && userID != "" {
+				if userSettings, err := s.settingsService.GetUserSettings(ctx, environment, userID); err == nil && userSettings != nil {
+					fmt.Printf("INFO: Checking user_settings for custom defaults\n")
+
+					// Apply custom defaults if they exist (not null)
+					customsFound := false
+					if userSettings.DefaultCompany.Valid && userSettings.DefaultCompany.String != "" {
+						company = userSettings.DefaultCompany.String
+						customsFound = true
+						fmt.Printf("DEBUG LoadUserDefaults: Using custom company: %s\n", company)
+					}
+					if userSettings.DefaultDivision.Valid && userSettings.DefaultDivision.String != "" {
+						division = userSettings.DefaultDivision.String
+						customsFound = true
+						fmt.Printf("DEBUG LoadUserDefaults: Using custom division: %s\n", division)
+					}
+					if userSettings.DefaultFacility.Valid && userSettings.DefaultFacility.String != "" {
+						facility = userSettings.DefaultFacility.String
+						customsFound = true
+						fmt.Printf("DEBUG LoadUserDefaults: Using custom facility: %s\n", facility)
+					}
+					if userSettings.DefaultWarehouse.Valid && userSettings.DefaultWarehouse.String != "" {
+						warehouse = userSettings.DefaultWarehouse.String
+						customsFound = true
+						fmt.Printf("DEBUG LoadUserDefaults: Using custom warehouse: %s\n", warehouse)
+					}
+
+					if customsFound {
+						fmt.Printf("INFO: Applied custom defaults from user_settings\n")
+					}
 				}
 			}
 		}
 	}
 
-	// Priority 2: Fallback to M3 API call (cache miss or no profile service)
-	fmt.Printf("INFO: Loading user defaults from M3 API (cache miss)\n")
-	userInfo, err := compass.GetUserInfo(ctx, m3Client)
-	if err != nil {
-		return err
+	// Priority 2: Fill in any missing defaults from M3 profile cache
+	if s.userProfileService != nil {
+		if userProfileID, ok := session.Values["user_profile_id"].(string); ok && userProfileID != "" {
+			if profile, err := s.userProfileService.GetProfile(ctx, userProfileID); err == nil && profile != nil {
+				if profile.M3Info != nil {
+					fmt.Printf("INFO: Filling missing defaults from profile cache\n")
+
+					if company == "" {
+						company = profile.M3Info.DefaultCompany
+					}
+					if division == "" {
+						division = profile.M3Info.DefaultDivision
+					}
+					if facility == "" {
+						facility = profile.M3Info.DefaultFacility
+					}
+					if warehouse == "" {
+						warehouse = profile.M3Info.DefaultWarehouse
+					}
+					fullName = profile.M3Info.FullName
+
+					fmt.Printf("DEBUG LoadUserDefaults: After M3 cache - Company: %s, Div: %s, Fac: %s, Whse: %s\n",
+						company, division, facility, warehouse)
+				}
+			}
+		}
 	}
 
-	// Debug: Log what we received from M3
-	fmt.Printf("DEBUG LoadUserDefaults: Received from M3 GetUserInfo:\n")
-	fmt.Printf("  Company: '%s'\n", userInfo.Company)
-	fmt.Printf("  Division: '%s'\n", userInfo.Division)
-	fmt.Printf("  Facility: '%s'\n", userInfo.Facility)
-	fmt.Printf("  Warehouse: '%s'\n", userInfo.Warehouse)
-	fmt.Printf("  FullName: '%s'\n", userInfo.FullName)
+	// Priority 3: Fallback to M3 API call if any fields still missing
+	if company == "" || division == "" || facility == "" || warehouse == "" || fullName == "" {
+		fmt.Printf("INFO: Loading missing defaults from M3 API\n")
+		userInfo, err := compass.GetUserInfo(ctx, m3Client)
+		if err != nil {
+			return err
+		}
 
-	// Store in session as user defaults
-	session.Values["user_company"] = userInfo.Company
-	session.Values["user_division"] = userInfo.Division
-	session.Values["user_facility"] = userInfo.Facility
-	session.Values["user_warehouse"] = userInfo.Warehouse
-	session.Values["user_full_name"] = userInfo.FullName
+		// Debug: Log what we received from M3
+		fmt.Printf("DEBUG LoadUserDefaults: Received from M3 GetUserInfo:\n")
+		fmt.Printf("  Company: '%s'\n", userInfo.Company)
+		fmt.Printf("  Division: '%s'\n", userInfo.Division)
+		fmt.Printf("  Facility: '%s'\n", userInfo.Facility)
+		fmt.Printf("  Warehouse: '%s'\n", userInfo.Warehouse)
+		fmt.Printf("  FullName: '%s'\n", userInfo.FullName)
+
+		// Fill in missing values
+		if company == "" {
+			company = userInfo.Company
+		}
+		if division == "" {
+			division = userInfo.Division
+		}
+		if facility == "" {
+			facility = userInfo.Facility
+		}
+		if warehouse == "" {
+			warehouse = userInfo.Warehouse
+		}
+		if fullName == "" {
+			fullName = userInfo.FullName
+		}
+	}
+
+	// Store final effective defaults in session
+	session.Values["user_company"] = company
+	session.Values["user_division"] = division
+	session.Values["user_facility"] = facility
+	session.Values["user_warehouse"] = warehouse
+	session.Values["user_full_name"] = fullName
 
 	// Debug: Verify what was stored
-	fmt.Printf("DEBUG LoadUserDefaults: Stored in session:\n")
+	fmt.Printf("DEBUG LoadUserDefaults: Final session values:\n")
 	fmt.Printf("  user_company: '%v'\n", session.Values["user_company"])
 	fmt.Printf("  user_division: '%v'\n", session.Values["user_division"])
 	fmt.Printf("  user_facility: '%v'\n", session.Values["user_facility"])

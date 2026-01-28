@@ -470,67 +470,38 @@ func getSessionString(session *sessions.Session, key string) string {
 	return ""
 }
 
-// primeContextCache populates the M3 context cache after login
+// primeContextCache populates the M3 context cache after login using bulk API operations
 func (s *Server) primeContextCache(environment string, m3Client *m3api.Client) {
 	ctx := context.Background()
 	repo := services.NewContextRepository(s.db, m3Client, environment)
 
-	fmt.Printf("Priming context cache for %s environment...\n", environment)
+	fmt.Printf("Priming context cache for %s environment with bulk API operations...\n", environment)
 
-	// Prime companies cache
-	companies, err := repo.GetCompanies(ctx, false) // Use cache if available
+	// 1. Prime companies cache (single call)
+	companies, err := repo.GetCompanies(ctx, true) // Force refresh
 	if err != nil {
-		fmt.Printf("Warning: Failed to prime companies cache: %v\n", err)
+		fmt.Printf("ERROR: Failed to prime companies cache: %v\n", err)
 		return
 	}
-	fmt.Printf("Cached %d companies for %s\n", len(companies), environment)
+	fmt.Printf("  %s: Cached %d companies\n", environment, len(companies))
 
-	// Prime facilities cache
-	facilities, err := repo.GetFacilities(ctx, false)
+	// 2. Prime facilities cache (single call)
+	facilities, err := repo.GetFacilities(ctx, true) // Force refresh
 	if err != nil {
-		fmt.Printf("Warning: Failed to prime facilities cache: %v\n", err)
+		fmt.Printf("WARNING: Failed to prime facilities cache: %v\n", err)
 	} else {
-		fmt.Printf("Cached %d facilities for %s\n", len(facilities), environment)
+		fmt.Printf("  %s: Cached %d facilities\n", environment, len(facilities))
 	}
 
-	// Prime divisions and warehouses for each company (limit to first 3 companies to avoid long delays)
-	maxCompanies := 3
-	if len(companies) > maxCompanies {
-		companies = companies[:maxCompanies]
+	// 3. Use NEW bulk API to prime ALL company-scoped entities in single call
+	// This replaces the old sequential loop with 1 bulk request for:
+	// - Divisions, Warehouses, MO Types, CO Types for ALL companies
+	if err := repo.RefreshAllContextBulk(ctx, companies); err != nil {
+		fmt.Printf("ERROR: Bulk context refresh failed: %v\n", err)
+		return
 	}
 
-	for _, company := range companies {
-		// Prime divisions
-		divisions, err := repo.GetDivisions(ctx, company.CompanyNumber, false)
-		if err != nil {
-			fmt.Printf("Warning: Failed to prime divisions cache for company %s: %v\n", company.CompanyNumber, err)
-			continue
-		}
-
-		// Prime warehouses
-		warehouses, err := repo.GetFilteredWarehouses(ctx, company.CompanyNumber, nil, nil)
-		if err != nil {
-			fmt.Printf("Warning: Failed to prime warehouses cache for company %s: %v\n", company.CompanyNumber, err)
-			continue
-		}
-
-		// Prime manufacturing order types
-		mfgOrderTypes, err := repo.GetManufacturingOrderTypes(ctx, company.CompanyNumber, false)
-		if err != nil {
-			fmt.Printf("Warning: Failed to prime manufacturing order types cache for company %s: %v\n", company.CompanyNumber, err)
-		}
-
-		// Prime customer order types
-		coOrderTypes, err := repo.GetCustomerOrderTypes(ctx, company.CompanyNumber, false)
-		if err != nil {
-			fmt.Printf("Warning: Failed to prime customer order types cache for company %s: %v\n", company.CompanyNumber, err)
-		}
-
-		fmt.Printf("Cached %d divisions, %d warehouses, %d manufacturing order types, and %d customer order types for company %s\n",
-			len(divisions), len(warehouses), len(mfgOrderTypes), len(coOrderTypes), company.CompanyNumber)
-	}
-
-	fmt.Printf("Context cache priming completed for %s\n", environment)
+	fmt.Printf("Context cache priming completed for %s using bulk operations\n", environment)
 }
 
 // handleRefreshProfile re-fetches user profile from Infor API

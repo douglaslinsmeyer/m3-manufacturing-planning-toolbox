@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../contexts/AuthContext';
 import { useContextManagement } from '../contexts/ContextManagementContext';
 import { AppLayout } from '../components/AppLayout';
@@ -76,6 +76,7 @@ const Profile: React.FC = () => {
       setSaving(false);
     }
   };
+
 
   if (!userProfile) {
     return (
@@ -374,10 +375,19 @@ const MySettingsTab: React.FC<MySettingsTabProps> = ({
     loadDivisions,
     loadFacilities,
     loadWarehouses,
+    error: contextError,
   } = useContextManagement();
 
   const [loadingDivisions, setLoadingDivisions] = useState(false);
   const [loadingWarehouses, setLoadingWarehouses] = useState(false);
+
+  // Filter facilities by selected company
+  const filteredFacilities = useMemo(() => {
+    if (!settings || !settings.defaultCompany) {
+      return facilities; // Show all if no company selected or settings null
+    }
+    return facilities.filter(f => f.companyNumber === settings.defaultCompany);
+  }, [facilities, settings, settings?.defaultCompany]);
 
   if (!settings) return null;
 
@@ -398,15 +408,24 @@ const MySettingsTab: React.FC<MySettingsTabProps> = ({
         settings.defaultFacility
       );
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Handle company change with cascading logic
   const handleCompanyChange = async (newCompany: string) => {
-    updateSetting('defaultCompany', newCompany);
+    // Check if facility belongs to new company
+    const facilityBelongsToCompany = settings.defaultFacility && facilities.some(
+      f => f.facility === settings.defaultFacility && f.companyNumber === newCompany
+    );
 
-    // Clear dependent fields
-    updateSetting('defaultDivision', '');
-    updateSetting('defaultWarehouse', '');
+    // Update all fields at once to avoid state update race conditions
+    onSettingsChange({
+      ...settings,
+      defaultCompany: newCompany,
+      defaultDivision: '',
+      defaultWarehouse: '',
+      defaultFacility: facilityBelongsToCompany ? settings.defaultFacility : '',
+    });
 
     // Reload divisions and warehouses for new company
     if (newCompany) {
@@ -460,6 +479,18 @@ const MySettingsTab: React.FC<MySettingsTabProps> = ({
 
   return (
     <form onSubmit={onSave} className="bg-white shadow rounded-lg">
+      {/* Context Loading Error Display */}
+      {contextError && (
+        <div className="mx-6 mt-6 bg-red-50 border border-red-200 text-red-800 px-4 py-3 rounded-lg">
+          <div className="flex items-start gap-2">
+            <svg className="w-5 h-5 text-red-600 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+            </svg>
+            <span className="text-sm">{contextError}</span>
+          </div>
+        </div>
+      )}
+
       {/* Default Context */}
       <div className="px-6 py-5 border-b border-slate-200">
         <h3 className="text-lg font-semibold text-slate-900 mb-4">Default Context</h3>
@@ -517,15 +548,22 @@ const MySettingsTab: React.FC<MySettingsTabProps> = ({
             <select
               value={settings.defaultFacility || ''}
               onChange={(e) => handleFacilityChange(e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+              disabled={!settings.defaultCompany || filteredFacilities.length === 0}
+              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <option value="">-- Select Facility --</option>
-              {facilities.map(f => (
+              {filteredFacilities.map(f => (
                 <option key={f.facility} value={f.facility}>
                   {f.facility} - {f.facilityName}
                 </option>
               ))}
             </select>
+            {!settings.defaultCompany && (
+              <p className="mt-1 text-xs text-slate-500">Select a company first</p>
+            )}
+            {settings.defaultCompany && filteredFacilities.length === 0 && (
+              <p className="mt-1 text-xs text-amber-600">No facilities found for selected company</p>
+            )}
           </div>
 
           {/* Warehouse Dropdown */}
@@ -550,91 +588,6 @@ const MySettingsTab: React.FC<MySettingsTabProps> = ({
               <p className="mt-1 text-xs text-slate-500">Select a company first</p>
             )}
           </div>
-        </div>
-      </div>
-
-      {/* Display Preferences */}
-      <div className="px-6 py-5 border-b border-slate-200">
-        <h3 className="text-lg font-semibold text-slate-900 mb-4">Display Preferences</h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Items per Page
-            </label>
-            <input
-              type="number"
-              min="1"
-              max="200"
-              value={settings.itemsPerPage}
-              onChange={(e) => updateSetting('itemsPerPage', parseInt(e.target.value))}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">Theme</label>
-            <select
-              value={settings.theme}
-              onChange={(e) => updateSetting('theme', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            >
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-              <option value="auto">Auto (System)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Date Format
-            </label>
-            <select
-              value={settings.dateFormat}
-              onChange={(e) => updateSetting('dateFormat', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            >
-              <option value="YYYY-MM-DD">YYYY-MM-DD (2026-01-25)</option>
-              <option value="MM/DD/YYYY">MM/DD/YYYY (01/25/2026)</option>
-              <option value="DD/MM/YYYY">DD/MM/YYYY (25/01/2026)</option>
-            </select>
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Time Format
-            </label>
-            <select
-              value={settings.timeFormat}
-              onChange={(e) => updateSetting('timeFormat', e.target.value)}
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-            >
-              <option value="12h">12-hour (3:30 PM)</option>
-              <option value="24h">24-hour (15:30)</option>
-            </select>
-          </div>
-        </div>
-      </div>
-
-      {/* Notification Preferences */}
-      <div className="px-6 py-5 border-b border-slate-200">
-        <h3 className="text-lg font-semibold text-slate-900 mb-4">Notifications</h3>
-        <div className="space-y-3">
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={settings.enableNotifications}
-              onChange={(e) => updateSetting('enableNotifications', e.target.checked)}
-              className="h-4 w-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500"
-            />
-            <span className="text-sm text-slate-700">Enable notifications</span>
-          </label>
-          <label className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              checked={settings.notificationSound}
-              onChange={(e) => updateSetting('notificationSound', e.target.checked)}
-              disabled={!settings.enableNotifications}
-              className="h-4 w-4 text-primary-600 border-slate-300 rounded focus:ring-primary-500 disabled:opacity-50"
-            />
-            <span className="text-sm text-slate-700">Notification sound</span>
-          </label>
         </div>
       </div>
 

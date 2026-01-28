@@ -1,28 +1,18 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { AppLayout } from '../components/AppLayout';
 import { buildM3BookmarkURL, M3Config } from '../utils/m3Links';
+import { dateDiffDays, getVarianceBadgeColor } from '../utils/m3DateUtils';
 import { api } from '../services/api';
+import { Issue, AnomalySummary } from '../types';
 import { ConfirmModal } from '../components/ConfirmModal';
 import { JointDeliveryDetailModal } from '../components/JointDeliveryDetailModal';
 import { ToastContainer } from '../components/Toast';
 import { useToast } from '../hooks/useToast';
-
-interface Issue {
-  id: number;
-  detectorType: string;
-  facility: string;
-  warehouse?: string;
-  issueKey: string;
-  productionOrderNumber?: string;
-  productionOrderType?: string;
-  moTypeDescription?: string;
-  coNumber?: string;
-  coLine?: string;
-  coSuffix?: string;
-  detectedAt: string;
-  issueData: Record<string, any>;
-  isIgnored?: boolean;
-}
+import { BulkActionToolbar, BulkAction } from '../components/BulkActionToolbar';
+import { BulkOperationModal, BulkOperationResult } from '../components/BulkOperationModal';
+import { IssueActionsMenu } from '../components/IssueActionsMenu';
+import { Trash2, XCircle, Calendar, AlertTriangle } from 'lucide-react';
 
 interface Detector {
   name: string;
@@ -105,8 +95,9 @@ function formatM3DateRelative(dateStr: string | number): { relative: string; abs
   return { relative, absolute };
 }
 
-const Inconsistencies: React.FC = () => {
+const Issues: React.FC = () => {
   const [summary, setSummary] = useState<IssueSummary | null>(null);
+  const [anomalySummary, setAnomalySummary] = useState<AnomalySummary | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedDetector, setSelectedDetector] = useState<string>('');
@@ -123,6 +114,9 @@ const Inconsistencies: React.FC = () => {
   const [alignModalOpen, setAlignModalOpen] = useState(false);
   const [issueToAlign, setIssueToAlign] = useState<Issue | null>(null);
   const [isAligning, setIsAligning] = useState(false);
+  const [alignLatestModalOpen, setAlignLatestModalOpen] = useState(false);
+  const [issueToAlignLatest, setIssueToAlignLatest] = useState<Issue | null>(null);
+  const [isAligningLatest, setIsAligningLatest] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [selectedIssueForDetail, setSelectedIssueForDetail] = useState<Issue | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -131,6 +125,17 @@ const Inconsistencies: React.FC = () => {
   const [totalCount, setTotalCount] = useState<number>(0);
   const [totalPages, setTotalPages] = useState<number>(0);
   const toast = useToast();
+
+  // Multi-select state
+  const [selectedIssues, setSelectedIssues] = useState<Set<number>>(new Set());
+
+  // Bulk operation modal state
+  const [bulkModalOpen, setBulkModalOpen] = useState(false);
+  const [bulkModalTitle, setBulkModalTitle] = useState('');
+  const [bulkResults, setBulkResults] = useState<BulkOperationResult[]>([]);
+  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
+  const [bulkTotal, setBulkTotal] = useState(0);
+  const [bulkCompleted, setBulkCompleted] = useState(0);
 
   // Initialize filters from URL on mount and fetch data
   useEffect(() => {
@@ -158,6 +163,7 @@ const Inconsistencies: React.FC = () => {
     // Fetch config and summary once on mount
     fetchM3Config();
     fetchSummary();
+    fetchAnomalySummary();
 
     // Mark as initialized to allow fetching
     setIsInitialized(true);
@@ -191,6 +197,8 @@ const Inconsistencies: React.FC = () => {
   useEffect(() => {
     if (isInitialized) {
       fetchIssues();
+      // Clear selection when data changes
+      clearSelection();
     }
   }, [selectedDetector, selectedWarehouse, showIgnored, currentPage, pageSize, isInitialized]);
 
@@ -227,10 +235,19 @@ const Inconsistencies: React.FC = () => {
     }
   };
 
+  const fetchAnomalySummary = async () => {
+    try {
+      const data = await api.getAnomalySummary();
+      setAnomalySummary(data);
+    } catch (error) {
+      console.error('Failed to fetch anomaly summary:', error);
+    }
+  };
+
   const fetchIssues = async () => {
     setLoading(true);
     try {
-      const result = await api.listInconsistencies({
+      const result = await api.listIssues({
         type: selectedDetector || undefined,
         warehouse: selectedWarehouse || undefined,
         includeIgnored: showIgnored,
@@ -383,7 +400,7 @@ const Inconsistencies: React.FC = () => {
     const numOrders = issue.issueData?.num_production_orders || 0;
 
     if (!minDate) {
-      return `This will reschedule ${numOrders} production orders. Continue?`;
+      return `This will reschedule ${numOrders.toLocaleString()} production orders. Continue?`;
     }
 
     // Check if date is in the past
@@ -400,10 +417,39 @@ const Inconsistencies: React.FC = () => {
     const isPast = minDateObj < today;
 
     if (isPast) {
-      return `The earliest date (${formatM3Date(minDate)}) is in the past. This will reschedule ${numOrders} production orders to the next business day instead. Continue?`;
+      return `The earliest date (${formatM3Date(minDate)}) is in the past. This will reschedule ${numOrders.toLocaleString()} production orders to the next business day instead. Continue?`;
     }
 
-    return `This will reschedule ${numOrders} production orders to align with the earliest date (${formatM3Date(minDate)}). This action will update orders in M3. Continue?`;
+    return `This will reschedule ${numOrders.toLocaleString()} production orders to align with the earliest date (${formatM3Date(minDate)}). This action will update orders in M3. Continue?`;
+  };
+
+  // Helper to build latest alignment confirmation message
+  const getLatestAlignmentMessage = (issue: Issue) => {
+    const maxDate = issue.issueData?.max_date;
+    const numOrders = issue.issueData?.num_production_orders || 0;
+
+    if (!maxDate) {
+      return `This will reschedule ${numOrders.toLocaleString()} production orders. Continue?`;
+    }
+
+    // Check if date is in the past
+    const maxDateInt = parseInt(String(maxDate));
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const maxDateObj = new Date(
+      Math.floor(maxDateInt / 10000),
+      (Math.floor(maxDateInt / 100) % 100) - 1,
+      maxDateInt % 100
+    );
+
+    const isPast = maxDateObj < today;
+
+    if (isPast) {
+      return `The latest date (${formatM3Date(maxDate)}) is in the past. This will reschedule ${numOrders.toLocaleString()} production orders to the next business day instead. Continue?`;
+    }
+
+    return `This will reschedule ${numOrders.toLocaleString()} production orders to align with the latest date (${formatM3Date(maxDate)}). This action will update orders in M3. Continue?`;
   };
 
   const handleAlignEarliestClick = (issue: Issue) => {
@@ -453,6 +499,298 @@ const Inconsistencies: React.FC = () => {
     setIssueToAlign(null);
   };
 
+  const handleAlignLatestClick = (issue: Issue) => {
+    setIssueToAlignLatest(issue);
+    setAlignLatestModalOpen(true);
+  };
+
+  const handleAlignLatestConfirm = async () => {
+    if (!issueToAlignLatest) return;
+
+    setIsAligningLatest(true);
+    try {
+      const result = await api.alignLatestMOs(issueToAlignLatest.id);
+
+      setAlignLatestModalOpen(false);
+      setIssueToAlignLatest(null);
+
+      // Refresh data
+      await Promise.all([fetchIssues(), fetchSummary()]);
+
+      // Build success message with date adjustment info
+      let successMessage = `Successfully aligned ${result.aligned_count} production orders to ${formatM3Date(result.target_date)}`;
+      if (result.date_adjusted && result.original_max_date) {
+        successMessage += ` (adjusted from ${formatM3Date(result.original_max_date)} to next business day)`;
+      }
+
+      // Show success/partial success message
+      if (result.failed_count === 0) {
+        toast.success(successMessage);
+      } else if (result.aligned_count > 0) {
+        const warningMsg = `Aligned ${result.aligned_count} orders, ${result.failed_count} failed.${result.date_adjusted ? ' Date adjusted to next business day.' : ''}`;
+        toast.warning(warningMsg);
+        console.error('Alignment failures:', result.failures);
+      } else {
+        toast.error('Failed to align any production orders. Please try again.');
+      }
+    } catch (error) {
+      console.error('Failed to align orders:', error);
+      toast.error('Failed to align production orders. Please try again.');
+    } finally {
+      setIsAligningLatest(false);
+    }
+  };
+
+  const handleAlignLatestCancel = () => {
+    setAlignLatestModalOpen(false);
+    setIssueToAlignLatest(null);
+  };
+
+  // Multi-select handlers
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedIssues(new Set(issues.map(issue => issue.id)));
+    } else {
+      setSelectedIssues(new Set());
+    }
+  };
+
+  const handleSelectIssue = (issueId: number, checked: boolean) => {
+    const newSelection = new Set(selectedIssues);
+    if (checked) {
+      newSelection.add(issueId);
+    } else {
+      newSelection.delete(issueId);
+    }
+    setSelectedIssues(newSelection);
+  };
+
+  const clearSelection = () => {
+    setSelectedIssues(new Set());
+  };
+
+  // Get available bulk actions based on selected issues
+  const getAvailableActions = (): BulkAction[] => {
+    const selected = Array.from(selectedIssues)
+      .map(id => issues.find(i => i.id === id))
+      .filter((issue): issue is Issue => issue !== undefined);
+
+    if (selected.length === 0) {
+      return [];
+    }
+
+    const allMOPs = selected.every(i => i.productionOrderType === 'MOP');
+    const allMOs = selected.every(i => i.productionOrderType === 'MO');
+    const allDeletableMOs = allMOs && selected.every(i => {
+      const status = parseInt(i.issueData.status || '99', 10);
+      return !isNaN(status) && status <= 22;
+    });
+    const allCloseableMOs = allMOs && selected.every(i => {
+      const status = parseInt(i.issueData.status || '99', 10);
+      return !isNaN(status) && status > 22;
+    });
+
+    const actions: BulkAction[] = [];
+
+    // Delete action
+    actions.push({
+      id: 'delete',
+      label: 'Delete',
+      icon: <Trash2 className="h-4 w-4" />,
+      variant: 'danger',
+      enabled: allMOPs || allDeletableMOs,
+      disabledReason: !allMOPs && !allDeletableMOs
+        ? 'Select only MOPs or deletable MOs (status ≤22)'
+        : undefined,
+    });
+
+    // Close action
+    actions.push({
+      id: 'close',
+      label: 'Close',
+      icon: <XCircle className="h-4 w-4" />,
+      variant: 'warning',
+      enabled: allCloseableMOs,
+      disabledReason: !allCloseableMOs
+        ? 'Select only MOs with status >22'
+        : undefined,
+    });
+
+    // Reschedule action
+    actions.push({
+      id: 'reschedule',
+      label: 'Reschedule',
+      icon: <Calendar className="h-4 w-4" />,
+      variant: 'primary',
+      enabled: true,
+      disabledReason: undefined,
+    });
+
+    return actions;
+  };
+
+  // Bulk operation handlers
+  const handleBulkDelete = async () => {
+    const issueIds = Array.from(selectedIssues);
+    setBulkModalTitle('Bulk Delete');
+    setBulkTotal(issueIds.length);
+    setBulkCompleted(0);
+    setBulkResults([]);
+    setBulkModalOpen(true);
+    setIsBulkProcessing(true);
+
+    try {
+      const result = await api.bulkDelete(issueIds);
+
+      // Convert API results to modal format
+      const modalResults: BulkOperationResult[] = result.results.map(r => ({
+        issue_id: r.issue_id,
+        production_order: r.production_order,
+        status: r.status,
+        message: r.message,
+        error: r.error,
+      }));
+
+      setBulkResults(modalResults);
+      setBulkCompleted(result.total);
+
+      // Refresh data
+      await Promise.all([fetchIssues(), fetchSummary()]);
+      clearSelection();
+
+      // Show toast summary
+      if (result.failed === 0) {
+        toast.success(`Successfully deleted ${result.successful} production orders`);
+      } else if (result.successful > 0) {
+        toast.warning(`Deleted ${result.successful} orders, ${result.failed} failed`);
+      } else {
+        toast.error('Failed to delete any production orders');
+      }
+    } catch (error) {
+      console.error('Bulk delete failed:', error);
+      toast.error('Bulk delete operation failed. Please try again.');
+    } finally {
+      setIsBulkProcessing(false);
+    }
+  };
+
+  const handleBulkClose = async () => {
+    const issueIds = Array.from(selectedIssues);
+    setBulkModalTitle('Bulk Close');
+    setBulkTotal(issueIds.length);
+    setBulkCompleted(0);
+    setBulkResults([]);
+    setBulkModalOpen(true);
+    setIsBulkProcessing(true);
+
+    try {
+      const result = await api.bulkClose(issueIds);
+
+      // Convert API results to modal format
+      const modalResults: BulkOperationResult[] = result.results.map(r => ({
+        issue_id: r.issue_id,
+        production_order: r.production_order,
+        status: r.status,
+        message: r.message,
+        error: r.error,
+      }));
+
+      setBulkResults(modalResults);
+      setBulkCompleted(result.total);
+
+      // Refresh data
+      await Promise.all([fetchIssues(), fetchSummary()]);
+      clearSelection();
+
+      // Show toast summary
+      if (result.failed === 0) {
+        toast.success(`Successfully closed ${result.successful} manufacturing orders`);
+      } else if (result.successful > 0) {
+        toast.warning(`Closed ${result.successful} orders, ${result.failed} failed`);
+      } else {
+        toast.error('Failed to close any manufacturing orders');
+      }
+    } catch (error) {
+      console.error('Bulk close failed:', error);
+      toast.error('Bulk close operation failed. Please try again.');
+    } finally {
+      setIsBulkProcessing(false);
+    }
+  };
+
+  const handleBulkReschedule = async () => {
+    // Prompt for new date
+    const dateInput = prompt('Enter new date (YYYYMMDD format):');
+    if (!dateInput) {
+      return; // User cancelled
+    }
+
+    // Validate date format
+    const dateRegex = /^\d{8}$/;
+    if (!dateRegex.test(dateInput)) {
+      toast.error('Invalid date format. Please use YYYYMMDD (e.g., 20260201)');
+      return;
+    }
+
+    const issueIds = Array.from(selectedIssues);
+    setBulkModalTitle('Bulk Reschedule');
+    setBulkTotal(issueIds.length);
+    setBulkCompleted(0);
+    setBulkResults([]);
+    setBulkModalOpen(true);
+    setIsBulkProcessing(true);
+
+    try {
+      const result = await api.bulkReschedule(issueIds, dateInput);
+
+      // Convert API results to modal format
+      const modalResults: BulkOperationResult[] = result.results.map(r => ({
+        issue_id: r.issue_id,
+        production_order: r.production_order,
+        status: r.status,
+        message: r.message,
+        error: r.error,
+      }));
+
+      setBulkResults(modalResults);
+      setBulkCompleted(result.total);
+
+      // Refresh data
+      await Promise.all([fetchIssues(), fetchSummary()]);
+      clearSelection();
+
+      // Show toast summary
+      if (result.failed === 0) {
+        toast.success(`Successfully rescheduled ${result.successful} production orders to ${formatM3Date(dateInput)}`);
+      } else if (result.successful > 0) {
+        toast.warning(`Rescheduled ${result.successful} orders, ${result.failed} failed`);
+      } else {
+        toast.error('Failed to reschedule any production orders');
+      }
+    } catch (error) {
+      console.error('Bulk reschedule failed:', error);
+      toast.error('Bulk reschedule operation failed. Please try again.');
+    } finally {
+      setIsBulkProcessing(false);
+    }
+  };
+
+  const handleBulkAction = (actionId: string) => {
+    switch (actionId) {
+      case 'delete':
+        handleBulkDelete();
+        break;
+      case 'close':
+        handleBulkClose();
+        break;
+      case 'reschedule':
+        handleBulkReschedule();
+        break;
+      default:
+        console.warn('Unknown bulk action:', actionId);
+    }
+  };
+
   return (
     <AppLayout>
       <ToastContainer toasts={toast.toasts} onClose={toast.removeToast} />
@@ -472,12 +810,38 @@ const Inconsistencies: React.FC = () => {
           </div>
         </div>
 
+        {/* Anomaly Banner */}
+        {anomalySummary && anomalySummary.by_severity?.critical > 0 && (
+          <div className="mb-6 rounded-xl bg-red-50 p-4 border-l-4 border-red-500 shadow-sm">
+            <div className="flex items-start">
+              <AlertTriangle className="w-6 h-6 text-red-600 flex-shrink-0 mt-0.5" />
+              <div className="ml-3 flex-1">
+                <h3 className="text-sm font-semibold text-red-800">
+                  {anomalySummary.by_severity.critical} Critical Anomal{anomalySummary.by_severity.critical === 1 ? 'y' : 'ies'} Detected
+                </h3>
+                <p className="mt-1 text-sm text-red-700">
+                  Statistical anomalies have been detected in your production data that may indicate planning issues or data quality problems.
+                </p>
+                <Link
+                  to="/anomalies"
+                  className="mt-3 inline-flex items-center gap-2 px-4 py-2 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition-colors"
+                >
+                  View Anomalies
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </Link>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Summary Cards */}
         {summary && (
           <div className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
               <div className="text-sm font-medium text-slate-500">Total Issues</div>
-              <div className="mt-2 text-3xl font-semibold text-slate-900">{summary.total}</div>
+              <div className="mt-2 text-3xl font-semibold text-slate-900">{summary.total.toLocaleString()}</div>
             </div>
 
             {Object.entries(summary.by_detector).slice(0, 3).map(([detector, count]) => (
@@ -485,7 +849,7 @@ const Inconsistencies: React.FC = () => {
                 <div className="text-sm font-medium text-slate-500">
                   {detectorLabels[detector] || detector}
                 </div>
-                <div className="mt-2 text-3xl font-semibold text-slate-900">{count}</div>
+                <div className="mt-2 text-3xl font-semibold text-slate-900">{count.toLocaleString()}</div>
               </div>
             ))}
           </div>
@@ -506,7 +870,7 @@ const Inconsistencies: React.FC = () => {
                 <option value="">All Types</option>
                 {summary && Object.keys(summary.by_detector).map((detector) => (
                   <option key={detector} value={detector}>
-                    {detectorLabels[detector] || detector} ({summary.by_detector[detector]})
+                    {detectorLabels[detector] || detector} ({summary.by_detector[detector].toLocaleString()})
                   </option>
                 ))}
               </select>
@@ -524,7 +888,7 @@ const Inconsistencies: React.FC = () => {
                 <option value="">All Warehouses</option>
                 {summary && summary.by_warehouse && Object.keys(summary.by_warehouse).map((warehouse) => (
                   <option key={warehouse} value={warehouse}>
-                    {warehouse} ({summary.by_warehouse[warehouse]})
+                    {warehouse} ({summary.by_warehouse[warehouse].toLocaleString()})
                   </option>
                 ))}
               </select>
@@ -565,6 +929,14 @@ const Inconsistencies: React.FC = () => {
               <table className="min-w-full divide-y divide-slate-200">
                 <thead className="bg-slate-50">
                   <tr>
+                    <th className="px-6 py-3 text-left">
+                      <input
+                        type="checkbox"
+                        checked={issues.length > 0 && selectedIssues.size === issues.length}
+                        onChange={(e) => handleSelectAll(e.target.checked)}
+                        className="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                      />
+                    </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
                       Issue Type
                     </th>
@@ -572,7 +944,7 @@ const Inconsistencies: React.FC = () => {
                       Affected Orders
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
-                      Facility
+                      Warehouse
                     </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
                       Details
@@ -588,6 +960,14 @@ const Inconsistencies: React.FC = () => {
                       key={issue.id}
                       className={issue.isIgnored ? 'bg-slate-100 opacity-75 hover:bg-slate-150' : 'hover:bg-slate-50'}
                     >
+                      <td className="px-6 py-4">
+                        <input
+                          type="checkbox"
+                          checked={selectedIssues.has(issue.id)}
+                          onChange={(e) => handleSelectIssue(issue.id, e.target.checked)}
+                          className="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
+                        />
+                      </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-slate-900">
                         {detectorLabels[issue.detectorType] || issue.detectorType}
                       </td>
@@ -616,22 +996,23 @@ const Inconsistencies: React.FC = () => {
                             <span className="ml-2 text-xs text-slate-400">
                               ({issue.productionOrderType})
                             </span>
-                            {issue.moTypeDescription && (
+                            {issue.moTypeDescription && issue.detectorType !== 'unlinked_production_orders' && (
                               <div className="text-xs text-slate-600 mt-0.5">
                                 {issue.moTypeDescription}
                               </div>
                             )}
                           </div>
                         )}
-                        {issue.coNumber && (
+                        {issue.coNumber &&
+                          issue.detectorType !== 'joint_delivery_date_mismatch' &&
+                          issue.detectorType !== 'dlix_date_mismatch' && (
                           <div className="text-xs text-slate-400">
                             CO: {issue.coNumber}-{issue.coLine}
                           </div>
                         )}
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm text-slate-500">
-                        {issue.facility}
-                        {issue.warehouse && <div className="text-xs text-slate-400">{issue.warehouse}</div>}
+                        {issue.warehouse || '-'}
                       </td>
                       <td className="px-6 py-4 text-sm text-slate-500">
                         <IssueDetailsCell
@@ -646,65 +1027,20 @@ const Inconsistencies: React.FC = () => {
                         />
                       </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm">
-                        <div className="flex items-center gap-2">
-                          {issue.isIgnored ? (
-                            <button
-                              onClick={() => handleUnignore(issue.id)}
-                              className="inline-flex items-center px-3 py-1.5 border border-primary-300 text-sm font-medium rounded-md text-primary-700 bg-primary-50 hover:bg-primary-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
-                            >
-                              Unignore
-                            </button>
-                          ) : (
-                            <button
-                              onClick={() => handleIgnore(issue.id)}
-                              className="inline-flex items-center px-3 py-1.5 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-slate-500"
-                            >
-                              Ignore
-                            </button>
-                          )}
-                          {issue.detectorType === 'unlinked_production_orders' &&
-                           issue.productionOrderType === 'MOP' && (
-                            <button
-                              onClick={() => handleDeleteMOPClick(issue)}
-                              className="inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-                            >
-                              Delete
-                            </button>
-                          )}
-
-                          {/* Delete MO button (status <= 22) */}
-                          {issue.detectorType === 'unlinked_production_orders' &&
-                           canDeleteMO(issue) && (
-                            <button
-                              onClick={() => handleDeleteMOClick(issue)}
-                              className="inline-flex items-center px-3 py-1.5 border border-red-300 text-sm font-medium rounded-md text-red-700 bg-red-50 hover:bg-red-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
-                            >
-                              Delete
-                            </button>
-                          )}
-
-                          {/* Close MO button (status > 22) */}
-                          {issue.detectorType === 'unlinked_production_orders' &&
-                           canCloseMO(issue) && (
-                            <button
-                              onClick={() => handleCloseMOClick(issue)}
-                              className="inline-flex items-center px-3 py-1.5 border border-orange-300 text-sm font-medium rounded-md text-orange-700 bg-orange-50 hover:bg-orange-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500"
-                            >
-                              Close
-                            </button>
-                          )}
-
-                          {/* Align Earliest button - only for joint_delivery_date_mismatch */}
-                          {issue.detectorType === 'joint_delivery_date_mismatch' && (
-                            <button
-                              onClick={() => handleAlignEarliestClick(issue)}
-                              className="inline-flex items-center px-3 py-1.5 border border-blue-300 text-sm font-medium rounded-md text-blue-700 bg-blue-50 hover:bg-blue-100 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                              title="Align all orders to earliest date"
-                            >
-                              Align Earliest
-                            </button>
-                          )}
-                        </div>
+                        <IssueActionsMenu
+                          issue={issue}
+                          onIgnore={handleIgnore}
+                          onUnignore={handleUnignore}
+                          onDeleteMOP={handleDeleteMOPClick}
+                          onDeleteMO={handleDeleteMOClick}
+                          onCloseMO={handleCloseMOClick}
+                          onAlignEarliest={handleAlignEarliestClick}
+                          onAlignLatest={handleAlignLatestClick}
+                          onShowDetails={(issue) => {
+                            setSelectedIssueForDetail(issue);
+                            setDetailModalOpen(true);
+                          }}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -738,7 +1074,7 @@ const Inconsistencies: React.FC = () => {
 
                 {/* Center: Page info */}
                 <div className="text-sm text-slate-700">
-                  Showing {Math.min((currentPage - 1) * pageSize + 1, totalCount)} to {Math.min(currentPage * pageSize, totalCount)} of {totalCount} issues
+                  Showing {Math.min((currentPage - 1) * pageSize + 1, totalCount).toLocaleString()} to {Math.min(currentPage * pageSize, totalCount).toLocaleString()} of {totalCount.toLocaleString()} issues
                 </div>
 
                 {/* Right: Page navigation */}
@@ -816,6 +1152,18 @@ const Inconsistencies: React.FC = () => {
           isDestructive={false}
         />
 
+        {/* Align Latest Confirmation Modal */}
+        <ConfirmModal
+          isOpen={alignLatestModalOpen}
+          title="Align Production Orders to Latest Date"
+          message={issueToAlignLatest ? getLatestAlignmentMessage(issueToAlignLatest) : ''}
+          confirmLabel={isAligningLatest ? 'Aligning...' : 'Align Orders'}
+          cancelLabel="Cancel"
+          onConfirm={handleAlignLatestConfirm}
+          onCancel={handleAlignLatestCancel}
+          isDestructive={false}
+        />
+
         {/* Joint Delivery Detail Modal */}
         {detailModalOpen && selectedIssueForDetail && (
           <JointDeliveryDetailModal
@@ -828,11 +1176,38 @@ const Inconsistencies: React.FC = () => {
               setDetailModalOpen(false);  // Close detail modal
               handleAlignEarliestClick(selectedIssueForDetail);  // Open confirm modal
             }}
+            onAlignLatest={() => {
+              setDetailModalOpen(false);  // Close detail modal
+              handleAlignLatestClick(selectedIssueForDetail);  // Open confirm modal
+            }}
             issueData={selectedIssueForDetail.issueData}
             coNumber={selectedIssueForDetail.coNumber}
             currentOrderNumber={selectedIssueForDetail.productionOrderNumber}
+            issueType={selectedIssueForDetail.detectorType as 'joint_delivery_date_mismatch' | 'dlix_date_mismatch'}
           />
         )}
+
+        {/* Bulk Action Toolbar */}
+        <BulkActionToolbar
+          selectedCount={selectedIssues.size}
+          availableActions={getAvailableActions()}
+          onExecute={handleBulkAction}
+          onClear={clearSelection}
+        />
+
+        {/* Bulk Operation Modal */}
+        <BulkOperationModal
+          isOpen={bulkModalOpen}
+          title={bulkModalTitle}
+          total={bulkTotal}
+          completed={bulkCompleted}
+          results={bulkResults}
+          onClose={() => {
+            setBulkModalOpen(false);
+            setBulkResults([]);
+          }}
+          isProcessing={isBulkProcessing}
+        />
       </div>
     </AppLayout>
   );
@@ -868,26 +1243,43 @@ const IssueDetailsCell: React.FC<{
             </span>
           </div>
         )}
-        {issueData.mo_type && (
-          <div className="text-slate-400">Type: {issueData.mo_type}</div>
+        {issue?.moTypeDescription && (
+          <div className="text-slate-400">Type: {issue.moTypeDescription}</div>
         )}
       </div>
     );
   }
 
-  if (detectorType === 'joint_delivery_date_mismatch') {
-    return (
-      <button
-        onClick={() => issue && onShowDetail && onShowDetail(issue)}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-700 bg-blue-50 rounded-md hover:bg-blue-100 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1"
-      >
-        <InformationCircleIcon className="h-4 w-4" />
-        Details
-      </button>
-    );
+  if (detectorType === 'joint_delivery_date_mismatch' || detectorType === 'dlix_date_mismatch') {
+    // Validate required data exists
+    if (!issueData.min_date || !issueData.max_date) {
+      return <div className="text-xs text-slate-400">N/A</div>;
+    }
+
+    try {
+      const varianceDays = dateDiffDays(issueData.min_date, issueData.max_date);
+
+      return (
+        <button
+          onClick={() => issue && onShowDetail && onShowDetail(issue)}
+          className="inline-flex items-center gap-1.5 hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-1 rounded-md"
+          title="Click to view details"
+        >
+          <span className="text-xs text-slate-600">Variance:</span>
+          <span
+            className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ring-1 ${getVarianceBadgeColor(varianceDays)}`}
+          >
+            {varianceDays} {varianceDays === 1 ? 'day' : 'days'}
+          </span>
+        </button>
+      );
+    } catch (error) {
+      // Fallback if date parsing fails
+      return <div className="text-xs text-slate-400">Invalid dates</div>;
+    }
   }
 
   return <div className="text-xs">{JSON.stringify(issueData)}</div>;
 };
 
-export default Inconsistencies;
+export default Issues;

@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/pinggolf/m3-planning-tools/internal/m3api"
 	"github.com/pinggolf/m3-planning-tools/internal/services"
@@ -503,4 +505,137 @@ func (s *Server) handleGetM3Config(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleRefreshAllContext manually refreshes all context cache data
+func (s *Server) handleRefreshAllContext(w http.ResponseWriter, r *http.Request) {
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	userID, err := s.getUserIDFromSession(r)
+	if err != nil {
+		log.Printf("ERROR: Failed to get user ID for cache refresh: %v", err)
+		userID = "unknown"
+	}
+
+	startTime := time.Now()
+	log.Printf("INFO: Manual context cache refresh triggered by user %s in environment %s", userID, environment)
+
+	// Get context repository
+	repo, err := s.getContextRepositoryForRequest(r, environment)
+	if err != nil {
+		log.Printf("ERROR: Failed to get context repository: %v", err)
+		http.Error(w, "Failed to get context repository", http.StatusInternalServerError)
+		return
+	}
+
+	// 1. Refresh companies (forceRefresh=true)
+	companies, err := repo.GetCompanies(r.Context(), true)
+	if err != nil {
+		log.Printf("ERROR: Failed to refresh companies: %v", err)
+		http.Error(w, "Failed to refresh companies", http.StatusInternalServerError)
+		return
+	}
+
+	// 2. Refresh facilities
+	facilities, err := repo.GetFacilities(r.Context(), true)
+	if err != nil {
+		log.Printf("ERROR: Failed to refresh facilities: %v", err)
+		http.Error(w, "Failed to refresh facilities", http.StatusInternalServerError)
+		return
+	}
+
+	// 3. Use bulk API to refresh ALL company-scoped entities in single call
+	// This replaces the old sequential loop with 1 bulk request for:
+	// - Divisions, Warehouses, MO Types, CO Types for ALL companies
+	log.Printf("INFO: Using bulk API to refresh context for %d companies...", len(companies))
+	if err := repo.RefreshAllContextBulk(r.Context(), companies); err != nil {
+		log.Printf("ERROR: Bulk context refresh failed: %v", err)
+		http.Error(w, "Failed to refresh context via bulk API", http.StatusInternalServerError)
+		return
+	}
+
+	// Query database to get actual counts after bulk refresh
+	divisionCount := 0
+	warehouseCount := 0
+	for _, company := range companies {
+		divs, _ := repo.GetDivisions(r.Context(), company.CompanyNumber, false)
+		divisionCount += len(divs)
+
+		whs, _ := repo.GetFilteredWarehouses(r.Context(), company.CompanyNumber, nil, nil)
+		warehouseCount += len(whs)
+	}
+
+	elapsed := time.Since(startTime)
+
+	log.Printf("INFO: Context cache refresh completed: %d companies, %d divisions, %d facilities, %d warehouses in %dms",
+		len(companies), divisionCount, len(facilities), warehouseCount, elapsed.Milliseconds())
+
+	// Log audit trail
+	if s.auditService != nil {
+		s.auditService.Log(r.Context(), services.AuditParams{
+			Environment: environment,
+			EntityType:  "context_cache",
+			Operation:   "refresh_all",
+			UserID:      userID,
+			Metadata: map[string]interface{}{
+				"companies_count":  len(companies),
+				"divisions_count":  divisionCount,
+				"facilities_count": len(facilities),
+				"warehouses_count": warehouseCount,
+				"duration_ms":      elapsed.Milliseconds(),
+			},
+		})
+	}
+
+	// Return summary
+	refreshResponse := map[string]interface{}{
+		"status":              "success",
+		"message":             "Context cache refreshed successfully",
+		"companiesRefreshed":  len(companies),
+		"divisionsRefreshed":  divisionCount,
+		"facilitiesRefreshed": len(facilities),
+		"warehousesRefreshed": warehouseCount,
+		"durationMs":          elapsed.Milliseconds(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(refreshResponse)
+}
+
+// handleGetCacheStatus returns cache status for all context resources
+func (s *Server) handleGetCacheStatus(w http.ResponseWriter, r *http.Request) {
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	// Query cache status from database
+	statuses, err := s.db.GetContextCacheStatus(r.Context(), environment)
+	if err != nil {
+		log.Printf("ERROR: Failed to get cache status: %v", err)
+		http.Error(w, "Failed to get cache status", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert to API response format
+	type CacheStatusResponse struct {
+		ResourceType string `json:"resourceType"`
+		RecordCount  int    `json:"recordCount"`
+		LastRefresh  string `json:"lastRefresh,omitempty"`
+		IsStale      bool   `json:"isStale"`
+	}
+
+	statusResponse := make([]CacheStatusResponse, len(statuses))
+	for i, status := range statuses {
+		statusResponse[i] = CacheStatusResponse{
+			ResourceType: status.ResourceType,
+			RecordCount:  status.RecordCount,
+			IsStale:      status.IsStale,
+		}
+		if status.LastRefresh.Valid {
+			statusResponse[i].LastRefresh = status.LastRefresh.Time.Format(time.RFC3339)
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(statusResponse)
 }

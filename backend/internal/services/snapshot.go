@@ -46,6 +46,13 @@ func (s *SnapshotService) reportProgress(phase string, stepNum, totalSteps int, 
 	}
 }
 
+// reportSubProgress reports a sub-operation within the current phase
+func (s *SnapshotService) reportSubProgress(operation string, recordCount int) {
+	if s.progressCallback != nil {
+		s.progressCallback("", 0, 0, operation, s.mopCount, s.moCount, s.coCount)
+	}
+}
+
 // RefreshOpenCustomerOrderLines refreshes all open CO lines (status < 30)
 // Filtered by environment, company and facility context
 // This is more efficient than querying by specific order numbers when there are many orders
@@ -59,8 +66,16 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, env
 
 	// Execute query
 	log.Println("Submitting Compass query for open CO lines...")
+	s.reportSubProgress("Querying Compass SQL for customer order lines...", 0)
 	pageSize := LoadSystemSettingInt(s.db, environment, "compass_batch_size", 50000)
-	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(ctx, query, pageSize)
+	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(
+		ctx, query, pageSize,
+		func(page, totalPages, pageRecords, totalFetched, totalRecords int) {
+			operation := fmt.Sprintf("Loading page %d/%d from Compass SQL (%d records, %d total)",
+				page, totalPages, pageRecords, totalFetched)
+			s.reportSubProgress(operation, totalFetched)
+		},
+	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -74,10 +89,12 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, env
 	}
 
 	log.Printf("Received %d CO line records", len(resultSet.Records))
+	s.reportSubProgress(fmt.Sprintf("Processing %d customer order line records...", len(resultSet.Records)), 0)
 
 	// Transform to database records
+	const parseProgressInterval = 5000
 	dbRecords := make([]*db.CustomerOrderLine, 0, len(resultSet.Records))
-	for _, record := range resultSet.Records {
+	for i, record := range resultSet.Records {
 		coLine, err := compass.ParseCustomerOrderLine(record)
 		if err != nil {
 			log.Printf("Warning: failed to parse CO line record: %v", err)
@@ -144,6 +161,7 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, env
 			CUOR: coLine.CUOR,
 			CUPO: coLine.CUPO,
 			CUSX: coLine.CUSX,
+			CustomerName: coLine.CustomerName,
 			PRNO: coLine.PRNO,
 			HDPR: coLine.HDPR,
 			POPN: coLine.POPN,
@@ -165,6 +183,10 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, env
 			PUSN: coLine.PUSN,
 			PUTP: coLine.PUTP,
 			JDCD: coLine.JDCD,
+			DLIX: coLine.DLIX,
+			ORTP: coLine.ORTP,
+			COTypeDescription: coLine.COTypeDescription,
+			DeliveryMethod: coLine.DeliveryMethod,
 			ATV1: coLine.ATV1,
 			ATV2: coLine.ATV2,
 			ATV3: coLine.ATV3,
@@ -211,11 +233,27 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, env
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
+
+		// Report parsing progress every N records
+		if (i+1)%parseProgressInterval == 0 || (i+1) == len(resultSet.Records) {
+			operation := fmt.Sprintf("Parsed %d/%d records (%d%%)",
+				i+1, len(resultSet.Records),
+				((i+1)*100)/len(resultSet.Records))
+			s.reportSubProgress(operation, i+1)
+		}
 	}
 
 	// Batch insert
 	log.Printf("Inserting %d CO line records into database...", len(dbRecords))
-	if err := s.db.BatchInsertCustomerOrderLines(ctx, dbRecords); err != nil {
+	s.reportSubProgress(fmt.Sprintf("Inserting %d customer order lines into database...", len(dbRecords)), len(dbRecords))
+
+	insertCallback := func(inserted, total int) {
+		operation := fmt.Sprintf("Inserted %d/%d customer order lines into database (%d%%)",
+			inserted, total, (inserted*100)/total)
+		s.reportSubProgress(operation, inserted)
+	}
+
+	if err := s.db.BatchInsertCustomerOrderLines(ctx, dbRecords, insertCallback); err != nil {
 		return 0, fmt.Errorf("failed to insert CO lines: %w", err)
 	}
 
@@ -242,7 +280,7 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 	// Execute query (DEPRECATED method - use batch refresh instead)
 	log.Println("Submitting Compass query for CO lines...")
 	pageSize := LoadSystemSettingInt(s.db, environment, "compass_batch_size", 50000)
-	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(ctx, query, pageSize)
+	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(ctx, query, pageSize, nil)
 	if err != nil {
 		return fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -326,6 +364,7 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 			CUOR: coLine.CUOR,
 			CUPO: coLine.CUPO,
 			CUSX: coLine.CUSX,
+			CustomerName: coLine.CustomerName,
 			PRNO: coLine.PRNO,
 			HDPR: coLine.HDPR,
 			POPN: coLine.POPN,
@@ -347,6 +386,10 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 			PUSN: coLine.PUSN,
 			PUTP: coLine.PUTP,
 			JDCD: coLine.JDCD,
+			DLIX: coLine.DLIX,
+			ORTP: coLine.ORTP,
+			COTypeDescription: coLine.COTypeDescription,
+			DeliveryMethod: coLine.DeliveryMethod,
 			ATV1: coLine.ATV1,
 			ATV2: coLine.ATV2,
 			ATV3: coLine.ATV3,
@@ -397,7 +440,7 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 
 	// Batch insert
 	log.Printf("Inserting %d CO line records into database...", len(dbRecords))
-	if err := s.db.BatchInsertCustomerOrderLines(ctx, dbRecords); err != nil {
+	if err := s.db.BatchInsertCustomerOrderLines(ctx, dbRecords, nil); err != nil {
 		return fmt.Errorf("failed to insert CO lines: %w", err)
 	}
 
@@ -421,8 +464,16 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, enviro
 
 	// Execute query (DEPRECATED method - use batch refresh instead)
 	log.Println("Submitting Compass query for MOs...")
+	s.reportSubProgress("Querying Compass SQL for manufacturing orders...", 0)
 	pageSize := LoadSystemSettingInt(s.db, environment, "compass_batch_size", 50000)
-	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(ctx, query, pageSize)
+	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(
+		ctx, query, pageSize,
+		func(page, totalPages, pageRecords, totalFetched, totalRecords int) {
+			operation := fmt.Sprintf("Loading page %d/%d from Compass SQL (%d records, %d total)",
+				page, totalPages, pageRecords, totalFetched)
+			s.reportSubProgress(operation, totalFetched)
+		},
+	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -436,10 +487,12 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, enviro
 	}
 
 	log.Printf("Received %d MO records", len(resultSet.Records))
+	s.reportSubProgress(fmt.Sprintf("Processing %d manufacturing order records...", len(resultSet.Records)), 0)
 
 	// Transform to database records
+	const parseProgressInterval = 5000
 	dbRecords := make([]*db.ManufacturingOrder, 0, len(resultSet.Records))
-	for _, record := range resultSet.Records {
+	for i, record := range resultSet.Records {
 		mo, err := compass.ParseManufacturingOrder(record)
 		if err != nil {
 			log.Printf("Warning: failed to parse MO record: %v", err)
@@ -560,11 +613,27 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, enviro
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
+
+		// Report parsing progress every N records
+		if (i+1)%parseProgressInterval == 0 || (i+1) == len(resultSet.Records) {
+			operation := fmt.Sprintf("Parsed %d/%d records (%d%%)",
+				i+1, len(resultSet.Records),
+				((i+1)*100)/len(resultSet.Records))
+			s.reportSubProgress(operation, i+1)
+		}
 	}
 
 	// Batch insert
 	log.Printf("Inserting %d MO records into database...", len(dbRecords))
-	if err := s.db.BatchInsertManufacturingOrders(ctx, dbRecords); err != nil {
+	s.reportSubProgress(fmt.Sprintf("Inserting %d manufacturing orders into database...", len(dbRecords)), len(dbRecords))
+
+	insertCallback := func(inserted, total int) {
+		operation := fmt.Sprintf("Inserted %d/%d manufacturing orders into database (%d%%)",
+			inserted, total, (inserted*100)/total)
+		s.reportSubProgress(operation, inserted)
+	}
+
+	if err := s.db.BatchInsertManufacturingOrders(ctx, dbRecords, insertCallback); err != nil {
 		return 0, fmt.Errorf("failed to insert MOs: %w", err)
 	}
 
@@ -589,8 +658,16 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, environment,
 
 	// Execute query (DEPRECATED method - use batch refresh instead)
 	log.Println("Submitting Compass query for MOPs...")
+	s.reportSubProgress("Querying Compass SQL for planned orders...", 0)
 	pageSize := LoadSystemSettingInt(s.db, environment, "compass_batch_size", 50000)
-	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(ctx, query, pageSize)
+	results, totalRecords, err := s.compassClient.ExecuteQueryWithPagination(
+		ctx, query, pageSize,
+		func(page, totalPages, pageRecords, totalFetched, totalRecords int) {
+			operation := fmt.Sprintf("Loading page %d/%d from Compass SQL (%d records, %d total)",
+				page, totalPages, pageRecords, totalFetched)
+			s.reportSubProgress(operation, totalFetched)
+		},
+	)
 	if err != nil {
 		return 0, fmt.Errorf("failed to execute query: %w", err)
 	}
@@ -604,6 +681,7 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, environment,
 	}
 
 	log.Printf("Received %d MOP records", len(resultSet.Records))
+	s.reportSubProgress(fmt.Sprintf("Processing %d planned order records...", len(resultSet.Records)), 0)
 
 	// Debug: Print field names from first record
 	if len(resultSet.Records) > 0 {
@@ -615,8 +693,9 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, environment,
 	}
 
 	// Transform to database records
+	const parseProgressInterval = 5000
 	dbRecords := make([]*db.PlannedManufacturingOrder, 0, len(resultSet.Records))
-	for _, record := range resultSet.Records {
+	for i, record := range resultSet.Records {
 		mop, err := compass.ParsePlannedOrder(record)
 		if err != nil {
 			log.Printf("Warning: failed to parse MOP record: %v", err)
@@ -720,6 +799,14 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, environment,
 		}
 
 		dbRecords = append(dbRecords, dbRecord)
+
+		// Report parsing progress every N records
+		if (i+1)%parseProgressInterval == 0 || (i+1) == len(resultSet.Records) {
+			operation := fmt.Sprintf("Parsed %d/%d records (%d%%)",
+				i+1, len(resultSet.Records),
+				((i+1)*100)/len(resultSet.Records))
+			s.reportSubProgress(operation, i+1)
+		}
 	}
 
 	// Extract unique CO numbers while transforming
@@ -732,7 +819,15 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, environment,
 
 	// Batch insert
 	log.Printf("Inserting %d MOP records into database...", len(dbRecords))
-	if err := s.db.BatchInsertPlannedOrders(ctx, dbRecords); err != nil {
+	s.reportSubProgress(fmt.Sprintf("Inserting %d planned orders into database...", len(dbRecords)), len(dbRecords))
+
+	insertCallback := func(inserted, total int) {
+		operation := fmt.Sprintf("Inserted %d/%d planned orders into database (%d%%)",
+			inserted, total, (inserted*100)/total)
+		s.reportSubProgress(operation, inserted)
+	}
+
+	if err := s.db.BatchInsertPlannedOrders(ctx, dbRecords, insertCallback); err != nil {
 		return 0, fmt.Errorf("failed to insert MOPs: %w", err)
 	}
 

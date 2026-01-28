@@ -71,9 +71,14 @@ export function useSnapshotProgress(jobId: string | null): UseSnapshotProgressRe
             setIsConnected(true);
             setError(null);
 
-            // Mark as completed if status is completed
-            if (progressData.status === 'completed') {
+            // Mark as completed if status is completed or cancelled
+            if (progressData.status === 'completed' || progressData.status === 'cancelled') {
               jobCompletedRef.current = true;
+              // Close connection after a brief delay
+              setTimeout(() => {
+                eventSource.close();
+                setIsConnected(false);
+              }, 500);
             }
           } catch (err) {
             console.error('Failed to parse progress data:', err);

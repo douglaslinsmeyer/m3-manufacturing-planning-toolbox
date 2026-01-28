@@ -88,6 +88,8 @@ func main() {
 	log.Println("Snapshot worker started")
 
 	// Initialize API server
+	// Note: Context cache refresh is triggered after user login via API handlers
+	// This uses user session tokens instead of service account tokens
 	server := api.NewServer(cfg, queries, natsManager, database)
 
 	// Create HTTP server

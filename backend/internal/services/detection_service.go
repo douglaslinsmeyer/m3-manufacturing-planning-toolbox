@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -22,9 +23,12 @@ type DetectionService struct {
 // NewDetectionService creates a new detection service
 func NewDetectionService(database *db.Queries, configService *DetectorConfigService) *DetectionService {
 	// Initialize detector registry with config service
+	// NOTE: When adding new detectors to this registry, also update the subscription list
+	// in workers/snapshot_worker.go (detectorNames array) to enable parallel execution via NATS.
 	registry := detectors.NewDetectorRegistry()
 	registry.Register(detectors.NewUnlinkedProductionOrdersDetector(configService))
 	registry.Register(detectors.NewJointDeliveryDateMismatchDetector(configService))
+	registry.Register(detectors.NewDLIXDateMismatchDetector(configService))
 
 	return &DetectionService{
 		db:            database,
@@ -125,6 +129,14 @@ func (s *DetectionService) RunAllDetectors(ctx context.Context, jobID, environme
 	s.reportProgress("detection", totalDetectors, totalDetectors, fmt.Sprintf("Detection complete - %d issues found", totalIssues))
 
 	log.Printf("Issue detection completed - %d total issues found across %d enabled detectors", totalIssues, completedDetectors)
+
+	// Phase 2: Run anomaly detectors
+	log.Printf("Starting anomaly detection for job %s", jobID)
+	if err := s.RunAnomalyDetectors(ctx, jobID, environment, company, facility); err != nil {
+		log.Printf("Anomaly detection failed: %v", err)
+		// Don't fail the whole job if anomaly detection fails
+	}
+
 	return nil
 }
 
@@ -176,4 +188,167 @@ func (s *DetectionService) IsDetectorEnabled(ctx context.Context, environment, d
 	}
 
 	return true, nil // Default: enabled
+}
+
+// RunAnomalyDetectors executes all anomaly detectors
+func (s *DetectionService) RunAnomalyDetectors(ctx context.Context, jobID, environment, company, facility string) error {
+	log.Printf("Starting anomaly detection for job %s (environment: %s)", jobID, environment)
+
+	// Get raw DB connection for anomaly detectors
+	rawDB := s.db.DB()
+
+	// Load anomaly detector settings with defaults
+	settings := s.loadAnomalyDetectorSettings(ctx, environment)
+
+	// Initialize anomaly detectors
+	anomalyDetectors := []detectors.AnomalyDetector{
+		detectors.NewUnlinkedConcentrationDetector(
+			rawDB,
+			settings.UnlinkedConcentration.Enabled,
+			settings.UnlinkedConcentration.WarningThreshold,
+			settings.UnlinkedConcentration.CriticalThreshold,
+			settings.UnlinkedConcentration.MinAffectedCount,
+		),
+		detectors.NewDateClusteringDetector(
+			rawDB,
+			settings.DateClustering.Enabled,
+			settings.DateClustering.WarningThreshold,
+			settings.DateClustering.CriticalThreshold,
+			settings.DateClustering.MinAffectedCount,
+		),
+		detectors.NewMOPDemandRatioDetector(
+			rawDB,
+			settings.MOPDemandRatio.Enabled,
+			settings.MOPDemandRatio.WarningMOPsPerCOLine,
+			settings.MOPDemandRatio.CriticalMOPsPerCOLine,
+			settings.MOPDemandRatio.CriticalMOPsPerUnitDemand,
+		),
+		detectors.NewAbsoluteVolumeDetector(
+			rawDB,
+			settings.AbsoluteVolume.Enabled,
+			settings.AbsoluteVolume.WarningThreshold,
+			settings.AbsoluteVolume.CriticalThreshold,
+		),
+	}
+
+	totalAlerts := 0
+	for _, detector := range anomalyDetectors {
+		if !detector.Enabled() {
+			log.Printf("Anomaly detector %s is disabled, skipping", detector.Name())
+			continue
+		}
+
+		log.Printf("Running anomaly detector: %s", detector.Name())
+		alerts, err := detector.Detect(ctx, environment)
+		if err != nil {
+			log.Printf("Anomaly detector %s failed: %v", detector.Name(), err)
+			continue
+		}
+
+		// Store alerts in database
+		for _, alert := range alerts {
+			if err := s.storeAnomalyAlert(ctx, jobID, environment, facility, alert); err != nil {
+				log.Printf("Failed to store anomaly alert: %v", err)
+				continue
+			}
+			totalAlerts++
+		}
+
+		log.Printf("Anomaly detector %s found %d alerts", detector.Name(), len(alerts))
+	}
+
+	log.Printf("Anomaly detection completed - %d total alerts found", totalAlerts)
+	return nil
+}
+
+// storeAnomalyAlert stores an anomaly alert in the anomaly_alerts table
+func (s *DetectionService) storeAnomalyAlert(ctx context.Context, jobID, environment, facility string, alert *detectors.AnomalyAlert) error {
+	// Convert metrics to JSON
+	metricsJSON, err := json.Marshal(alert.Metrics)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metrics: %w", err)
+	}
+
+	// Build params for insertion
+	params := db.InsertAnomalyAlertParams{
+		Environment:  environment,
+		JobID:        jobID,
+		DetectorType: alert.DetectorType,
+		Severity:     alert.Severity,
+		EntityType:   sql.NullString{String: alert.EntityType, Valid: alert.EntityType != ""},
+		EntityID:     sql.NullString{String: alert.EntityID, Valid: alert.EntityID != ""},
+		Message:      sql.NullString{String: alert.Message, Valid: alert.Message != ""},
+		Metrics:      string(metricsJSON),
+		AffectedCount: sql.NullInt32{
+			Int32: int32(alert.AffectedCount),
+			Valid: alert.AffectedCount > 0,
+		},
+		ThresholdValue: sql.NullFloat64{
+			Float64: alert.Threshold,
+			Valid:   alert.Threshold > 0,
+		},
+		ActualValue: sql.NullFloat64{
+			Float64: alert.ActualValue,
+			Valid:   true,
+		},
+	}
+
+	return s.db.InsertAnomalyAlert(ctx, params)
+}
+
+// AnomalyDetectorSettings holds configuration for all anomaly detectors
+type AnomalyDetectorSettings struct {
+	UnlinkedConcentration struct {
+		Enabled           bool
+		WarningThreshold  float64
+		CriticalThreshold float64
+		MinAffectedCount  int
+	}
+	DateClustering struct {
+		Enabled           bool
+		WarningThreshold  float64
+		CriticalThreshold float64
+		MinAffectedCount  int
+	}
+	MOPDemandRatio struct {
+		Enabled                   bool
+		WarningMOPsPerCOLine      float64
+		CriticalMOPsPerCOLine     float64
+		CriticalMOPsPerUnitDemand float64
+	}
+	AbsoluteVolume struct {
+		Enabled           bool
+		WarningThreshold  int
+		CriticalThreshold int
+	}
+}
+
+// loadAnomalyDetectorSettings loads anomaly detector settings with defaults
+func (s *DetectionService) loadAnomalyDetectorSettings(ctx context.Context, environment string) AnomalyDetectorSettings {
+	settings := AnomalyDetectorSettings{}
+
+	// Set defaults
+	settings.UnlinkedConcentration.Enabled = true
+	settings.UnlinkedConcentration.WarningThreshold = 10.0
+	settings.UnlinkedConcentration.CriticalThreshold = 50.0
+	settings.UnlinkedConcentration.MinAffectedCount = 100
+
+	settings.DateClustering.Enabled = true
+	settings.DateClustering.WarningThreshold = 80.0
+	settings.DateClustering.CriticalThreshold = 95.0
+	settings.DateClustering.MinAffectedCount = 100
+
+	settings.MOPDemandRatio.Enabled = true
+	settings.MOPDemandRatio.WarningMOPsPerCOLine = 10.0
+	settings.MOPDemandRatio.CriticalMOPsPerCOLine = 50.0
+	settings.MOPDemandRatio.CriticalMOPsPerUnitDemand = 5.0
+
+	settings.AbsoluteVolume.Enabled = true
+	settings.AbsoluteVolume.WarningThreshold = 1000
+	settings.AbsoluteVolume.CriticalThreshold = 10000
+
+	// TODO: Load from system_settings table and override defaults
+	// For now, using hardcoded defaults
+
+	return settings
 }

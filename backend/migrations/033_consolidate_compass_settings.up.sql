@@ -7,7 +7,7 @@
 -- Update compass_batch_size description and constraints
 UPDATE system_settings
 SET
-    description = 'Records per batch for parallel processing. Controls both ID range partitioning and result fetch size (max: 100000)',
+    description = 'Batch Size: Number of records fetched per API call from M3 Data Fabric during snapshot refresh. Higher values reduce API calls but increase memory usage. Recommended: 50,000',
     constraints = '{"min": 10000, "max": 100000, "unit": "records"}'::jsonb
 WHERE setting_key = 'compass_batch_size';
 

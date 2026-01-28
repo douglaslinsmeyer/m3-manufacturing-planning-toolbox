@@ -24,14 +24,6 @@ INSERT INTO system_settings (setting_key, setting_value, setting_type, descripti
     -- Issue Detector Toggles
     ('detector_unlinked_production_orders_enabled', 'true', 'boolean',
      'Enable detection of production orders (MO/MOP) without customer order links',
-     'detection', '{}'::jsonb),
-
-    ('detector_start_date_mismatch_enabled', 'true', 'boolean',
-     'Enable detection of production orders linked to same CO line with different start dates',
-     'detection', '{}'::jsonb),
-
-    ('detector_production_timing_enabled', 'true', 'boolean',
-     'Enable detection of production orders with timing issues (start date too early or too late)',
      'detection', '{}'::jsonb)
 
 ON CONFLICT (setting_key) DO NOTHING;

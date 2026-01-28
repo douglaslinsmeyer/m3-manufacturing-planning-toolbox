@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { AppLayout } from '../components/AppLayout';
 import { useAuth } from '../contexts/AuthContext';
 import { api } from '../services/api';
-import type { SystemSettingsGrouped } from '../types';
+import type { SystemSettingsGrouped, CacheStatus, RefreshResult } from '../types';
 import DetectorSection from '../components/DetectorSection';
 import { ToastContainer } from '../components/Toast';
 import { useToast } from '../hooks/useToast';
@@ -17,6 +17,10 @@ const Settings: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Context cache management state
+  const [cacheStatus, setCacheStatus] = useState<CacheStatus[] | null>(null);
+  const [refreshingCache, setRefreshingCache] = useState(false);
+
   // Check if user is admin
   const isAdmin = userProfile?.groups?.some(
     g => g.type === 'Security Role' && g.display === 'Infor-SystemAdministrator'
@@ -29,12 +33,15 @@ const Settings: React.FC = () => {
     }
   }, [isAdmin, userProfile, navigate]);
 
-  // Load system settings on mount
+  // Load system settings and cache status on mount
   useEffect(() => {
     if (isAdmin) {
       loadSystemSettings();
+      if (activeTab === 'data-refresh') {
+        loadCacheStatus();
+      }
     }
-  }, [isAdmin]);
+  }, [isAdmin, activeTab]);
 
   const loadSystemSettings = async () => {
     setLoading(true);
@@ -45,6 +52,29 @@ const Settings: React.FC = () => {
       toast.error(err.response?.data || 'Failed to load system settings');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadCacheStatus = async () => {
+    try {
+      const status = await api.getContextCacheStatus();
+      setCacheStatus(status);
+    } catch (err: any) {
+      console.error('Failed to load cache status:', err);
+      toast.error('Failed to load cache status');
+    }
+  };
+
+  const handleRefreshContextCache = async () => {
+    setRefreshingCache(true);
+    try {
+      const result = await api.refreshContextCache('all');
+      toast.success(`Cache refreshed: ${result.companiesRefreshed} companies, ${result.divisionsRefreshed} divisions, ${result.warehousesRefreshed} warehouses (${result.durationMs}ms)`);
+      await loadCacheStatus(); // Reload status after refresh
+    } catch (err: any) {
+      toast.error(err.response?.data?.message || 'Failed to refresh cache');
+    } finally {
+      setRefreshingCache(false);
     }
   };
 
@@ -125,6 +155,9 @@ const Settings: React.FC = () => {
               onSave={handleSaveSystemSettings}
               saving={saving}
               activeTab={activeTab}
+              cacheStatus={cacheStatus}
+              refreshingCache={refreshingCache}
+              onRefreshCache={handleRefreshContextCache}
             />
           )}
         </div>
@@ -140,6 +173,9 @@ interface SystemSettingsFormProps {
   onSave: (e: React.FormEvent) => void;
   saving: boolean;
   activeTab: 'data-refresh' | 'detectors';
+  cacheStatus: CacheStatus[] | null;
+  refreshingCache: boolean;
+  onRefreshCache: () => Promise<void>;
 }
 
 const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
@@ -148,6 +184,9 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
   onSave,
   saving,
   activeTab,
+  cacheStatus,
+  refreshingCache,
+  onRefreshCache,
 }) => {
   if (!settings) return null;
 
@@ -180,41 +219,160 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
   const categoriesToShow = getCategoriesToShow();
 
   const categoryLabels: Record<string, string> = {
-    data_refresh: 'Data Refresh Settings',
+    data_refresh: 'Data Refresh Performance',
     detection: 'Detector Configuration',
   };
+
+  // Helper function to format relative time
+  const formatAge = (timestamp: string): string => {
+    if (!timestamp) return 'Never';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffDays > 0) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+    if (diffHours > 0) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+    return 'Just now';
+  };
+
+  const formatDateTime = (timestamp: string): string => {
+    if (!timestamp) return 'Never';
+    return new Date(timestamp).toLocaleString();
+  };
+
+  // Special handling for data-refresh tab - show cache management UI first
+  if (activeTab === 'data-refresh') {
+    return (
+      <form onSubmit={onSave}>
+        <div className="space-y-6">
+          {/* Context Cache Section */}
+          <div className="bg-white shadow rounded-lg">
+            <div className="px-6 py-5 border-b border-slate-200">
+              <h3 className="text-lg font-semibold text-slate-900 mb-2">Context Cache</h3>
+              <p className="text-sm text-slate-600 mb-4">
+                Organizational hierarchy data (companies, divisions, facilities, warehouses) is cached for performance.
+                Refresh manually when M3 data changes.
+              </p>
+
+              {/* Cache Status Table */}
+              {cacheStatus && cacheStatus.length > 0 ? (
+                <div className="bg-slate-50 rounded-lg p-4 mb-4">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-slate-300">
+                        <th className="text-left py-2 font-semibold">Resource</th>
+                        <th className="text-right py-2 font-semibold">Records</th>
+                        <th className="text-right py-2 font-semibold">Last Refresh</th>
+                        <th className="text-right py-2 font-semibold">Age</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {cacheStatus.map(status => (
+                        <tr key={status.resourceType} className="border-b border-slate-200 last:border-0">
+                          <td className="py-2">{status.resourceType}</td>
+                          <td className="text-right">{status.recordCount}</td>
+                          <td className="text-right text-xs">{formatDateTime(status.lastRefresh)}</td>
+                          <td className="text-right">
+                            <span className={status.isStale ? 'text-amber-600 font-medium' : 'text-slate-600'}>
+                              {formatAge(status.lastRefresh)}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="bg-slate-50 rounded-lg p-4 mb-4 text-center text-sm text-slate-500">
+                  Loading cache status...
+                </div>
+              )}
+
+              {/* Refresh Button */}
+              <button
+                type="button"
+                onClick={onRefreshCache}
+                disabled={refreshingCache}
+                className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+              >
+                {refreshingCache ? 'Refreshing...' : 'Refresh All Context Cache'}
+              </button>
+            </div>
+          </div>
+
+          {/* Performance Settings */}
+          {settings.categories['data_refresh'] && (
+            <div className="bg-white shadow rounded-lg">
+              <div className="px-6 py-5">
+                <h3 className="text-lg font-semibold text-slate-900 mb-4">Performance Settings</h3>
+                <div className="space-y-4">
+                  {settings.categories['data_refresh'].map((setting) => (
+                    <div key={setting.key}>
+                      <label className="block text-sm font-medium text-slate-700 mb-1">
+                        {setting.description || setting.key}
+                        {setting.constraints && setting.constraints.unit && (
+                          <span className="ml-1 text-slate-500">({setting.constraints.unit})</span>
+                        )}
+                      </label>
+                      {setting.type === 'boolean' ? (
+                        <select
+                          value={setting.value}
+                          onChange={(e) => updateSettingValue('data_refresh', setting.key, e.target.value)}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        >
+                          <option value="true">Enabled</option>
+                          <option value="false">Disabled</option>
+                        </select>
+                      ) : (
+                        <input
+                          type={setting.type === 'integer' || setting.type === 'float' ? 'number' : 'text'}
+                          value={setting.value}
+                          onChange={(e) => updateSettingValue('data_refresh', setting.key, e.target.value)}
+                          min={setting.constraints?.min}
+                          max={setting.constraints?.max}
+                          step={setting.type === 'float' ? '0.01' : undefined}
+                          className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                        />
+                      )}
+                      <p className="mt-1 text-xs text-slate-500">
+                        Key: {setting.key}
+                        {setting.constraints && (setting.constraints.min !== undefined || setting.constraints.max !== undefined) && (
+                          <span className="ml-2">
+                            Range: {setting.constraints.min || '−∞'} to {setting.constraints.max || '∞'}
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Save Button for Performance Settings */}
+        {settings.categories['data_refresh'] && settings.categories['data_refresh'].length > 0 && (
+          <div className="mt-6 flex justify-end">
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+            >
+              {saving ? 'Saving...' : 'Save Performance Settings'}
+            </button>
+          </div>
+        )}
+      </form>
+    );
+  }
 
   // Special handling for detectors tab - use custom detector sections
   if (activeTab === 'detectors' && settings.categories['detection']) {
     return (
       <form onSubmit={onSave}>
         <div className="space-y-6">
-          {/* Production Timing Detector Section */}
-          <DetectorSection
-            detectorName="production_timing"
-            detectorLabel="Production Timing"
-            detectorDescription="Detects production orders starting too early or too late relative to customer delivery dates"
-            settings={settings.categories['detection']}
-            onSettingsChange={(updated) => {
-              const newSettings = { ...settings };
-              newSettings.categories['detection'] = updated;
-              onSettingsChange(newSettings);
-            }}
-          />
-
-          {/* Start Date Mismatch Detector Section */}
-          <DetectorSection
-            detectorName="start_date_mismatch"
-            detectorLabel="Start Date Mismatch"
-            detectorDescription="Detects multiple production orders for same customer order line with mismatched start dates"
-            settings={settings.categories['detection']}
-            onSettingsChange={(updated) => {
-              const newSettings = { ...settings };
-              newSettings.categories['detection'] = updated;
-              onSettingsChange(newSettings);
-            }}
-          />
-
           {/* Unlinked Production Orders Detector Section */}
           <DetectorSection
             detectorName="unlinked_production_orders"
@@ -240,6 +398,19 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
               onSettingsChange(newSettings);
             }}
           />
+
+          {/* DLIX Date Mismatch Detector Section */}
+          <DetectorSection
+            detectorName="dlix_date_mismatch"
+            detectorLabel="Delivery Date Mismatches"
+            detectorDescription="Detects production orders within same delivery (DLIX) with misaligned start dates"
+            settings={settings.categories['detection']}
+            onSettingsChange={(updated) => {
+              const newSettings = { ...settings };
+              newSettings.categories['detection'] = updated;
+              onSettingsChange(newSettings);
+            }}
+          />
         </div>
 
         {/* Save Button */}
@@ -258,72 +429,74 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
 
   // Standard category rendering for other tabs
   return (
-    <form onSubmit={onSave} className="bg-white shadow rounded-lg">
-      {categoriesToShow.map((categoryKey, idx) => {
-        const categorySettings = settings.categories[categoryKey];
+    <form onSubmit={onSave}>
+      <div className="bg-white shadow rounded-lg">
+        {categoriesToShow.map((categoryKey, idx) => {
+          const categorySettings = settings.categories[categoryKey];
 
-        if (!categorySettings || categorySettings.length === 0) {
+          if (!categorySettings || categorySettings.length === 0) {
+            return (
+              <div key={categoryKey} className="px-6 py-12 text-center">
+                <p className="text-slate-500">No settings available in this category</p>
+              </div>
+            );
+          }
+
           return (
-            <div key={categoryKey} className="px-6 py-12 text-center">
-              <p className="text-slate-500">No settings available in this category</p>
+            <div
+              key={categoryKey}
+              className={`px-6 py-5 ${idx < categoriesToShow.length - 1 ? 'border-b border-slate-200' : ''}`}
+            >
+              <h3 className="text-lg font-semibold text-slate-900 mb-4">
+                {categoryLabels[categoryKey] || categoryKey}
+              </h3>
+              <div className="space-y-4">
+                {categorySettings.map((setting) => (
+                  <div key={setting.key}>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">
+                      {setting.description || setting.key}
+                      {setting.constraints && setting.constraints.unit && (
+                        <span className="ml-1 text-slate-500">({setting.constraints.unit})</span>
+                      )}
+                    </label>
+                    {setting.type === 'boolean' ? (
+                      <select
+                        value={setting.value}
+                        onChange={(e) => updateSettingValue(categoryKey, setting.key, e.target.value)}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      >
+                        <option value="true">Enabled</option>
+                        <option value="false">Disabled</option>
+                      </select>
+                    ) : (
+                      <input
+                        type={setting.type === 'integer' || setting.type === 'float' ? 'number' : 'text'}
+                        value={setting.value}
+                        onChange={(e) => updateSettingValue(categoryKey, setting.key, e.target.value)}
+                        min={setting.constraints?.min}
+                        max={setting.constraints?.max}
+                        step={setting.type === 'float' ? '0.01' : undefined}
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                      />
+                    )}
+                    <p className="mt-1 text-xs text-slate-500">
+                      Key: {setting.key}
+                      {setting.constraints && (setting.constraints.min !== undefined || setting.constraints.max !== undefined) && (
+                        <span className="ml-2">
+                          Range: {setting.constraints.min || '−∞'} to {setting.constraints.max || '∞'}
+                        </span>
+                      )}
+                    </p>
+                  </div>
+                ))}
+              </div>
             </div>
           );
-        }
+        })}
+      </div>
 
-        return (
-          <div
-            key={categoryKey}
-            className={`px-6 py-5 ${idx < categoriesToShow.length - 1 ? 'border-b border-slate-200' : ''}`}
-          >
-            <h3 className="text-lg font-semibold text-slate-900 mb-4">
-              {categoryLabels[categoryKey] || categoryKey}
-            </h3>
-            <div className="space-y-4">
-              {categorySettings.map((setting) => (
-                <div key={setting.key}>
-                  <label className="block text-sm font-medium text-slate-700 mb-1">
-                    {setting.description || setting.key}
-                    {setting.constraints && setting.constraints.unit && (
-                      <span className="ml-1 text-slate-500">({setting.constraints.unit})</span>
-                    )}
-                  </label>
-                  {setting.type === 'boolean' ? (
-                    <select
-                      value={setting.value}
-                      onChange={(e) => updateSettingValue(categoryKey, setting.key, e.target.value)}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    >
-                      <option value="true">Enabled</option>
-                      <option value="false">Disabled</option>
-                    </select>
-                  ) : (
-                    <input
-                      type={setting.type === 'integer' || setting.type === 'float' ? 'number' : 'text'}
-                      value={setting.value}
-                      onChange={(e) => updateSettingValue(categoryKey, setting.key, e.target.value)}
-                      min={setting.constraints?.min}
-                      max={setting.constraints?.max}
-                      step={setting.type === 'float' ? '0.01' : undefined}
-                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-                    />
-                  )}
-                  <p className="mt-1 text-xs text-slate-500">
-                    Key: {setting.key}
-                    {setting.constraints && (setting.constraints.min !== undefined || setting.constraints.max !== undefined) && (
-                      <span className="ml-2">
-                        Range: {setting.constraints.min || '−∞'} to {setting.constraints.max || '∞'}
-                      </span>
-                    )}
-                  </p>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-      })}
-
-      {/* Actions */}
-      <div className="px-6 py-4 bg-slate-50 flex justify-end gap-3">
+      {/* Save Button */}
+      <div className="mt-6 flex justify-end">
         <button
           type="submit"
           disabled={saving}

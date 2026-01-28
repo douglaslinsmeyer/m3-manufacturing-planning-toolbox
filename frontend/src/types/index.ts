@@ -254,24 +254,58 @@ export interface Delivery {
   shipmentNumber?: string;
 }
 
-// Inconsistency types
-export interface Inconsistency {
+// Issue types (detected issues from backend)
+export interface Issue {
   id: number;
-  type: 'date_mismatch' | 'missing_link' | 'quantity_mismatch' | 'status_conflict';
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  description: string;
-  productionOrder?: ProductionOrder;
-  customerOrder?: CustomerOrder;
-  delivery?: Delivery;
-  details: Record<string, any>;
-  createdAt: string;
+  detectorType: string;
+  facility: string;
+  warehouse?: string;
+  issueKey: string;
+  productionOrderNumber?: string;
+  productionOrderType?: string;
+  moTypeDescription?: string;
+  coNumber?: string;
+  coLine?: string;
+  coSuffix?: string;
+  detectedAt: string;
+  issueData: Record<string, any>;
   isIgnored?: boolean;
+}
+
+// Anomaly types
+export interface Anomaly {
+  id: number;
+  detectorType: string;
+  severity: 'info' | 'warning' | 'critical';
+  entityType: 'product' | 'warehouse' | 'system';
+  entityId: string;
+  message?: string;
+  metrics: Record<string, any>;
+  affectedCount: number;
+  thresholdValue: number;
+  actualValue: number;
+  status: 'active' | 'acknowledged' | 'resolved';
+  detectedAt: string;
+  acknowledgedAt?: string;
+  acknowledgedBy?: string;
+  resolvedAt?: string;
+  resolvedBy?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AnomalySummary {
+  total: number;
+  by_severity: Record<string, number>;
+  by_detector: Record<string, number>;
 }
 
 // Snapshot types
 export interface PhaseProgress {
   phase: string;                    // "mops" | "mos" | "cos"
   status: 'pending' | 'running' | 'completed' | 'failed';
+  currentOperation?: string;        // "Querying...", "Processing...", "Inserting..."
   recordCount?: number;
   startTime?: string;
   endTime?: string;
@@ -317,7 +351,7 @@ export interface SnapshotSummary {
   totalCustomerOrderLines: number;
   totalDeliveries: number;
   lastRefresh?: string;
-  inconsistenciesCount: number;
+  issuesCount: number;
 }
 
 // Settings types
@@ -357,4 +391,34 @@ export interface RefreshResult {
   facilitiesRefreshed?: number;
   warehousesRefreshed?: number;
   durationMs?: number;
+}
+
+// Audit Log types
+export interface AuditLog {
+  id: number;
+  timestamp: string;
+  userId?: string;
+  userName?: string;
+  entityType: string;
+  entityId?: string;
+  operation: string;
+  company?: string;
+  facility?: string;
+  warehouse?: string;
+  metadata?: Record<string, any>;
+  ipAddress?: string;
+  userAgent?: string;
+  createdAt: string;
+  environment?: string;
+}
+
+export interface AuditLogFilters {
+  entityType?: string;
+  operation?: string;
+  userId?: string;
+  facility?: string;
+  startTime?: string; // ISO 8601
+  endTime?: string;   // ISO 8601
+  page?: number;
+  pageSize?: number;
 }

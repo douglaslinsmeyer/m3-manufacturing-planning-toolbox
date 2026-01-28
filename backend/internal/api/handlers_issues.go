@@ -893,6 +893,168 @@ func (s *Server) handleAlignEarliestMOs(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(response)
 }
 
+// handleAlignLatestMOs aligns all production orders in a JDCD group to the latest date
+func (s *Server) handleAlignLatestMOs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse issue ID from URL
+	vars := mux.Vars(r)
+	idStr := vars["id"]
+	issueID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		http.Error(w, "Invalid issue ID", http.StatusBadRequest)
+		return
+	}
+
+	// Get issue details
+	issue, err := s.db.GetIssueByID(ctx, issueID)
+	if err != nil {
+		http.Error(w, "Issue not found", http.StatusNotFound)
+		return
+	}
+
+	// Verify this is a joint delivery date mismatch issue
+	if issue.DetectorType != "joint_delivery_date_mismatch" {
+		http.Error(w, "This operation is only valid for joint delivery date mismatch issues", http.StatusBadRequest)
+		return
+	}
+
+	// Parse issue data
+	var issueData map[string]interface{}
+	if err := json.Unmarshal([]byte(issue.IssueData), &issueData); err != nil {
+		http.Error(w, "Failed to parse issue data", http.StatusInternalServerError)
+		return
+	}
+
+	// Extract alignment target date and orders
+	maxDate, ok := issueData["max_date"].(float64)
+	if !ok {
+		http.Error(w, "Invalid max_date in issue data", http.StatusBadRequest)
+		return
+	}
+
+	orders, ok := issueData["orders"].([]interface{})
+	if !ok || len(orders) == 0 {
+		http.Error(w, "No orders found in issue data", http.StatusBadRequest)
+		return
+	}
+
+	// Check if max_date is in the past and adjust to next business day if needed
+	alignmentDate, dateAdjusted := getAlignmentDate(int(maxDate))
+	alignmentDateStr := fmt.Sprintf("%d", alignmentDate)
+
+	if dateAdjusted {
+		log.Printf("Latest date %d is in the past, adjusted to next business day: %d", int(maxDate), alignmentDate)
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Process each order
+	alignedCount := 0
+	skippedCount := 0
+	failedCount := 0
+	failures := []map[string]string{}
+
+	for _, orderInterface := range orders {
+		order, ok := orderInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		orderNumber, _ := order["number"].(string)
+		orderType, _ := order["type"].(string)
+		currentDate, _ := order["date"].(string)
+
+		// Skip if already aligned to target date
+		if currentDate == alignmentDateStr {
+			skippedCount++
+			log.Printf("Skipping %s %s - already aligned to %s", orderType, orderNumber, alignmentDateStr)
+			continue
+		}
+
+		var alignErr error
+
+		if orderType == "MO" {
+			// Reschedule MO to alignment date (may be adjusted from max_date if past)
+			alignErr = s.rescheduleMO(ctx, m3Client, orderNumber, issue.Facility, alignmentDateStr)
+		} else if orderType == "MOP" {
+			// Update MOP dates (maintaining duration)
+			alignErr = s.updateMOPDates(ctx, m3Client, orderNumber, currentDate, alignmentDateStr)
+		} else {
+			alignErr = fmt.Errorf("unknown order type: %s", orderType)
+		}
+
+		if alignErr != nil {
+			failedCount++
+			failures = append(failures, map[string]string{
+				"order": orderNumber,
+				"type":  orderType,
+				"error": alignErr.Error(),
+			})
+			log.Printf("Failed to align %s %s: %v", orderType, orderNumber, alignErr)
+		} else {
+			alignedCount++
+			log.Printf("Successfully aligned %s %s to %s", orderType, orderNumber, alignmentDateStr)
+		}
+	}
+
+	// Create audit log for successful alignments
+	if alignedCount > 0 {
+		jdcd, _ := issueData["jdcd"].(string)
+
+		// Get environment from session
+		session, _ := s.sessionStore.Get(r, "m3-session")
+		environment, _ := session.Values["environment"].(string)
+
+		err = s.auditService.Log(ctx, services.AuditParams{
+			Environment: environment,
+			EntityType:  "jdcd_group",
+			EntityID:    jdcd,
+			Operation:   "align_latest",
+			Facility:    issue.Facility,
+			Metadata: map[string]interface{}{
+				"aligned_count":     alignedCount,
+				"failed_count":      failedCount,
+				"skipped_count":     skippedCount,
+				"target_date":       alignmentDateStr,
+				"date_adjusted":     dateAdjusted,
+				"original_max_date": int(maxDate),
+				"co_number":         issue.CONumber.String,
+				"jdcd":              jdcd,
+			},
+			IPAddress: getIPAddress(r),
+			UserAgent: r.Header.Get("User-Agent"),
+		})
+		if err != nil {
+			log.Printf("Failed to create audit log: %v", err)
+		}
+	}
+
+	// Return summary response with date adjustment info
+	response := map[string]interface{}{
+		"success":       failedCount == 0,
+		"aligned_count": alignedCount,
+		"skipped_count": skippedCount,
+		"failed_count":  failedCount,
+		"total_orders":  len(orders),
+		"target_date":   alignmentDateStr,
+		"date_adjusted": dateAdjusted,
+		"failures":      failures,
+	}
+
+	if dateAdjusted {
+		response["original_max_date"] = fmt.Sprintf("%d", int(maxDate))
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
 // rescheduleMO reschedules a manufacturing order to a new start date
 func (s *Server) rescheduleMO(ctx context.Context, m3Client *m3api.Client, mfno, facility, newStartDate string) error {
 	// Get MO details from production_orders view
@@ -1009,6 +1171,489 @@ func (s *Server) updateMOPDates(ctx context.Context, m3Client *m3api.Client, plp
 	}
 
 	return nil
+}
+
+// Bulk operation request/response types
+
+type BulkOperationRequest struct {
+	IssueIDs []int64                `json:"issue_ids"`
+	Params   map[string]interface{} `json:"params,omitempty"`
+}
+
+type BulkOperationResponse struct {
+	Total      int                 `json:"total"`
+	Successful int                 `json:"successful"`
+	Failed     int                 `json:"failed"`
+	Results    []BulkOperationItem `json:"results"`
+}
+
+type BulkOperationItem struct {
+	IssueID          int64  `json:"issue_id"`
+	ProductionOrder  string `json:"production_order"`
+	Status           string `json:"status"` // "success" or "error"
+	Message          string `json:"message,omitempty"`
+	Error            string `json:"error,omitempty"`
+}
+
+// handleBulkDelete handles bulk deletion of MOPs and MOs
+func (s *Server) handleBulkDelete(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req BulkOperationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.IssueIDs) == 0 {
+		http.Error(w, "No issue IDs provided", http.StatusBadRequest)
+		return
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch all issues
+	issues := make([]*db.DetectedIssue, 0, len(req.IssueIDs))
+	for _, issueID := range req.IssueIDs {
+		issue, err := s.db.GetIssueByID(ctx, issueID)
+		if err != nil {
+			log.Printf("WARNING: Issue %d not found, skipping", issueID)
+			continue
+		}
+		issues = append(issues, issue)
+	}
+
+	// Group by operation type (MOP delete vs MO delete)
+	mopRequests := []m3api.BulkRequestItem{}
+	moRequests := []m3api.BulkRequestItem{}
+	issueByOrder := make(map[string]*db.DetectedIssue)
+
+	for _, issue := range issues {
+		orderNum := issue.ProductionOrderNumber.String
+
+		// Parse issue data to get company
+		var issueData map[string]interface{}
+		json.Unmarshal([]byte(issue.IssueData), &issueData)
+
+		if issue.ProductionOrderType.String == "MOP" {
+			// Delete MOP via PMS170MI/DelPlannedMO
+			plpn, err := strconv.ParseInt(orderNum, 10, 64)
+			if err != nil {
+				log.Printf("Invalid MOP number %s", orderNum)
+				continue
+			}
+
+			record := map[string]string{
+				"PLPN": fmt.Sprintf("%d", plpn),
+			}
+			if company, ok := issueData["company"].(string); ok {
+				record["CONO"] = company
+			}
+
+			mopRequests = append(mopRequests, m3api.BulkRequestItem{
+				Program:     "PMS170MI",
+				Transaction: "DelPlannedMO",
+				Record:      record,
+			})
+			issueByOrder[orderNum] = issue
+
+		} else if issue.ProductionOrderType.String == "MO" {
+			// Verify status allows deletion (<=22)
+			if statusStr, ok := issueData["status"].(string); ok {
+				if status, err := strconv.Atoi(statusStr); err == nil && status > 22 {
+					log.Printf("MO %s status %d too advanced for deletion, skipping", orderNum, status)
+					continue
+				}
+			}
+
+			// Delete MO via PMS100MI/DltMO
+			record := map[string]string{
+				"MFNO": orderNum,
+				"FACI": issue.Facility,
+			}
+
+			moRequests = append(moRequests, m3api.BulkRequestItem{
+				Program:     "PMS100MI",
+				Transaction: "DltMO",
+				Record:      record,
+			})
+			issueByOrder[orderNum] = issue
+		}
+	}
+
+	// Execute bulk operations
+	results := []BulkOperationItem{}
+	successCount := 0
+	failureCount := 0
+
+	// Combine all requests
+	allRequests := append(mopRequests, moRequests...)
+
+	if len(allRequests) > 0 {
+		bulkResp, bulkErr := m3Client.ExecuteBulk(ctx, allRequests)
+
+		// Process results
+		if bulkResp != nil {
+			for _, result := range bulkResp.Results {
+				// Find which order this was for
+				var orderNum string
+				if result.Parameters != nil {
+					if plpn, ok := result.Parameters["PLPN"]; ok {
+						orderNum = plpn
+					} else if mfno, ok := result.Parameters["MFNO"]; ok {
+						orderNum = mfno
+					}
+				}
+
+				issue := issueByOrder[orderNum]
+				if issue == nil {
+					continue
+				}
+
+				item := BulkOperationItem{
+					IssueID:         issue.ID,
+					ProductionOrder: orderNum,
+				}
+
+				if result.IsSuccess() {
+					item.Status = "success"
+					item.Message = fmt.Sprintf("%s deleted successfully", issue.ProductionOrderType.String)
+					successCount++
+
+					// Mark as deleted in database
+					if issue.ProductionOrderType.String == "MOP" {
+						if plpn, err := strconv.ParseInt(orderNum, 10, 64); err == nil {
+							s.db.MarkMOPAsDeletedRemotely(ctx, plpn, issue.Facility)
+						}
+					} else if issue.ProductionOrderType.String == "MO" {
+						s.db.MarkMOAsDeletedRemotely(ctx, orderNum, issue.Facility)
+					}
+				} else {
+					item.Status = "error"
+					item.Error = result.ErrorMessage
+					if item.Error == "" {
+						item.Error = "Unknown error"
+					}
+					failureCount++
+				}
+
+				results = append(results, item)
+			}
+		}
+
+		// Handle complete failures
+		if bulkErr != nil {
+			if bulkOpErr, ok := bulkErr.(*m3api.BulkOperationError); ok {
+				if bulkOpErr.NetworkError != nil {
+					http.Error(w, fmt.Sprintf("Bulk delete failed: %v", bulkOpErr.NetworkError), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+	}
+
+	// Create audit log
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	s.auditService.Log(ctx, services.AuditParams{
+		Environment: environment,
+		EntityType:  "bulk_operation",
+		Operation:   "bulk_delete",
+		Metadata: map[string]interface{}{
+			"total_items":    len(req.IssueIDs),
+			"success_count":  successCount,
+			"failure_count":  failureCount,
+			"mop_count":      len(mopRequests),
+			"mo_count":       len(moRequests),
+		},
+		IPAddress: getIPAddress(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+
+	// Return response
+	response := BulkOperationResponse{
+		Total:      len(req.IssueIDs),
+		Successful: successCount,
+		Failed:     failureCount,
+		Results:    results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleBulkClose handles bulk closing of MOs
+func (s *Server) handleBulkClose(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req BulkOperationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.IssueIDs) == 0 {
+		http.Error(w, "No issue IDs provided", http.StatusBadRequest)
+		return
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch all issues and build bulk requests
+	closeRequests := []m3api.BulkRequestItem{}
+	issueByOrder := make(map[string]*db.DetectedIssue)
+
+	for _, issueID := range req.IssueIDs {
+		issue, err := s.db.GetIssueByID(ctx, issueID)
+		if err != nil {
+			log.Printf("WARNING: Issue %d not found, skipping", issueID)
+			continue
+		}
+
+		// Verify this is an MO
+		if issue.ProductionOrderType.String != "MO" {
+			log.Printf("WARNING: Issue %d is not an MO, skipping", issueID)
+			continue
+		}
+
+		// Parse issue data to verify status
+		var issueData map[string]interface{}
+		json.Unmarshal([]byte(issue.IssueData), &issueData)
+
+		// Verify status is > 22
+		if statusStr, ok := issueData["status"].(string); ok {
+			if status, err := strconv.Atoi(statusStr); err == nil && status <= 22 {
+				log.Printf("WARNING: MO %s status %d allows deletion, skipping close", issue.ProductionOrderNumber.String, status)
+				continue
+			}
+		}
+
+		orderNum := issue.ProductionOrderNumber.String
+
+		// Close MO via PMS100MI/CloseMO
+		record := map[string]string{
+			"MFNO": orderNum,
+			"FACI": issue.Facility,
+		}
+
+		closeRequests = append(closeRequests, m3api.BulkRequestItem{
+			Program:     "PMS100MI",
+			Transaction: "CloseMO",
+			Record:      record,
+		})
+		issueByOrder[orderNum] = issue
+	}
+
+	// Execute bulk close
+	results := []BulkOperationItem{}
+	successCount := 0
+	failureCount := 0
+
+	if len(closeRequests) > 0 {
+		bulkResp, bulkErr := m3Client.ExecuteBulk(ctx, closeRequests)
+
+		// Process results
+		if bulkResp != nil {
+			for _, result := range bulkResp.Results {
+				var orderNum string
+				if result.Parameters != nil {
+					if mfno, ok := result.Parameters["MFNO"]; ok {
+						orderNum = mfno
+					}
+				}
+
+				issue := issueByOrder[orderNum]
+				if issue == nil {
+					continue
+				}
+
+				item := BulkOperationItem{
+					IssueID:         issue.ID,
+					ProductionOrder: orderNum,
+				}
+
+				if result.IsSuccess() {
+					item.Status = "success"
+					item.Message = "MO closed successfully"
+					successCount++
+
+					// Mark as deleted (closed) in database
+					s.db.MarkMOAsDeletedRemotely(ctx, orderNum, issue.Facility)
+				} else {
+					item.Status = "error"
+					item.Error = result.ErrorMessage
+					if item.Error == "" {
+						item.Error = "Unknown error"
+					}
+					failureCount++
+				}
+
+				results = append(results, item)
+			}
+		}
+
+		// Handle complete failures
+		if bulkErr != nil {
+			if bulkOpErr, ok := bulkErr.(*m3api.BulkOperationError); ok {
+				if bulkOpErr.NetworkError != nil {
+					http.Error(w, fmt.Sprintf("Bulk close failed: %v", bulkOpErr.NetworkError), http.StatusInternalServerError)
+					return
+				}
+			}
+		}
+	}
+
+	// Create audit log
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	s.auditService.Log(ctx, services.AuditParams{
+		Environment: environment,
+		EntityType:  "bulk_operation",
+		Operation:   "bulk_close",
+		Metadata: map[string]interface{}{
+			"total_items":   len(req.IssueIDs),
+			"success_count": successCount,
+			"failure_count": failureCount,
+		},
+		IPAddress: getIPAddress(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+
+	// Return response
+	response := BulkOperationResponse{
+		Total:      len(req.IssueIDs),
+		Successful: successCount,
+		Failed:     failureCount,
+		Results:    results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
+}
+
+// handleBulkReschedule handles bulk rescheduling of MOs and MOPs
+func (s *Server) handleBulkReschedule(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req BulkOperationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	if len(req.IssueIDs) == 0 {
+		http.Error(w, "No issue IDs provided", http.StatusBadRequest)
+		return
+	}
+
+	// Get new date from params
+	newDateStr, ok := req.Params["new_date"].(string)
+	if !ok || newDateStr == "" {
+		http.Error(w, "new_date parameter required in YYYYMMDD format", http.StatusBadRequest)
+		return
+	}
+
+	// Get M3 API client
+	m3Client, err := s.getM3APIClient(r)
+	if err != nil {
+		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
+		return
+	}
+
+	// Process each issue sequentially (rescheduling logic is complex)
+	// Note: Could optimize this with bulk operations in future
+	results := []BulkOperationItem{}
+	successCount := 0
+	failureCount := 0
+
+	for _, issueID := range req.IssueIDs {
+		issue, err := s.db.GetIssueByID(ctx, issueID)
+		if err != nil {
+			log.Printf("WARNING: Issue %d not found, skipping", issueID)
+			continue
+		}
+
+		orderNum := issue.ProductionOrderNumber.String
+		item := BulkOperationItem{
+			IssueID:         issueID,
+			ProductionOrder: orderNum,
+		}
+
+		var rescheduleErr error
+
+		if issue.ProductionOrderType.String == "MO" {
+			// Reschedule MO
+			rescheduleErr = s.rescheduleMO(ctx, m3Client, orderNum, issue.Facility, newDateStr)
+		} else if issue.ProductionOrderType.String == "MOP" {
+			// Parse issue data to get current dates
+			var issueData map[string]interface{}
+			json.Unmarshal([]byte(issue.IssueData), &issueData)
+
+			currentStart := ""
+			if startDate, ok := issueData["start_date"].(string); ok {
+				currentStart = startDate
+			}
+
+			// Update MOP dates
+			rescheduleErr = s.updateMOPDates(ctx, m3Client, orderNum, currentStart, newDateStr)
+		}
+
+		if rescheduleErr != nil {
+			item.Status = "error"
+			item.Error = rescheduleErr.Error()
+			failureCount++
+		} else {
+			item.Status = "success"
+			item.Message = fmt.Sprintf("%s rescheduled to %s", issue.ProductionOrderType.String, newDateStr)
+			successCount++
+		}
+
+		results = append(results, item)
+	}
+
+	// Create audit log
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	s.auditService.Log(ctx, services.AuditParams{
+		Environment: environment,
+		EntityType:  "bulk_operation",
+		Operation:   "bulk_reschedule",
+		Metadata: map[string]interface{}{
+			"total_items":   len(req.IssueIDs),
+			"success_count": successCount,
+			"failure_count": failureCount,
+			"new_date":      newDateStr,
+		},
+		IPAddress: getIPAddress(r),
+		UserAgent: r.Header.Get("User-Agent"),
+	})
+
+	// Return response
+	response := BulkOperationResponse{
+		Total:      len(req.IssueIDs),
+		Successful: successCount,
+		Failed:     failureCount,
+		Results:    results,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // getIPAddress extracts the client IP address from the request

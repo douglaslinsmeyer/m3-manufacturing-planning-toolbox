@@ -7,23 +7,16 @@ import (
 	"time"
 )
 
-// UserSettings represents user-specific preferences
+// UserSettings represents user-specific default context overrides
 type UserSettings struct {
-	UserID              string
-	Environment         string // M3 environment (TRN or PRD)
-	DefaultWarehouse    sql.NullString
-	DefaultFacility     sql.NullString
-	DefaultDivision     sql.NullString
-	DefaultCompany      sql.NullString
-	ItemsPerPage        int32
-	Theme               string
-	DateFormat          string
-	TimeFormat          string
-	EnableNotifications bool
-	NotificationSound   bool
-	Preferences         json.RawMessage
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	UserID           string
+	Environment      string // M3 environment (TRN or PRD)
+	DefaultWarehouse sql.NullString
+	DefaultFacility  sql.NullString
+	DefaultDivision  sql.NullString
+	DefaultCompany   sql.NullString
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // SystemSetting represents a system-wide configuration setting
@@ -45,8 +38,6 @@ type SystemSetting struct {
 func (q *Queries) GetUserSettings(ctx context.Context, environment, userID string) (*UserSettings, error) {
 	query := `
 		SELECT environment, user_id, default_warehouse, default_facility, default_division, default_company,
-		       items_per_page, theme, date_format, time_format,
-		       enable_notifications, notification_sound, preferences,
 		       created_at, updated_at
 		FROM user_settings
 		WHERE environment = $1 AND user_id = $2
@@ -54,8 +45,6 @@ func (q *Queries) GetUserSettings(ctx context.Context, environment, userID strin
 	var s UserSettings
 	err := q.db.QueryRowContext(ctx, query, environment, userID).Scan(
 		&s.Environment, &s.UserID, &s.DefaultWarehouse, &s.DefaultFacility, &s.DefaultDivision, &s.DefaultCompany,
-		&s.ItemsPerPage, &s.Theme, &s.DateFormat, &s.TimeFormat,
-		&s.EnableNotifications, &s.NotificationSound, &s.Preferences,
 		&s.CreatedAt, &s.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -66,19 +55,12 @@ func (q *Queries) GetUserSettings(ctx context.Context, environment, userID strin
 
 // UpsertUserSettingsParams contains parameters for upserting user settings
 type UpsertUserSettingsParams struct {
-	Environment         string
-	UserID              string
-	DefaultWarehouse    sql.NullString
-	DefaultFacility     sql.NullString
-	DefaultDivision     sql.NullString
-	DefaultCompany      sql.NullString
-	ItemsPerPage        int32
-	Theme               string
-	DateFormat          string
-	TimeFormat          string
-	EnableNotifications bool
-	NotificationSound   bool
-	Preferences         json.RawMessage
+	Environment      string
+	UserID           string
+	DefaultWarehouse sql.NullString
+	DefaultFacility  sql.NullString
+	DefaultDivision  sql.NullString
+	DefaultCompany   sql.NullString
 }
 
 // UpsertUserSettings creates or updates user settings for a specific environment
@@ -86,28 +68,18 @@ func (q *Queries) UpsertUserSettings(ctx context.Context, params UpsertUserSetti
 	query := `
 		INSERT INTO user_settings (
 			environment, user_id, default_warehouse, default_facility, default_division, default_company,
-			items_per_page, theme, date_format, time_format,
-			enable_notifications, notification_sound, preferences, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+			updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, NOW())
 		ON CONFLICT (environment, user_id) DO UPDATE SET
 			default_warehouse = EXCLUDED.default_warehouse,
 			default_facility = EXCLUDED.default_facility,
 			default_division = EXCLUDED.default_division,
 			default_company = EXCLUDED.default_company,
-			items_per_page = EXCLUDED.items_per_page,
-			theme = EXCLUDED.theme,
-			date_format = EXCLUDED.date_format,
-			time_format = EXCLUDED.time_format,
-			enable_notifications = EXCLUDED.enable_notifications,
-			notification_sound = EXCLUDED.notification_sound,
-			preferences = EXCLUDED.preferences,
 			updated_at = NOW()
 	`
 	_, err := q.db.ExecContext(ctx, query,
 		params.Environment, params.UserID, params.DefaultWarehouse, params.DefaultFacility,
 		params.DefaultDivision, params.DefaultCompany,
-		params.ItemsPerPage, params.Theme, params.DateFormat, params.TimeFormat,
-		params.EnableNotifications, params.NotificationSound, params.Preferences,
 	)
 	return err
 }

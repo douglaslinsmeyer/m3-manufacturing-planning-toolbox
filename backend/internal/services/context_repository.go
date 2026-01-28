@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/pinggolf/m3-planning-tools/internal/compass"
@@ -725,4 +726,297 @@ func (r *ContextRepository) convertCachedCustomerOrderTypes(cached []cachedCusto
 		}
 	}
 	return result
+}
+
+// RefreshAllContextBulk refreshes all context entities using bulk operations
+// Returns error only for complete failures; partial failures are logged as warnings
+func (r *ContextRepository) RefreshAllContextBulk(ctx context.Context, companies []compass.M3Company) error {
+	if len(companies) == 0 {
+		return nil
+	}
+
+	fmt.Printf("  %s: Building bulk request for %d companies...\n", r.environment, len(companies))
+
+	// Build bulk request payload with all company-scoped operations
+	// For each company: LstDivisions, LstWarehouses, LstOrderType (MO), LstOrderTypes (CO)
+	requests := make([]m3api.BulkRequestItem, 0, len(companies)*4)
+
+	for _, company := range companies {
+		// Divisions: MNS100MI/LstDivisions
+		requests = append(requests, m3api.BulkRequestItem{
+			Program:     "MNS100MI",
+			Transaction: "LstDivisions",
+			Record: map[string]string{
+				"CONO": company.CompanyNumber,
+			},
+		})
+
+		// Warehouses: MMS005MI/LstWarehouses
+		requests = append(requests, m3api.BulkRequestItem{
+			Program:     "MMS005MI",
+			Transaction: "LstWarehouses",
+			Record: map[string]string{
+				"CONO": company.CompanyNumber,
+			},
+		})
+
+		// Manufacturing Order Types: PMS120MI/LstOrderType
+		requests = append(requests, m3api.BulkRequestItem{
+			Program:     "PMS120MI",
+			Transaction: "LstOrderType",
+			Record: map[string]string{
+				"CONO": company.CompanyNumber,
+			},
+		})
+
+		// Customer Order Types: OIS100MI/LstOrderTypes
+		requests = append(requests, m3api.BulkRequestItem{
+			Program:     "OIS100MI",
+			Transaction: "LstOrderTypes",
+			Record: map[string]string{
+				"CONO": company.CompanyNumber,
+			},
+		})
+	}
+
+	fmt.Printf("  %s: Executing bulk API call with %d operations...\n", r.environment, len(requests))
+
+	// Execute single bulk API call
+	bulkResp, err := r.m3Client.ExecuteBulk(ctx, requests)
+	if err != nil {
+		// Check if this is a complete failure or partial success
+		if bulkErr, ok := err.(*m3api.BulkOperationError); ok {
+			if bulkErr.IsPartialSuccess() {
+				fmt.Printf("  %s: Bulk refresh partial success - %d/%d succeeded, %d failed\n",
+					r.environment, bulkErr.SuccessCount, bulkErr.TotalRequests, bulkErr.FailureCount)
+
+				// Log individual failures
+				for _, failed := range bulkErr.FailedItems {
+					fmt.Printf("  WARNING: Failed transaction %s: %s\n",
+						failed.Transaction, getErrorMessage(&failed))
+				}
+
+				// Continue with successful results - don't return error
+			} else {
+				// Complete failure - return error
+				return fmt.Errorf("bulk context refresh failed completely: %w", err)
+			}
+		} else {
+			// Network or other error - return error
+			return fmt.Errorf("bulk context refresh error: %w", err)
+		}
+	}
+
+	// Parse bulk response and group by entity type
+	var (
+		allDivisions       []compass.M3Division
+		allWarehouses      []compass.M3Warehouse
+		allMfgOrderTypes   []compass.M3ManufacturingOrderType
+		allCustOrderTypes  []compass.M3CustomerOrderType
+	)
+
+	for _, result := range bulkResp.Results {
+		if result.ErrorMessage != "" || result.NotProcessed {
+			continue // Skip failed operations
+		}
+
+		// Extract company number from parameters (if present)
+		companyNumber := ""
+		if result.Parameters != nil {
+			if cono, ok := result.Parameters["CONO"]; ok {
+				companyNumber = cono
+			}
+		}
+
+		// Parse records based on transaction type
+		switch result.Transaction {
+		case "LstDivisions":
+			divisions := parseDivisions(result.Records)
+			allDivisions = append(allDivisions, divisions...)
+
+		case "LstWarehouses":
+			warehouses := parseWarehouses(result.Records)
+			allWarehouses = append(allWarehouses, warehouses...)
+
+		case "LstOrderType":
+			orderTypes := parseManufacturingOrderTypes(result.Records, companyNumber)
+			allMfgOrderTypes = append(allMfgOrderTypes, orderTypes...)
+
+		case "LstOrderTypes":
+			orderTypes := parseCustomerOrderTypes(result.Records, companyNumber)
+			allCustOrderTypes = append(allCustOrderTypes, orderTypes...)
+		}
+	}
+
+	// Update cache in single database transaction (atomic)
+	fmt.Printf("  %s: Updating cache with %d divisions, %d warehouses, %d mfg order types, %d cust order types...\n",
+		r.environment, len(allDivisions), len(allWarehouses), len(allMfgOrderTypes), len(allCustOrderTypes))
+
+	// Cache all entities
+	if len(allDivisions) > 0 {
+		if err := r.cacheDivisions(ctx, allDivisions); err != nil {
+			fmt.Printf("  WARNING: Failed to cache divisions: %v\n", err)
+		}
+	}
+
+	if len(allWarehouses) > 0 {
+		if err := r.cacheWarehouses(ctx, allWarehouses); err != nil {
+			fmt.Printf("  WARNING: Failed to cache warehouses: %v\n", err)
+		}
+	}
+
+	if len(allMfgOrderTypes) > 0 {
+		if err := r.cacheManufacturingOrderTypes(ctx, allMfgOrderTypes); err != nil {
+			fmt.Printf("  WARNING: Failed to cache manufacturing order types: %v\n", err)
+		}
+	}
+
+	if len(allCustOrderTypes) > 0 {
+		if err := r.cacheCustomerOrderTypes(ctx, allCustOrderTypes); err != nil {
+			fmt.Printf("  WARNING: Failed to cache customer order types: %v\n", err)
+		}
+	}
+
+	return nil
+}
+
+// Helper functions to parse bulk response records
+
+func parseDivisions(records []map[string]interface{}) []compass.M3Division {
+	divisions := make([]compass.M3Division, 0, len(records))
+	for _, record := range records {
+		division := compass.M3Division{}
+
+		if val, ok := record["CONO"].(string); ok {
+			division.CompanyNumber = strings.TrimSpace(val)
+		}
+		if val, ok := record["DIVI"].(string); ok {
+			division.Division = strings.TrimSpace(val)
+		}
+		if val, ok := record["TX15"].(string); ok {
+			division.DivisionName = strings.TrimSpace(val)
+		}
+		if val, ok := record["FACI"].(string); ok {
+			division.Facility = strings.TrimSpace(val)
+		}
+		if val, ok := record["WHLO"].(string); ok {
+			division.Warehouse = strings.TrimSpace(val)
+		}
+
+		// Skip system divisions and empty divisions
+		if division.Division != "" && division.Division != "991" && division.Division != "992" {
+			divisions = append(divisions, division)
+		}
+	}
+	return divisions
+}
+
+func parseWarehouses(records []map[string]interface{}) []compass.M3Warehouse {
+	warehouses := make([]compass.M3Warehouse, 0, len(records))
+	for _, record := range records {
+		warehouse := compass.M3Warehouse{}
+
+		if val, ok := record["CONO"].(string); ok {
+			warehouse.CompanyNumber = strings.TrimSpace(val)
+		}
+		if val, ok := record["WHLO"].(string); ok {
+			warehouse.Warehouse = strings.TrimSpace(val)
+		}
+		if val, ok := record["WHNM"].(string); ok {
+			warehouse.WarehouseName = strings.TrimSpace(val)
+		}
+		if val, ok := record["DIVI"].(string); ok {
+			warehouse.Division = strings.TrimSpace(val)
+		}
+		if val, ok := record["FACI"].(string); ok {
+			warehouse.Facility = strings.TrimSpace(val)
+		}
+
+		// Skip empty warehouses
+		if warehouse.Warehouse != "" {
+			warehouses = append(warehouses, warehouse)
+		}
+	}
+	return warehouses
+}
+
+func parseManufacturingOrderTypes(records []map[string]interface{}, fallbackCompanyNumber string) []compass.M3ManufacturingOrderType {
+	orderTypes := make([]compass.M3ManufacturingOrderType, 0, len(records))
+	for _, record := range records {
+		orderType := compass.M3ManufacturingOrderType{}
+
+		// Get company number from record (PMS120MI includes CONO in response)
+		if val, ok := record["CONO"].(string); ok {
+			orderType.CompanyNumber = strings.TrimSpace(val)
+		} else {
+			// Fallback to parameter if not in record
+			orderType.CompanyNumber = fallbackCompanyNumber
+		}
+
+		// PMS120MI uses ORTY field
+		if val, ok := record["ORTY"].(string); ok {
+			orderType.OrderType = strings.TrimSpace(val)
+		}
+		if val, ok := record["TX40"].(string); ok {
+			orderType.OrderTypeDescription = strings.TrimSpace(val)
+		}
+		if val, ok := record["LNCD"].(string); ok {
+			orderType.LanguageCode = strings.TrimSpace(val)
+		} else {
+			orderType.LanguageCode = "GB" // Default language
+		}
+
+		// Skip empty order types
+		if orderType.OrderType != "" && orderType.CompanyNumber != "" {
+			orderTypes = append(orderTypes, orderType)
+		}
+	}
+	return orderTypes
+}
+
+func parseCustomerOrderTypes(records []map[string]interface{}, fallbackCompanyNumber string) []compass.M3CustomerOrderType {
+	orderTypes := make([]compass.M3CustomerOrderType, 0, len(records))
+	for _, record := range records {
+		orderType := compass.M3CustomerOrderType{}
+
+		// Get company number from record if present, otherwise use fallback
+		if val, ok := record["CONO"].(string); ok {
+			orderType.CompanyNumber = strings.TrimSpace(val)
+		} else {
+			// Fallback to parameter if not in record (OIS100MI doesn't return CONO)
+			orderType.CompanyNumber = fallbackCompanyNumber
+		}
+
+		// OIS100MI uses ORTP field (not ORTY)
+		if val, ok := record["ORTP"].(string); ok {
+			orderType.OrderType = strings.TrimSpace(val)
+		}
+		if val, ok := record["TX40"].(string); ok {
+			orderType.OrderTypeDescription = strings.TrimSpace(val)
+		}
+		if val, ok := record["LNCD"].(string); ok {
+			orderType.LanguageCode = strings.TrimSpace(val)
+		} else {
+			orderType.LanguageCode = "GB" // Default language
+		}
+
+		// Skip empty order types
+		if orderType.OrderType != "" && orderType.CompanyNumber != "" {
+			orderTypes = append(orderTypes, orderType)
+		}
+	}
+	return orderTypes
+}
+
+func getErrorMessage(result *m3api.BulkResultItem) string {
+	if result == nil {
+		return "unknown error"
+	}
+	if result.ErrorMessage != "" {
+		return result.ErrorMessage
+	}
+	if result.NotProcessed {
+		return "transaction not processed"
+	}
+	return "unknown error"
 }

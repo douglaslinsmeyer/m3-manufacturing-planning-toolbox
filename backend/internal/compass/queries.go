@@ -455,6 +455,9 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 		// Customer References (ALL)
 		"CUNO", "CUOR", "CUPO", "CUSX",
 
+		// Enrichment: Customer Name (from OCUSMA)
+		"customer_name",
+
 		// Product/Model (ALL)
 		"PRNO", "HDPR", "POPN", "ALWT", "ALWQ",
 
@@ -469,6 +472,18 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 
 		// Joint Delivery
 		"JDCD",
+
+		// Delivery Number (from MHDISL)
+		"DLIX",
+
+		// Order Type (from OOHEAD)
+		"ORTP",
+
+		// Enrichment: CO Type Description (from OOTYPE)
+		"co_type_description",
+
+		// Enrichment: Delivery Method (from OOHEAD)
+		"delivery_method",
 
 		// Attributes (ATV1-ATV0)
 		"ATV1", "ATV2", "ATV3", "ATV4", "ATV5",
@@ -494,16 +509,50 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 		"timestamp", "deleted",
 	}
 
+	// Build field list with table aliases
+	var fieldList []string
+	for _, field := range fields {
+		// Special handling for fields from joined tables
+		if field == "DLIX" {
+			fieldList = append(fieldList, "dl.DLIX")
+		} else if field == "ORTP" {
+			fieldList = append(fieldList, "oh.ORTP")
+		} else if field == "customer_name" {
+			fieldList = append(fieldList, "cu.CUNM as customer_name")
+		} else if field == "co_type_description" {
+			fieldList = append(fieldList, "ootype.TX40 as co_type_description")
+		} else if field == "delivery_method" {
+			fieldList = append(fieldList, "oh.MODL as delivery_method")
+		} else {
+			// All other fields come from OOLINE with ol. prefix
+			fieldList = append(fieldList, "ol."+field)
+		}
+	}
+
 	query := fmt.Sprintf(`
 SELECT %s
-FROM OOLINE
-WHERE deleted = 'false'
-  AND ORST >= '20'
-  AND ORST < '30'
-  AND CONO = '%s'
-  AND FACI = '%s'
-ORDER BY ORNO, PONR, POSX
-`, strings.Join(fields, ", "), qb.company, qb.facility)
+FROM OOLINE ol
+LEFT JOIN MHDISL dl
+  ON ol.ORNO = dl.RIDN
+  AND ol.PONR = dl.RIDL
+  AND ol.POSX = dl.RIDX
+  AND dl.deleted = 'false'
+LEFT JOIN OOHEAD oh
+  ON ol.ORNO = oh.ORNO
+  AND oh.deleted = 'false'
+LEFT JOIN OCUSMA cu
+  ON ol.CUNO = cu.CUNO
+  AND cu.deleted = 'false'
+LEFT JOIN OOTYPE ootype
+  ON oh.ORTP = ootype.ORTP
+  AND ootype.deleted = 'false'
+WHERE ol.deleted = 'false'
+  AND ol.ORST >= '20'
+  AND ol.ORST < '30'
+  AND ol.CONO = '%s'
+  AND ol.FACI = '%s'
+ORDER BY ol.ORNO, ol.PONR, ol.POSX
+`, strings.Join(fieldList, ", "), qb.company, qb.facility)
 
 	return strings.TrimSpace(query)
 }

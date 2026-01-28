@@ -35,7 +35,7 @@ LIMIT 5
 `
 
 	// Execute query
-	results, _, err := compassClient.ExecuteQueryWithPagination(r.Context(), testQuery, 5)
+	results, _, err := compassClient.ExecuteQueryWithPagination(r.Context(), testQuery, 5, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

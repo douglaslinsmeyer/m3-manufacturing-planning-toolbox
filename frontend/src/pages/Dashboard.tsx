@@ -73,7 +73,7 @@ const stats = [
   { name: 'Current Facility', key: 'currentFacility', href: '#', icon: BuildingIcon, color: 'info' },
   { name: 'Production Orders', key: 'totalProductionOrders', href: '#', icon: CubeIcon, color: 'primary' },
   { name: 'CO Lines', key: 'totalCustomerOrderLines', href: '#', icon: ShoppingCartIcon, color: 'success' },
-  { name: 'Inconsistencies', key: 'inconsistenciesCount', href: '/inconsistencies', icon: ExclamationTriangleIcon, color: 'warning' },
+  { name: 'Issues', key: 'issuesCount', href: '/issues', icon: ExclamationTriangleIcon, color: 'warning' },
 ];
 
 const Dashboard: React.FC = () => {
@@ -209,8 +209,8 @@ const Dashboard: React.FC = () => {
       return effectiveContext?.facility || '---';
     }
 
-    // Use real count from issue summary for inconsistencies
-    if (key === 'inconsistenciesCount' && issueSummary) {
+    // Use real count from issue summary for issues
+    if (key === 'issuesCount' && issueSummary) {
       return issueSummary.total;
     }
 
@@ -488,7 +488,7 @@ const Dashboard: React.FC = () => {
           {stats.map((stat) => {
             const colors = getColorClasses(stat.color);
             const value = getStatValue(stat.key);
-            const isWarning = stat.key === 'inconsistenciesCount' && typeof value === 'number' && value > 0;
+            const isWarning = stat.key === 'issuesCount' && typeof value === 'number' && value > 0;
 
             return (
               <Link
@@ -657,11 +657,11 @@ const Dashboard: React.FC = () => {
             <h2 className="text-base font-semibold text-slate-900 mb-3">Quick Actions</h2>
             <div className="grid grid-cols-1 gap-2">
               <Link
-                to="/inconsistencies"
+                to="/issues"
                 className="flex items-center gap-2 rounded-md border border-slate-200 p-2.5 transition-colors hover:bg-slate-50 no-underline"
               >
                 <ExclamationTriangleIcon className="h-4 w-4 text-slate-400" />
-                <span className="text-sm font-medium text-slate-700">Review Inconsistencies</span>
+                <span className="text-sm font-medium text-slate-700">Review Issues</span>
               </Link>
             </div>
           </div>

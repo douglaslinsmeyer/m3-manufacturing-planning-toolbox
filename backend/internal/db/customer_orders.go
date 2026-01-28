@@ -6,6 +6,10 @@ import (
 	"fmt"
 )
 
+// InsertProgressCallback is called during batch insertion to report progress
+// Parameters: inserted, total
+type InsertProgressCallback func(inserted, total int)
+
 // CustomerOrderLine represents a customer order line - all M3 fields as strings
 type CustomerOrderLine struct {
 	ID          int64
@@ -48,6 +52,9 @@ type CustomerOrderLine struct {
 	// M3 Customer References
 	CUNO, CUOR, CUPO, CUSX string
 
+	// Enrichment: Customer Name (from OCUSMA)
+	CustomerName string
+
 	// M3 Product/Model
 	PRNO, HDPR, POPN, ALWT, ALWQ string
 
@@ -62,6 +69,18 @@ type CustomerOrderLine struct {
 
 	// M3 Joint Delivery
 	JDCD string
+
+	// M3 Delivery Number
+	DLIX string
+
+	// M3 Order Type
+	ORTP string
+
+	// Enrichment: CO Type Description (from OOTYPE)
+	COTypeDescription string
+
+	// Enrichment: Delivery Method (from OOHEAD)
+	DeliveryMethod string
 
 	// M3 Attributes (ATV1-ATV0)
 	ATV1, ATV2, ATV3, ATV4, ATV5 string
@@ -97,7 +116,8 @@ type CustomerOrderLine struct {
 // Note: InsertCustomerOrderLine removed - use BatchInsertCustomerOrderLines instead
 
 // BatchInsertCustomerOrderLines inserts multiple CO lines with all M3 fields as strings
-func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*CustomerOrderLine) error {
+// progressCallback is optional (can be nil) and will be called periodically during insertion
+func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*CustomerOrderLine, progressCallback InsertProgressCallback) error {
 	if len(lines) == 0 {
 		return nil
 	}
@@ -124,11 +144,15 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			dia1, dia2, dia3, dia4, dia5, dia6,
 			rorc, rorn, rorl, rorx,
 			cuno, cuor, cupo, cusx,
+			customer_name,
 			prno, hdpr, popn, alwt, alwq,
 			adid, rout, rodn, dsdt, dshm, modl, tedl, tel2,
 			tepa, pact, cupa,
 			e0pa, dsgp, pusn, putp,
 			jdcd,
+			dlix, ortp,
+			co_type_description,
+			delivery_method,
 			atv1, atv2, atv3, atv4, atv5, atv6, atv7, atv8, atv9, atv0,
 			uca1, uca2, uca3, uca4, uca5, uca6, uca7, uca8, uca9, uca0,
 			udn1, udn2, udn3, udn4, udn5, udn6,
@@ -154,20 +178,24 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			$45, $46, $47, $48, $49, $50,
 			$51, $52, $53, $54,
 			$55, $56, $57, $58,
-			$59, $60, $61, $62, $63,
-			$64, $65, $66, $67, $68, $69, $70, $71,
-			$72, $73, $74,
-			$75, $76, $77, $78,
-			$79,
-			$80, $81, $82, $83, $84, $85, $86, $87, $88, $89,
-			$90, $91, $92, $93, $94, $95, $96, $97, $98, $99,
-			$100, $101, $102, $103, $104, $105,
-			$106, $107, $108,
-			$109,
-			$110, $111, $112, $113,
-			$114, $115,
-			$116, $117, $118, $119, $120, $121,
-			$122,
+			$59,
+			$60, $61, $62, $63, $64,
+			$65, $66, $67, $68, $69, $70, $71, $72,
+			$73, $74, $75,
+			$76, $77, $78, $79,
+			$80,
+			$81, $82,
+			$83,
+			$84,
+			$85, $86, $87, $88, $89, $90, $91, $92, $93, $94,
+			$95, $96, $97, $98, $99, $100, $101, $102, $103, $104,
+			$105, $106, $107, $108, $109, $110,
+			$111, $112, $113,
+			$114,
+			$115, $116, $117, $118,
+			$119, $120,
+			$121, $122, $123, $124, $125, $126,
+			$127,
 			NOW()
 		)
 		ON CONFLICT (environment, orno, ponr, posx)
@@ -184,6 +212,11 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			codt = EXCLUDED.codt,
 			pldt = EXCLUDED.pldt,
 			jdcd = EXCLUDED.jdcd,
+			dlix = EXCLUDED.dlix,
+			ortp = EXCLUDED.ortp,
+			customer_name = EXCLUDED.customer_name,
+			co_type_description = EXCLUDED.co_type_description,
+			delivery_method = EXCLUDED.delivery_method,
 			lmdt = EXCLUDED.lmdt,
 			lmts = EXCLUDED.lmts,
 			m3_timestamp = EXCLUDED.m3_timestamp,
@@ -195,7 +228,8 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 	}
 	defer stmt.Close()
 
-	for _, line := range lines {
+	const insertProgressInterval = 10000
+	for i, line := range lines {
 		_, err = stmt.ExecContext(ctx,
 			line.Environment,
 			line.CONO, line.DIVI, line.ORNO, line.PONR, line.POSX,
@@ -211,11 +245,15 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			line.DIA1, line.DIA2, line.DIA3, line.DIA4, line.DIA5, line.DIA6,
 			line.RORC, line.RORN, line.RORL, line.RORX,
 			line.CUNO, line.CUOR, line.CUPO, line.CUSX,
+			line.CustomerName,
 			line.PRNO, line.HDPR, line.POPN, line.ALWT, line.ALWQ,
 			line.ADID, line.ROUT, line.RODN, line.DSDT, line.DSHM, line.MODL, line.TEDL, line.TEL2,
 			line.TEPA, line.PACT, line.CUPA,
 			line.E0PA, line.DSGP, line.PUSN, line.PUTP,
 			line.JDCD,
+			line.DLIX, line.ORTP,
+			line.COTypeDescription,
+			line.DeliveryMethod,
 			line.ATV1, line.ATV2, line.ATV3, line.ATV4, line.ATV5, line.ATV6, line.ATV7, line.ATV8, line.ATV9, line.ATV0,
 			line.UCA1, line.UCA2, line.UCA3, line.UCA4, line.UCA5, line.UCA6, line.UCA7, line.UCA8, line.UCA9, line.UCA0,
 			line.UDN1, line.UDN2, line.UDN3, line.UDN4, line.UDN5, line.UDN6,
@@ -228,6 +266,11 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert line %s-%s: %w", line.ORNO, line.PONR, err)
+		}
+
+		// Report insertion progress every N records
+		if progressCallback != nil && ((i+1)%insertProgressInterval == 0 || (i+1) == len(lines)) {
+			progressCallback(i+1, len(lines))
 		}
 	}
 

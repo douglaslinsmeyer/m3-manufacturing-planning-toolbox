@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -174,6 +175,22 @@ func HandleTriggerDetection(natsManager *queue.Manager, database *db.Queries) ht
 
 			log.Printf("Published detector job: %s to subject: %s", detectorName, subject)
 		}
+
+		// Also trigger anomaly detection (runs synchronously in background)
+		go func() {
+			log.Printf("Running anomaly detection for manual trigger job %s", detectionJobID)
+			detectorConfigService := services.NewDetectorConfigService(database)
+			detectionService := services.NewDetectionService(database, detectorConfigService)
+
+			// Wait a moment for issue detectors to complete
+			time.Sleep(5 * time.Second)
+
+			if err := detectionService.RunAnomalyDetectors(context.Background(), latestRefreshJob.ID, req.Environment, company, facility); err != nil {
+				log.Printf("Anomaly detection failed for manual trigger: %v", err)
+			} else {
+				log.Printf("Anomaly detection completed for manual trigger job %s", detectionJobID)
+			}
+		}()
 
 		// Return success response
 		response := TriggerDetectionResponse{

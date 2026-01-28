@@ -1,4 +1,5 @@
 import React from 'react';
+import { dateDiffDays, getVarianceBadgeColor } from '../utils/m3DateUtils';
 
 interface JointDeliveryOrder {
   number: string;
@@ -10,6 +11,11 @@ interface JointDeliveryOrder {
   quantity?: number;
   confirmed_delivery_date?: string;  // YYYYMMDD
   requested_delivery_date?: string;  // YYYYMMDD
+  customer_number?: string;
+  customer_name?: string;
+  co_type_number?: string;
+  co_type_description?: string;
+  delivery_method?: string;
 }
 
 function ArrowsRightLeftIcon({ className }: { className?: string }) {
@@ -24,8 +30,10 @@ interface JointDeliveryDetailModalProps {
   isOpen: boolean;
   onClose: () => void;
   onAlignEarliest?: () => void;
+  onAlignLatest?: () => void;
   issueData: {
-    jdcd: string;
+    jdcd?: string;  // For joint_delivery_date_mismatch
+    dlix?: string;  // For dlix_date_mismatch
     dates: string[];  // YYYYMMDD format
     min_date: number;
     max_date: number;
@@ -36,9 +44,15 @@ interface JointDeliveryDetailModalProps {
     item_number?: string;
     warehouse: string;
     company: string;
+    customer_name?: string;
+    customer_number?: string;
+    co_type_number?: string;
+    co_type_description?: string;
+    delivery_method?: string;
   };
   coNumber?: string;
   currentOrderNumber?: string;  // Highlight this order in the table
+  issueType?: 'joint_delivery_date_mismatch' | 'dlix_date_mismatch';
 }
 
 // Format M3 date (YYYYMMDD) to readable format
@@ -53,34 +67,25 @@ function formatDate(dateInt: number | string): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-// Calculate days between two M3 dates
-function dateDiffDays(date1: number | string, date2: number | string): number {
-  const str1 = date1.toString();
-  const str2 = date2.toString();
-  const d1 = new Date(
-    parseInt(str1.substring(0, 4)),
-    parseInt(str1.substring(4, 6)) - 1,
-    parseInt(str1.substring(6, 8))
-  );
-  const d2 = new Date(
-    parseInt(str2.substring(0, 4)),
-    parseInt(str2.substring(4, 6)) - 1,
-    parseInt(str2.substring(6, 8))
-  );
-  return Math.abs(Math.floor((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24)));
-}
-
 export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> = ({
   isOpen,
   onClose,
   onAlignEarliest,
+  onAlignLatest,
   issueData,
   coNumber,
   currentOrderNumber,
+  issueType,
 }) => {
   if (!isOpen) return null;
 
   const dateVarianceDays = dateDiffDays(issueData.min_date, issueData.max_date);
+
+  // Determine title and grouping key based on issue type
+  const isDlixIssue = issueType === 'dlix_date_mismatch';
+  const title = isDlixIssue ? 'DLIX Group Details' : 'Joint Delivery Group Details';
+  const groupingLabel = isDlixIssue ? 'DLIX' : 'JDCD';
+  const groupingValue = isDlixIssue ? issueData.dlix : issueData.jdcd;
 
   // Sort orders by date (earliest first)
   const sortedOrders = [...issueData.orders].sort((a, b) => {
@@ -97,12 +102,6 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
     new Set(issueData.orders.map(o => o.requested_delivery_date).filter(d => d && d !== '0'))
   );
 
-  // Determine variance badge color
-  const getVarianceBadgeColor = (days: number) => {
-    if (days > 7) return 'bg-red-100 text-red-800 ring-red-300';
-    if (days >= 3) return 'bg-orange-100 text-orange-800 ring-orange-300';
-    return 'bg-yellow-100 text-yellow-800 ring-yellow-300';
-  };
 
   // Handle escape key
   React.useEffect(() => {
@@ -130,10 +129,10 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
           <div className="bg-gradient-to-r from-blue-600 to-blue-700 px-6 py-4 flex items-center justify-between">
             <div>
               <h3 className="text-lg font-semibold text-white">
-                Joint Delivery Group Details
+                {title}
               </h3>
               <p className="text-sm text-blue-100 mt-1">
-                JDCD: <span className="font-mono font-medium">{issueData.jdcd}</span>
+                {groupingLabel}: <span className="font-mono font-medium">{groupingValue}</span>
                 {coNumber && <span className="ml-3">• CO: {coNumber}</span>}
               </p>
             </div>
@@ -151,6 +150,54 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
           <div className="px-6 py-5">
             {/* Summary Card */}
             <div className="bg-slate-50 rounded-lg p-4 mb-5 border border-slate-200">
+              {/* Customer and Order Information */}
+              {(issueData.customer_name || issueData.co_type_description || issueData.delivery_method) && (
+                <div className="mb-4 pb-4 border-b border-slate-200">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {issueData.customer_name && (
+                      <div>
+                        <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
+                          Customer
+                        </div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {issueData.customer_name}
+                          {issueData.customer_number && (
+                            <span className="text-xs text-slate-500 font-normal ml-2">
+                              ({issueData.customer_number})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {issueData.co_type_description && (
+                      <div>
+                        <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
+                          Order Type
+                        </div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {issueData.co_type_description}
+                          {issueData.co_type_number && (
+                            <span className="text-xs text-slate-500 font-normal ml-2">
+                              ({issueData.co_type_number})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    {issueData.delivery_method && (
+                      <div>
+                        <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
+                          Delivery Method
+                        </div>
+                        <div className="text-sm font-semibold text-slate-900">
+                          {issueData.delivery_method}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
@@ -167,7 +214,7 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
                     Variance
                   </div>
                   <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-sm font-semibold ring-1 ${getVarianceBadgeColor(dateVarianceDays)}`}>
-                    {dateVarianceDays} {dateVarianceDays === 1 ? 'day' : 'days'}
+                    {dateVarianceDays.toLocaleString()} {dateVarianceDays === 1 ? 'day' : 'days'}
                   </span>
                 </div>
                 <div>
@@ -175,7 +222,7 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
                     Production Orders
                   </div>
                   <div className="text-sm font-semibold text-slate-900">
-                    {issueData.num_production_orders} {issueData.num_production_orders === 1 ? 'order' : 'orders'}
+                    {issueData.num_production_orders.toLocaleString()} {issueData.num_production_orders === 1 ? 'order' : 'orders'}
                   </div>
                 </div>
               </div>
@@ -211,7 +258,7 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
               {issueData.tolerance_days !== undefined && (
                 <div className="mt-3 pt-3 border-t border-slate-200">
                   <span className="text-xs text-slate-600">
-                    Tolerance: {issueData.tolerance_days} {issueData.tolerance_days === 1 ? 'day' : 'days'}
+                    Tolerance: {issueData.tolerance_days.toLocaleString()} {issueData.tolerance_days === 1 ? 'day' : 'days'}
                     {issueData.tolerance_days === 0 && ' (exact match required)'}
                   </span>
                 </div>
@@ -336,8 +383,8 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                   </svg>
                   <p>
-                    All production orders in this joint delivery group (JDCD {issueData.jdcd}) should ideally have the same planned start date
-                    to ensure synchronized delivery. Current variance: <strong>{dateVarianceDays} days</strong>.
+                    All production orders in this {isDlixIssue ? 'delivery line index' : 'joint delivery'} group ({groupingLabel} {groupingValue}) should ideally have the same planned start date
+                    to ensure synchronized delivery. Current variance: <strong>{dateVarianceDays.toLocaleString()} days</strong>.
                   </p>
                 </div>
               </div>
@@ -346,17 +393,30 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
 
           {/* Footer */}
           <div className="bg-slate-50 px-6 py-4 flex justify-between items-center">
-            {/* Left: Align button */}
-            {onAlignEarliest && (
-              <button
-                type="button"
-                onClick={onAlignEarliest}
-                className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-500 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-              >
-                <ArrowsRightLeftIcon className="h-4 w-4" />
-                Align to Earliest Date
-              </button>
-            )}
+            {/* Left: Align buttons */}
+            <div className="flex items-center gap-2">
+              {onAlignEarliest && (
+                <button
+                  type="button"
+                  onClick={onAlignEarliest}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-500 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+                >
+                  <ArrowsRightLeftIcon className="h-4 w-4" />
+                  Align to Earliest Date
+                </button>
+              )}
+
+              {onAlignLatest && (
+                <button
+                  type="button"
+                  onClick={onAlignLatest}
+                  className="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-500 transition-colors shadow-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2"
+                >
+                  <ArrowsRightLeftIcon className="h-4 w-4" />
+                  Align to Latest Date
+                </button>
+              )}
+            </div>
 
             {/* Right: Close button */}
             <button

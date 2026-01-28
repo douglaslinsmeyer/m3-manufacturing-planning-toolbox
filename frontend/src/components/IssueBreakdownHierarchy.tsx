@@ -113,7 +113,7 @@ export const IssueBreakdownHierarchy: React.FC<Props> = ({ summary }) => {
                             <td key={detector} className="px-4 py-3 text-center">
                               {count > 0 ? (
                                 <Link
-                                  to={`/inconsistencies?warehouse=${warehouse}&detector=${detector}`}
+                                  to={`/issues?warehouse=${warehouse}&detector=${detector}`}
                                   className={`inline-block px-3 py-1 rounded-full text-sm font-medium transition-colors
                                              ${count > 10 ? 'bg-red-100 text-red-800 hover:bg-red-200' :
                                                count > 5 ? 'bg-orange-100 text-orange-800 hover:bg-orange-200' :

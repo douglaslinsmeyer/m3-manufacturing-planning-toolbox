@@ -61,11 +61,13 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 	// Initialize user profile service (uses raw DB for JSONB operations)
 	userProfileService := services.NewUserProfileService(database)
 
-	// Link user profile service to context service (for cache-first user defaults loading)
-	contextService.SetUserProfileService(userProfileService)
-
 	// Initialize settings service
 	settingsService := services.NewSettingsService(queries, auditService)
+
+	// Link services to context service for layered defaults loading
+	// Priority: user_settings (custom) → user_profiles (M3 cache) → M3 API
+	contextService.SetUserProfileService(userProfileService)
+	contextService.SetSettingsService(settingsService)
 
 	// Initialize detector config service
 	detectorConfigService := services.NewDetectorConfigService(queries)
@@ -231,6 +233,12 @@ func (s *Server) setupRoutes() {
 	contextRouter.HandleFunc("/warehouses", s.handleListWarehouses).Methods("GET")
 	contextRouter.HandleFunc("/manufacturing-order-types", s.handleListManufacturingOrderTypes).Methods("GET")
 	contextRouter.HandleFunc("/customer-order-types", s.handleListCustomerOrderTypes).Methods("GET")
+	contextRouter.HandleFunc("/cache-status", s.handleGetCacheStatus).Methods("GET")
+
+	// Context cache refresh routes (admin-only)
+	contextRefreshRouter := protected.PathPrefix("/context/refresh").Subrouter()
+	contextRefreshRouter.Use(s.adminMiddleware)
+	contextRefreshRouter.HandleFunc("/all", s.handleRefreshAllContext).Methods("POST")
 
 	// M3 Configuration (for deep linking)
 	protected.HandleFunc("/m3-config", s.handleGetM3Config).Methods("GET")
@@ -258,7 +266,6 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/planned-orders/{id}", s.handleGetPlannedOrder).Methods("GET")
 
 	// Analysis endpoints
-	protected.HandleFunc("/analysis/inconsistencies", s.handleListInconsistencies).Methods("GET")
 	protected.HandleFunc("/analysis/timeline", s.handleGetTimeline).Methods("GET")
 
 	// Issue detection endpoints
@@ -269,8 +276,23 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/issues/{id}/unignore", s.handleUnignoreIssue).Methods("POST")
 	protected.HandleFunc("/issues/{id}/delete-mop", s.handleDeletePlannedMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/delete-mo", s.handleDeleteMO).Methods("POST")
+
+	// Anomaly detection endpoints
+	protected.HandleFunc("/anomalies", s.handleListAnomalies).Methods("GET")
+	protected.HandleFunc("/anomalies/summary", s.handleGetAnomalySummary).Methods("GET")
+	protected.HandleFunc("/anomalies/{id}/acknowledge", s.handleAcknowledgeAnomaly).Methods("POST")
+	protected.HandleFunc("/anomalies/{id}/resolve", s.handleResolveAnomaly).Methods("POST")
 	protected.HandleFunc("/issues/{id}/close-mo", s.handleCloseMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/align-earliest", s.handleAlignEarliestMOs).Methods("POST")
+	protected.HandleFunc("/issues/{id}/align-latest", s.handleAlignLatestMOs).Methods("POST")
+
+	// Bulk issue operations endpoints
+	protected.HandleFunc("/issues/bulk-delete", s.handleBulkDelete).Methods("POST")
+	protected.HandleFunc("/issues/bulk-close", s.handleBulkClose).Methods("POST")
+	protected.HandleFunc("/issues/bulk-reschedule", s.handleBulkReschedule).Methods("POST")
+
+	// Audit log endpoints
+	protected.HandleFunc("/audit-logs", s.handleListAuditLogs).Methods("GET")
 
 	// Settings routes (user settings - authenticated users only)
 	protected.HandleFunc("/settings/user", s.handleGetUserSettings).Methods("GET")

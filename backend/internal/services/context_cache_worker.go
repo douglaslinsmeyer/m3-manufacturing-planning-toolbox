@@ -101,59 +101,27 @@ func (w *ContextCacheWorker) refreshEnvironmentCache(ctx context.Context, enviro
 
 	fmt.Printf("Refreshing %s context cache...\n", environment)
 
-	// Refresh companies
+	// 1. Refresh companies (single call - only ~5-10 companies)
 	companies, err := repo.GetCompanies(ctx, true) // forceRefresh=true
 	if err != nil {
 		return fmt.Errorf("failed to refresh companies for %s: %w", environment, err)
 	}
 	fmt.Printf("  %s: Cached %d companies\n", environment, len(companies))
 
-	// Refresh facilities (not tied to a specific company)
+	// 2. Refresh facilities (single call - not company-scoped)
 	facilities, err := repo.GetFacilities(ctx, true)
 	if err != nil {
 		return fmt.Errorf("failed to refresh facilities for %s: %w", environment, err)
 	}
 	fmt.Printf("  %s: Cached %d facilities\n", environment, len(facilities))
 
-	// Refresh divisions, warehouses, and order types for each company
-	var divCount, whCount, motCount, cotCount int
-	for _, company := range companies {
-		// Refresh divisions
-		divisions, err := repo.GetDivisions(ctx, company.CompanyNumber, true)
-		if err != nil {
-			fmt.Printf("  Warning: Failed to refresh divisions for company %s in %s: %v\n", company.CompanyNumber, environment, err)
-			continue
-		}
-		divCount += len(divisions)
-
-		// Refresh warehouses
-		warehouses, err := repo.getWarehousesForCompany(ctx, company.CompanyNumber, true)
-		if err != nil {
-			fmt.Printf("  Warning: Failed to refresh warehouses for company %s in %s: %v\n", company.CompanyNumber, environment, err)
-			continue
-		}
-		whCount += len(warehouses)
-
-		// Refresh manufacturing order types
-		mfgOrderTypes, err := repo.GetManufacturingOrderTypes(ctx, company.CompanyNumber, true)
-		if err != nil {
-			fmt.Printf("  Warning: Failed to refresh manufacturing order types for company %s in %s: %v\n", company.CompanyNumber, environment, err)
-			// Don't continue - try customer order types too
-		} else {
-			motCount += len(mfgOrderTypes)
-		}
-
-		// Refresh customer order types
-		coOrderTypes, err := repo.GetCustomerOrderTypes(ctx, company.CompanyNumber, true)
-		if err != nil {
-			fmt.Printf("  Warning: Failed to refresh customer order types for company %s in %s: %v\n", company.CompanyNumber, environment, err)
-			// Don't continue - still did other refreshes
-		} else {
-			cotCount += len(coOrderTypes)
-		}
+	// 3. NEW: Single bulk call for all company-scoped entities
+	err = repo.RefreshAllContextBulk(ctx, companies)
+	if err != nil {
+		// Log error - RefreshAllContextBulk handles partial failures internally
+		return fmt.Errorf("bulk context refresh failed for %s: %w", environment, err)
 	}
 
-	fmt.Printf("  %s: Cached %d divisions, %d warehouses, %d manufacturing order types, and %d customer order types\n", environment, divCount, whCount, motCount, cotCount)
 	return nil
 }
 

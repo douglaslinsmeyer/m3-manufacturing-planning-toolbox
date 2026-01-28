@@ -47,12 +47,13 @@ type SnapshotRefreshMessage struct {
 
 // PhaseProgress represents the status of a single parallel phase
 type PhaseProgress struct {
-	Phase       string    `json:"phase"`             // "mops", "mos", "cos"
-	Status      string    `json:"status"`            // "pending", "running", "completed", "failed"
-	RecordCount int       `json:"recordCount"`       // Records processed
-	StartTime   time.Time `json:"startTime,omitempty"`
-	EndTime     time.Time `json:"endTime,omitempty"`
-	Error       string    `json:"error,omitempty"`
+	Phase            string    `json:"phase"`                      // "mops", "mos", "cos"
+	Status           string    `json:"status"`                     // "pending", "running", "completed", "failed"
+	CurrentOperation string    `json:"currentOperation,omitempty"` // "Querying...", "Processing...", "Inserting..."
+	RecordCount      int       `json:"recordCount"`                // Records processed
+	StartTime        time.Time `json:"startTime,omitempty"`
+	EndTime          time.Time `json:"endTime,omitempty"`
+	Error            string    `json:"error,omitempty"`
 }
 
 // DetectorProgress represents the status of a single parallel detector
@@ -118,6 +119,15 @@ type BatchCompletionMessage struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// PhaseSubProgressMessage signals intermediate progress within a data type loading
+type PhaseSubProgressMessage struct {
+	JobID            string `json:"jobId"`            // "abc123-mops"
+	ParentJobID      string `json:"parentJobId"`      // "abc123"
+	DataType         string `json:"dataType"`         // "mops", "mos", "cos"
+	CurrentOperation string `json:"currentOperation"` // "Querying...", "Processing...", "Inserting..."
+	RecordCount      int    `json:"recordCount"`      // Running count if available
+}
+
 // DetectorJobMessage represents work for running one detector
 type DetectorJobMessage struct {
 	JobID        string `json:"jobId"`        // "abc123-unlinked"
@@ -173,45 +183,50 @@ func (w *SnapshotWorker) Start() error {
 		return fmt.Errorf("failed to subscribe to PRD refresh: %w", err)
 	}
 
-	// Subscribe to TRN phase work distribution (phase worker)
-	// Subscribe to TRN batch work distribution (parallel data loading)
-	_, err = w.nats.QueueSubscribe(
-		queue.SubjectSnapshotBatchTRN,
-		queue.QueueGroupBatchWorkers,
-		w.handleBatchJob,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to TRN batch jobs: %w", err)
+	// Subscribe to each data type individually for parallel distribution
+	// IMPORTANT: Wildcard subscriptions (snapshot.batch.TRN.>) create a single FIFO queue,
+	// causing sequential processing. Individual subscriptions with the same queue group
+	// enable NATS to distribute messages in parallel across workers.
+	dataTypes := []string{"mops", "mos", "cos"}
+	environments := []string{"TRN", "PRD"}
+
+	for _, env := range environments {
+		for _, dataType := range dataTypes {
+			subject := queue.GetBatchSubject(env, dataType)
+			_, err := w.nats.QueueSubscribe(
+				subject,
+				queue.QueueGroupBatchWorkers,
+				w.handleBatchJob,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to subscribe to %s %s batch jobs: %w", env, dataType, err)
+			}
+		}
+		log.Printf("Subscribed to %d %s data batch queues for parallel processing", len(dataTypes), env)
 	}
 
-	// Subscribe to PRD batch work distribution (batch worker)
-	_, err = w.nats.QueueSubscribe(
-		queue.SubjectSnapshotBatchPRD,
-		queue.QueueGroupBatchWorkers,
-		w.handleBatchJob,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to PRD batch jobs: %w", err)
+	// Subscribe to each detector individually for parallel distribution
+	// IMPORTANT: This list must match detector registration in detection_service.go
+	// When adding new detectors, update this list to enable parallel execution.
+	detectorNames := []string{
+		"unlinked_production_orders",
+		"joint_delivery_date_mismatch",
+		"dlix_date_mismatch",
 	}
 
-	// Subscribe to TRN detector jobs (detector worker)
-	_, err = w.nats.QueueSubscribe(
-		queue.SubjectSnapshotDetectorTRN,
-		queue.QueueGroupBatchWorkers,
-		w.handleDetectorJob,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to TRN detector jobs: %w", err)
-	}
-
-	// Subscribe to PRD detector jobs (detector worker)
-	_, err = w.nats.QueueSubscribe(
-		queue.SubjectSnapshotDetectorPRD,
-		queue.QueueGroupBatchWorkers,
-		w.handleDetectorJob,
-	)
-	if err != nil {
-		return fmt.Errorf("failed to subscribe to PRD detector jobs: %w", err)
+	for _, env := range environments {
+		for _, detectorName := range detectorNames {
+			subject := queue.GetDetectorSubject(env, detectorName)
+			_, err := w.nats.QueueSubscribe(
+				subject,
+				queue.QueueGroupBatchWorkers,
+				w.handleDetectorJob,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to subscribe to %s %s detector: %w", env, detectorName, err)
+			}
+		}
+		log.Printf("Subscribed to %d %s detector queues for parallel processing", len(detectorNames), env)
 	}
 
 	// Subscribe to cancellation requests (all workers should listen)
@@ -458,6 +473,24 @@ func (w *SnapshotWorker) publishError(jobID, errorMsg string) {
 	}
 }
 
+// publishPhaseSubProgress publishes intermediate progress for a data type
+func (w *SnapshotWorker) publishPhaseSubProgress(parentJobID, dataType, operation string, recordCount int) {
+	msg := PhaseSubProgressMessage{
+		JobID:            fmt.Sprintf("%s-%s", parentJobID, dataType),
+		ParentJobID:      parentJobID,
+		DataType:         dataType,
+		CurrentOperation: operation,
+		RecordCount:      recordCount,
+	}
+
+	data, _ := json.Marshal(msg)
+	subject := queue.GetPhaseProgressSubject(parentJobID)
+	if err := w.nats.Publish(subject, data); err != nil {
+		log.Printf("Failed to publish phase sub-progress: %v", err)
+		// Non-fatal, continue
+	}
+}
+
 // ========================================
 // Batch Processing Handlers
 // ========================================
@@ -509,6 +542,22 @@ func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
 	}
 	compassClient := compass.NewClient(envConfig.CompassBaseURL, getToken)
 	snapshotService := services.NewSnapshotService(compassClient, w.db)
+
+	// Set progress callback to publish intermediate updates
+	snapshotService.SetProgressCallback(func(phase string, stepNum, totalSteps int, message string, mopCount, moCount, coCount int) {
+		// Determine current record count based on data type
+		currentCount := 0
+		switch job.DataType {
+		case "mops":
+			currentCount = mopCount
+		case "mos":
+			currentCount = moCount
+		case "cos":
+			currentCount = coCount
+		}
+
+		w.publishPhaseSubProgress(job.ParentJobID, job.DataType, message, currentCount)
+	})
 
 	var recordCount int
 	var fetchErr error
@@ -791,6 +840,50 @@ func (w *SnapshotWorker) waitForDataJobs(req SnapshotRefreshMessage) error {
 	}
 	defer startSub.Unsubscribe()
 
+	// Subscribe to phase sub-progress events (intermediate updates)
+	subProgressSubject := queue.GetPhaseProgressSubject(req.JobID)
+	subProgressSub, err := w.nats.Subscribe(subProgressSubject, func(msg *nats.Msg) {
+		var subProgress PhaseSubProgressMessage
+		if err := json.Unmarshal(msg.Data, &subProgress); err != nil {
+			log.Printf("Failed to parse phase sub-progress: %v", err)
+			return
+		}
+
+		mu.Lock()
+		defer mu.Unlock()
+
+		// Ignore updates after phase completed (race condition protection)
+		if phaseStates[subProgress.DataType].Status == "completed" ||
+			phaseStates[subProgress.DataType].Status == "failed" {
+			return
+		}
+
+		// Update phase state with current operation
+		phaseStates[subProgress.DataType].CurrentOperation = subProgress.CurrentOperation
+		if subProgress.RecordCount > 0 {
+			phaseStates[subProgress.DataType].RecordCount = subProgress.RecordCount
+		}
+
+		log.Printf("Phase %s: %s", subProgress.DataType, subProgress.CurrentOperation)
+
+		// Aggregate and publish progress update
+		parallelPhases := make([]PhaseProgress, 0, 3)
+		for _, phase := range []string{"mops", "mos", "cos"} {
+			parallelPhases = append(parallelPhases, *phaseStates[phase])
+		}
+
+		progress := 25 + (completedJobs * 15)
+		w.publishDetailedProgress(req.JobID, "running", "Loading data",
+			subProgress.CurrentOperation, 2, 4, progress,
+			recordsByType["cos"], recordsByType["mos"], recordsByType["mops"],
+			parallelPhases, nil, 0, 0, completedJobs, 3)
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to phase sub-progress: %w", err)
+	}
+	defer subProgressSub.Unsubscribe()
+
 	// Subscribe to completion events
 	completeSubject := queue.GetBatchCompleteSubject(req.JobID)
 	subscription, err := w.nats.Subscribe(completeSubject, func(msg *nats.Msg) {
@@ -826,6 +919,7 @@ func (w *SnapshotWorker) waitForDataJobs(req SnapshotRefreshMessage) error {
 
 		// Update phase state to completed
 		phaseStates[completion.DataType].Status = "completed"
+		phaseStates[completion.DataType].CurrentOperation = "" // Clear transient operation
 		phaseStates[completion.DataType].RecordCount = completion.RecordCount
 		phaseStates[completion.DataType].EndTime = time.Now()
 
@@ -1275,6 +1369,17 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 				}
 
 				log.Printf("Detection complete: %d total issues found across %d detectors", totalIssues, len(issues))
+
+				// Run anomaly detection after issue detection completes
+				log.Printf("Running anomaly detection for job %s", req.JobID)
+				detectorConfigService := services.NewDetectorConfigService(w.db)
+				detectionService := services.NewDetectionService(w.db, detectorConfigService)
+				if err := detectionService.RunAnomalyDetectors(dbCtx, req.JobID, req.Environment, req.Company, req.Facility); err != nil {
+					log.Printf("Anomaly detection failed: %v", err)
+					// Don't fail the job if anomaly detection fails
+				} else {
+					log.Printf("Anomaly detection completed for job %s", req.JobID)
+				}
 
 				// Mark refresh job complete
 				w.db.CompleteJob(dbCtx, req.JobID)

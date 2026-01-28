@@ -149,6 +149,12 @@ func GetBatchSubject(environment, phase string) string {
 	return fmt.Sprintf("snapshot.batch.%s.%s", environment, phase)
 }
 
+// GetPhaseProgressSubject returns the subject for phase sub-progress updates
+// Example: GetPhaseProgressSubject("abc123") → "snapshot.phase.progress.abc123"
+func GetPhaseProgressSubject(jobID string) string {
+	return fmt.Sprintf("snapshot.phase.progress.%s", jobID)
+}
+
 // GetBatchStartSubject returns the subject for batch start events
 // All batch start notifications for a job go to the same subject
 func GetBatchStartSubject(parentJobID string) string {

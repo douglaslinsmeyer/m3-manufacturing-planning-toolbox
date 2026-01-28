@@ -99,7 +99,7 @@ type PlannedManufacturingOrder struct {
 }
 
 // BatchInsertPlannedOrders inserts multiple MOPs efficiently with all M3 fields
-func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*PlannedManufacturingOrder) error {
+func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*PlannedManufacturingOrder, progressCallback InsertProgressCallback) error {
 	if len(orders) == 0 {
 		return nil
 	}
@@ -204,7 +204,8 @@ func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*Planne
 	}
 	defer stmt.Close()
 
-	for _, mop := range orders {
+	const insertProgressInterval = 10000
+	for i, mop := range orders {
 		_, err = stmt.ExecContext(ctx,
 			mop.Environment,
 			mop.CONO, mop.DIVI, mop.FACI, mop.PLPN, mop.PLPS, mop.PRNO, mop.ITNO,
@@ -226,6 +227,11 @@ func (q *Queries) BatchInsertPlannedOrders(ctx context.Context, orders []*Planne
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert MOP %s: %w", mop.PLPN, err)
+		}
+
+		// Report insertion progress every N records
+		if progressCallback != nil && ((i+1)%insertProgressInterval == 0 || (i+1) == len(orders)) {
+			progressCallback(i+1, len(orders))
 		}
 	}
 

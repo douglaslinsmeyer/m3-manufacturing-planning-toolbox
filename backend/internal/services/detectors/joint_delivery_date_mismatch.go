@@ -69,7 +69,12 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 				po.ordered_quantity as planned_quantity,
 				po.cono,
 				col.codt as confirmed_delivery_date,
-				col.dwdt as requested_delivery_date
+				col.dwdt as requested_delivery_date,
+				col.cuno as customer_number,
+				col.ortp as co_type_number,
+				col.customer_name,
+				col.co_type_description,
+				col.delivery_method
 			FROM production_orders po
 			INNER JOIN customer_order_lines col
 				ON po.linked_co_number = col.orno
@@ -109,7 +114,12 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 					'mo_type', mo_type,
 					'quantity', planned_quantity,
 					'confirmed_delivery_date', confirmed_delivery_date,
-					'requested_delivery_date', requested_delivery_date
+					'requested_delivery_date', requested_delivery_date,
+					'customer_number', customer_number,
+					'customer_name', customer_name,
+					'co_type_number', co_type_number,
+					'co_type_description', co_type_description,
+					'delivery_method', delivery_method
 				) ORDER BY production_order_type, production_order_number) as orders
 			FROM jdcd_production_orders
 			GROUP BY co_number, jdcd, facility, warehouse, item_number, cono
@@ -169,6 +179,26 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 			continue
 		}
 
+		// Extract customer, CO type, and delivery info from first order (all orders share same CO)
+		var customerName, customerNumber, coTypeNumber, coTypeDescription, deliveryMethod string
+		if len(orders) > 0 {
+			if val, ok := orders[0]["customer_name"].(string); ok {
+				customerName = val
+			}
+			if val, ok := orders[0]["customer_number"].(string); ok {
+				customerNumber = val
+			}
+			if val, ok := orders[0]["co_type_number"].(string); ok {
+				coTypeNumber = val
+			}
+			if val, ok := orders[0]["co_type_description"].(string); ok {
+				coTypeDescription = val
+			}
+			if val, ok := orders[0]["delivery_method"].(string); ok {
+				deliveryMethod = val
+			}
+		}
+
 		// Build issue data
 		issueData := map[string]interface{}{
 			"jdcd":                    jdcd,
@@ -182,6 +212,11 @@ func (d *JointDeliveryDateMismatchDetector) Detect(ctx context.Context, queries 
 			"item_number":             itno,
 			"warehouse":               whlo,
 			"company":                 cono,
+			"customer_name":           customerName,
+			"customer_number":         customerNumber,
+			"co_type_number":          coTypeNumber,
+			"co_type_description":     coTypeDescription,
+			"delivery_method":         deliveryMethod,
 		}
 
 		if err := d.insertIssue(ctx, queries, refreshJobID, environment, coNumber, jdcd, faci, whlo, issueData, orders); err != nil {
