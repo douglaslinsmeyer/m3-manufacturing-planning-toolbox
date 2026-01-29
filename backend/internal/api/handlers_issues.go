@@ -1176,8 +1176,9 @@ func (s *Server) updateMOPDates(ctx context.Context, m3Client *m3api.Client, plp
 // Bulk operation request/response types
 
 type BulkOperationRequest struct {
-	IssueIDs []int64                `json:"issue_ids"`
-	Params   map[string]interface{} `json:"params,omitempty"`
+	IssueIDs []int64                `json:"issue_ids"`           // Explicit issue IDs (existing behavior)
+	Criteria *db.IssueCriteria      `json:"criteria,omitempty"`  // Criteria-based filtering (NEW)
+	Params   map[string]interface{} `json:"params,omitempty"`    // Operation-specific parameters
 }
 
 type BulkOperationResponse struct {
@@ -1187,12 +1188,113 @@ type BulkOperationResponse struct {
 	Results    []BulkOperationItem `json:"results"`
 }
 
+// BulkPreviewRequest represents a request to preview bulk operations
+type BulkPreviewRequest struct {
+	Criteria db.IssueCriteria `json:"criteria"`
+}
+
+// IssuePreviewItem represents a sample issue in preview responses
+type IssuePreviewItem struct {
+	ID                    int64  `json:"id"`
+	DetectorType          string `json:"detector_type"`
+	Facility              string `json:"facility"`
+	Warehouse             string `json:"warehouse,omitempty"`
+	ProductionOrderNumber string `json:"production_order_number,omitempty"`
+	ProductionOrderType   string `json:"production_order_type,omitempty"`
+}
+
+// BulkPreviewResponse represents the response for bulk operation preview
+type BulkPreviewResponse struct {
+	TotalCount   int                    `json:"total_count"`
+	Summary      *db.BulkPreviewSummary `json:"summary"`
+	SampleIssues []IssuePreviewItem     `json:"sample_issues"`
+}
+
 type BulkOperationItem struct {
 	IssueID          int64  `json:"issue_id"`
 	ProductionOrder  string `json:"production_order"`
 	Status           string `json:"status"` // "success" or "error"
 	Message          string `json:"message,omitempty"`
 	Error            string `json:"error,omitempty"`
+}
+
+// handleBulkPreview previews the impact of bulk operations without executing them
+// Returns count and summary statistics for issues matching the given criteria
+func (s *Server) handleBulkPreview(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	// Parse request body
+	var req BulkPreviewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Get user context
+	session, _ := s.sessionStore.Get(r, "m3-session")
+	environment, _ := session.Values["environment"].(string)
+
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
+	}
+
+	// Get issue IDs matching criteria (just for count)
+	issueIDs, err := s.db.GetIssueIDsByCriteria(ctx, environment, req.Criteria)
+	if err != nil {
+		log.Printf("Failed to get issue IDs by criteria: %v", err)
+		http.Error(w, "Failed to query issues", http.StatusInternalServerError)
+		return
+	}
+
+	// Get summary statistics
+	summary, err := s.db.GetBulkPreviewSummary(ctx, environment, req.Criteria)
+	if err != nil {
+		log.Printf("Failed to get bulk preview summary: %v", err)
+		http.Error(w, "Failed to generate summary", http.StatusInternalServerError)
+		return
+	}
+
+	// Get sample issues for preview (limit 10)
+	// Build filter string from criteria for GetIssuesFiltered
+	sampleIssues, err := s.db.GetIssuesFiltered(
+		ctx,
+		environment,
+		req.Criteria.DetectorType,
+		req.Criteria.Facility,
+		req.Criteria.Warehouse,
+		req.Criteria.IncludeIgnored,
+		10, // limit
+		0,  // offset
+	)
+	if err != nil {
+		log.Printf("Failed to get sample issues: %v", err)
+		http.Error(w, "Failed to get sample issues", http.StatusInternalServerError)
+		return
+	}
+
+	// Convert sample issues to response format
+	sampleItems := make([]IssuePreviewItem, len(sampleIssues))
+	for i, issue := range sampleIssues {
+		sampleItems[i] = IssuePreviewItem{
+			ID:                    issue.ID,
+			DetectorType:          issue.DetectorType,
+			Facility:              issue.Facility,
+			Warehouse:             issue.Warehouse.String,
+			ProductionOrderNumber: issue.ProductionOrderNumber.String,
+			ProductionOrderType:   issue.ProductionOrderType.String,
+		}
+	}
+
+	// Build response
+	response := BulkPreviewResponse{
+		TotalCount:   len(issueIDs),
+		Summary:      summary,
+		SampleIssues: sampleItems,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }
 
 // handleBulkDelete handles bulk deletion of MOPs and MOs
@@ -1206,190 +1308,90 @@ func (s *Server) handleBulkDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.IssueIDs) == 0 {
-		http.Error(w, "No issue IDs provided", http.StatusBadRequest)
-		return
-	}
-
-	// Get M3 API client
-	m3Client, err := s.getM3APIClient(r)
-	if err != nil {
-		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
-		return
-	}
-
-	// Fetch all issues
-	issues := make([]*db.DetectedIssue, 0, len(req.IssueIDs))
-	for _, issueID := range req.IssueIDs {
-		issue, err := s.db.GetIssueByID(ctx, issueID)
-		if err != nil {
-			log.Printf("WARNING: Issue %d not found, skipping", issueID)
-			continue
-		}
-		issues = append(issues, issue)
-	}
-
-	// Group by operation type (MOP delete vs MO delete)
-	mopRequests := []m3api.BulkRequestItem{}
-	moRequests := []m3api.BulkRequestItem{}
-	issueByOrder := make(map[string]*db.DetectedIssue)
-
-	for _, issue := range issues {
-		orderNum := issue.ProductionOrderNumber.String
-
-		// Parse issue data to get company
-		var issueData map[string]interface{}
-		json.Unmarshal([]byte(issue.IssueData), &issueData)
-
-		if issue.ProductionOrderType.String == "MOP" {
-			// Delete MOP via PMS170MI/DelPlannedMO
-			plpn, err := strconv.ParseInt(orderNum, 10, 64)
-			if err != nil {
-				log.Printf("Invalid MOP number %s", orderNum)
-				continue
-			}
-
-			record := map[string]string{
-				"PLPN": fmt.Sprintf("%d", plpn),
-			}
-			if company, ok := issueData["company"].(string); ok {
-				record["CONO"] = company
-			}
-
-			mopRequests = append(mopRequests, m3api.BulkRequestItem{
-				Program:     "PMS170MI",
-				Transaction: "DelPlannedMO",
-				Record:      record,
-			})
-			issueByOrder[orderNum] = issue
-
-		} else if issue.ProductionOrderType.String == "MO" {
-			// Verify status allows deletion (<=22)
-			if statusStr, ok := issueData["status"].(string); ok {
-				if status, err := strconv.Atoi(statusStr); err == nil && status > 22 {
-					log.Printf("MO %s status %d too advanced for deletion, skipping", orderNum, status)
-					continue
-				}
-			}
-
-			// Delete MO via PMS100MI/DltMO
-			record := map[string]string{
-				"MFNO": orderNum,
-				"FACI": issue.Facility,
-			}
-
-			moRequests = append(moRequests, m3api.BulkRequestItem{
-				Program:     "PMS100MI",
-				Transaction: "DltMO",
-				Record:      record,
-			})
-			issueByOrder[orderNum] = issue
-		}
-	}
-
-	// Execute bulk operations
-	results := []BulkOperationItem{}
-	successCount := 0
-	failureCount := 0
-
-	// Combine all requests
-	allRequests := append(mopRequests, moRequests...)
-
-	if len(allRequests) > 0 {
-		bulkResp, bulkErr := m3Client.ExecuteBulk(ctx, allRequests)
-
-		// Process results
-		if bulkResp != nil {
-			for _, result := range bulkResp.Results {
-				// Find which order this was for
-				var orderNum string
-				if result.Parameters != nil {
-					if plpn, ok := result.Parameters["PLPN"]; ok {
-						orderNum = plpn
-					} else if mfno, ok := result.Parameters["MFNO"]; ok {
-						orderNum = mfno
-					}
-				}
-
-				issue := issueByOrder[orderNum]
-				if issue == nil {
-					continue
-				}
-
-				item := BulkOperationItem{
-					IssueID:         issue.ID,
-					ProductionOrder: orderNum,
-				}
-
-				if result.IsSuccess() {
-					item.Status = "success"
-					item.Message = fmt.Sprintf("%s deleted successfully", issue.ProductionOrderType.String)
-					successCount++
-
-					// Mark as deleted in database
-					if issue.ProductionOrderType.String == "MOP" {
-						if plpn, err := strconv.ParseInt(orderNum, 10, 64); err == nil {
-							s.db.MarkMOPAsDeletedRemotely(ctx, plpn, issue.Facility)
-						}
-					} else if issue.ProductionOrderType.String == "MO" {
-						s.db.MarkMOAsDeletedRemotely(ctx, orderNum, issue.Facility)
-					}
-				} else {
-					item.Status = "error"
-					item.Error = result.ErrorMessage
-					if item.Error == "" {
-						item.Error = "Unknown error"
-					}
-					failureCount++
-				}
-
-				results = append(results, item)
-			}
-		}
-
-		// Handle complete failures
-		if bulkErr != nil {
-			if bulkOpErr, ok := bulkErr.(*m3api.BulkOperationError); ok {
-				if bulkOpErr.NetworkError != nil {
-					http.Error(w, fmt.Sprintf("Bulk delete failed: %v", bulkOpErr.NetworkError), http.StatusInternalServerError)
-					return
-				}
-			}
-		}
-	}
-
-	// Create audit log
+	// Get user context
 	session, _ := s.sessionStore.Get(r, "m3-session")
+	userID, _ := session.Values["user_id"].(string)
 	environment, _ := session.Values["environment"].(string)
 
-	s.auditService.Log(ctx, services.AuditParams{
-		Environment: environment,
-		EntityType:  "bulk_operation",
-		Operation:   "bulk_delete",
-		Metadata: map[string]interface{}{
-			"total_items":    len(req.IssueIDs),
-			"success_count":  successCount,
-			"failure_count":  failureCount,
-			"mop_count":      len(mopRequests),
-			"mo_count":       len(moRequests),
-		},
-		IPAddress: getIPAddress(r),
-		UserAgent: r.Header.Get("User-Agent"),
-	})
-
-	// Return response
-	response := BulkOperationResponse{
-		Total:      len(req.IssueIDs),
-		Successful: successCount,
-		Failed:     failureCount,
-		Results:    results,
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
 	}
 
+	// Determine issue IDs: explicit IDs or criteria-based
+	var issueIDs []int64
+	selectionMode := "explicit_ids"
+
+	if len(req.IssueIDs) > 0 {
+		// Explicit issue IDs provided (existing behavior)
+		issueIDs = req.IssueIDs
+	} else if req.Criteria != nil {
+		// Criteria-based selection (NEW)
+		var err error
+		issueIDs, err = s.db.GetIssueIDsByCriteria(ctx, environment, *req.Criteria)
+		if err != nil {
+			log.Printf("Failed to get issue IDs by criteria: %v", err)
+			http.Error(w, "Failed to query issues by criteria", http.StatusInternalServerError)
+			return
+		}
+		selectionMode = "criteria"
+	} else {
+		http.Error(w, "Must provide either issue_ids or criteria", http.StatusBadRequest)
+		return
+	}
+
+	if len(issueIDs) == 0 {
+		http.Error(w, "No issues match the criteria", http.StatusBadRequest)
+		return
+	}
+
+	// Create bulk operation job in database
+	jobID, err := s.db.CreateBulkOperationJob(ctx, db.CreateBulkOperationJobParams{
+		Environment:   environment,
+		UserID:        userID,
+		OperationType: "delete",
+		IssueIDs:      issueIDs,
+		Params:        map[string]interface{}{
+			"selection_mode": selectionMode,
+			"criteria":       req.Criteria,
+		},
+	})
+	if err != nil {
+		log.Printf("Failed to create bulk operation job: %v", err)
+		http.Error(w, "Failed to create bulk operation job", http.StatusInternalServerError)
+		return
+	}
+
+	// Publish to NATS for async processing
+	jobMsg := map[string]interface{}{
+		"job_id":      jobID,
+		"environment": environment,
+		"user_id":     userID,
+		"operation":   "delete",
+		"issue_ids":   req.IssueIDs,
+	}
+
+	msgBytes, _ := json.Marshal(jobMsg)
+	subject := fmt.Sprintf("bulkop.request.%s", environment)
+
+	if err := s.natsManager.Publish(subject, msgBytes); err != nil {
+		log.Printf("Failed to publish bulk operation job to NATS: %v", err)
+		http.Error(w, "Failed to queue bulk operation", http.StatusInternalServerError)
+		return
+	}
+
+	// Return job ID immediately
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"job_id": jobID,
+		"status": "pending",
+		"message": fmt.Sprintf("Bulk delete operation queued for %d issues", len(issueIDs)),
+	})
 }
 
 // handleBulkClose handles bulk closing of MOs
+// handleBulkClose handles bulk closing of MOs (async via NATS)
 func (s *Server) handleBulkClose(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1400,152 +1402,89 @@ func (s *Server) handleBulkClose(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.IssueIDs) == 0 {
-		http.Error(w, "No issue IDs provided", http.StatusBadRequest)
-		return
-	}
-
-	// Get M3 API client
-	m3Client, err := s.getM3APIClient(r)
-	if err != nil {
-		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
-		return
-	}
-
-	// Fetch all issues and build bulk requests
-	closeRequests := []m3api.BulkRequestItem{}
-	issueByOrder := make(map[string]*db.DetectedIssue)
-
-	for _, issueID := range req.IssueIDs {
-		issue, err := s.db.GetIssueByID(ctx, issueID)
-		if err != nil {
-			log.Printf("WARNING: Issue %d not found, skipping", issueID)
-			continue
-		}
-
-		// Verify this is an MO
-		if issue.ProductionOrderType.String != "MO" {
-			log.Printf("WARNING: Issue %d is not an MO, skipping", issueID)
-			continue
-		}
-
-		// Parse issue data to verify status
-		var issueData map[string]interface{}
-		json.Unmarshal([]byte(issue.IssueData), &issueData)
-
-		// Verify status is > 22
-		if statusStr, ok := issueData["status"].(string); ok {
-			if status, err := strconv.Atoi(statusStr); err == nil && status <= 22 {
-				log.Printf("WARNING: MO %s status %d allows deletion, skipping close", issue.ProductionOrderNumber.String, status)
-				continue
-			}
-		}
-
-		orderNum := issue.ProductionOrderNumber.String
-
-		// Close MO via PMS100MI/CloseMO
-		record := map[string]string{
-			"MFNO": orderNum,
-			"FACI": issue.Facility,
-		}
-
-		closeRequests = append(closeRequests, m3api.BulkRequestItem{
-			Program:     "PMS100MI",
-			Transaction: "CloseMO",
-			Record:      record,
-		})
-		issueByOrder[orderNum] = issue
-	}
-
-	// Execute bulk close
-	results := []BulkOperationItem{}
-	successCount := 0
-	failureCount := 0
-
-	if len(closeRequests) > 0 {
-		bulkResp, bulkErr := m3Client.ExecuteBulk(ctx, closeRequests)
-
-		// Process results
-		if bulkResp != nil {
-			for _, result := range bulkResp.Results {
-				var orderNum string
-				if result.Parameters != nil {
-					if mfno, ok := result.Parameters["MFNO"]; ok {
-						orderNum = mfno
-					}
-				}
-
-				issue := issueByOrder[orderNum]
-				if issue == nil {
-					continue
-				}
-
-				item := BulkOperationItem{
-					IssueID:         issue.ID,
-					ProductionOrder: orderNum,
-				}
-
-				if result.IsSuccess() {
-					item.Status = "success"
-					item.Message = "MO closed successfully"
-					successCount++
-
-					// Mark as deleted (closed) in database
-					s.db.MarkMOAsDeletedRemotely(ctx, orderNum, issue.Facility)
-				} else {
-					item.Status = "error"
-					item.Error = result.ErrorMessage
-					if item.Error == "" {
-						item.Error = "Unknown error"
-					}
-					failureCount++
-				}
-
-				results = append(results, item)
-			}
-		}
-
-		// Handle complete failures
-		if bulkErr != nil {
-			if bulkOpErr, ok := bulkErr.(*m3api.BulkOperationError); ok {
-				if bulkOpErr.NetworkError != nil {
-					http.Error(w, fmt.Sprintf("Bulk close failed: %v", bulkOpErr.NetworkError), http.StatusInternalServerError)
-					return
-				}
-			}
-		}
-	}
-
-	// Create audit log
+	// Get user context
 	session, _ := s.sessionStore.Get(r, "m3-session")
+	userID, _ := session.Values["user_id"].(string)
 	environment, _ := session.Values["environment"].(string)
 
-	s.auditService.Log(ctx, services.AuditParams{
-		Environment: environment,
-		EntityType:  "bulk_operation",
-		Operation:   "bulk_close",
-		Metadata: map[string]interface{}{
-			"total_items":   len(req.IssueIDs),
-			"success_count": successCount,
-			"failure_count": failureCount,
-		},
-		IPAddress: getIPAddress(r),
-		UserAgent: r.Header.Get("User-Agent"),
-	})
-
-	// Return response
-	response := BulkOperationResponse{
-		Total:      len(req.IssueIDs),
-		Successful: successCount,
-		Failed:     failureCount,
-		Results:    results,
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
 	}
 
+	// Determine issue IDs: explicit IDs or criteria-based
+	var issueIDs []int64
+	selectionMode := "explicit_ids"
+
+	if len(req.IssueIDs) > 0 {
+		// Explicit issue IDs provided (existing behavior)
+		issueIDs = req.IssueIDs
+	} else if req.Criteria != nil {
+		// Criteria-based selection (NEW)
+		var err error
+		issueIDs, err = s.db.GetIssueIDsByCriteria(ctx, environment, *req.Criteria)
+		if err != nil {
+			log.Printf("Failed to get issue IDs by criteria: %v", err)
+			http.Error(w, "Failed to query issues by criteria", http.StatusInternalServerError)
+			return
+		}
+		selectionMode = "criteria"
+	} else {
+		http.Error(w, "Must provide either issue_ids or criteria", http.StatusBadRequest)
+		return
+	}
+
+	if len(issueIDs) == 0 {
+		http.Error(w, "No issues match the criteria", http.StatusBadRequest)
+		return
+	}
+
+	// Create bulk operation job in database
+	jobID, err := s.db.CreateBulkOperationJob(ctx, db.CreateBulkOperationJobParams{
+		Environment:   environment,
+		UserID:        userID,
+		OperationType: "close",
+		IssueIDs:      issueIDs,
+		Params:        map[string]interface{}{
+			"selection_mode": selectionMode,
+			"criteria":       req.Criteria,
+		},
+	})
+	if err != nil {
+		log.Printf("Failed to create bulk operation job: %v", err)
+		http.Error(w, "Failed to create bulk operation job", http.StatusInternalServerError)
+		return
+	}
+
+	// Publish to NATS for async processing
+	jobMsg := map[string]interface{}{
+		"job_id":      jobID,
+		"environment": environment,
+		"user_id":     userID,
+		"operation":   "close",
+		"issue_ids":   req.IssueIDs,
+	}
+
+	msgBytes, _ := json.Marshal(jobMsg)
+	subject := fmt.Sprintf("bulkop.request.%s", environment)
+
+	if err := s.natsManager.Publish(subject, msgBytes); err != nil {
+		log.Printf("Failed to publish bulk operation job to NATS: %v", err)
+		http.Error(w, "Failed to queue bulk operation", http.StatusInternalServerError)
+		return
+	}
+
+	// Return job ID immediately
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"job_id": jobID,
+		"status": "pending",
+		"message": fmt.Sprintf("Bulk close operation queued for %d issues", len(issueIDs)),
+	})
 }
 
-// handleBulkReschedule handles bulk rescheduling of MOs and MOPs
+// handleBulkReschedule handles bulk rescheduling of production orders (async via NATS)
 func (s *Server) handleBulkReschedule(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -1556,107 +1495,107 @@ func (s *Server) handleBulkReschedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.IssueIDs) == 0 {
-		http.Error(w, "No issue IDs provided", http.StatusBadRequest)
+	// Validate new_date parameter
+	newDate, ok := req.Params["new_date"].(string)
+	if !ok || newDate == "" {
+		http.Error(w, "Missing or invalid new_date parameter", http.StatusBadRequest)
 		return
 	}
 
-	// Get new date from params
-	newDateStr, ok := req.Params["new_date"].(string)
-	if !ok || newDateStr == "" {
-		http.Error(w, "new_date parameter required in YYYYMMDD format", http.StatusBadRequest)
+	// Validate date format (YYYYMMDD)
+	if len(newDate) != 8 {
+		http.Error(w, "Invalid date format. Expected YYYYMMDD", http.StatusBadRequest)
 		return
 	}
 
-	// Get M3 API client
-	m3Client, err := s.getM3APIClient(r)
-	if err != nil {
-		http.Error(w, "Failed to get M3 API client", http.StatusInternalServerError)
-		return
-	}
-
-	// Process each issue sequentially (rescheduling logic is complex)
-	// Note: Could optimize this with bulk operations in future
-	results := []BulkOperationItem{}
-	successCount := 0
-	failureCount := 0
-
-	for _, issueID := range req.IssueIDs {
-		issue, err := s.db.GetIssueByID(ctx, issueID)
-		if err != nil {
-			log.Printf("WARNING: Issue %d not found, skipping", issueID)
-			continue
-		}
-
-		orderNum := issue.ProductionOrderNumber.String
-		item := BulkOperationItem{
-			IssueID:         issueID,
-			ProductionOrder: orderNum,
-		}
-
-		var rescheduleErr error
-
-		if issue.ProductionOrderType.String == "MO" {
-			// Reschedule MO
-			rescheduleErr = s.rescheduleMO(ctx, m3Client, orderNum, issue.Facility, newDateStr)
-		} else if issue.ProductionOrderType.String == "MOP" {
-			// Parse issue data to get current dates
-			var issueData map[string]interface{}
-			json.Unmarshal([]byte(issue.IssueData), &issueData)
-
-			currentStart := ""
-			if startDate, ok := issueData["start_date"].(string); ok {
-				currentStart = startDate
-			}
-
-			// Update MOP dates
-			rescheduleErr = s.updateMOPDates(ctx, m3Client, orderNum, currentStart, newDateStr)
-		}
-
-		if rescheduleErr != nil {
-			item.Status = "error"
-			item.Error = rescheduleErr.Error()
-			failureCount++
-		} else {
-			item.Status = "success"
-			item.Message = fmt.Sprintf("%s rescheduled to %s", issue.ProductionOrderType.String, newDateStr)
-			successCount++
-		}
-
-		results = append(results, item)
-	}
-
-	// Create audit log
+	// Get user context
 	session, _ := s.sessionStore.Get(r, "m3-session")
+	userID, _ := session.Values["user_id"].(string)
 	environment, _ := session.Values["environment"].(string)
 
-	s.auditService.Log(ctx, services.AuditParams{
-		Environment: environment,
-		EntityType:  "bulk_operation",
-		Operation:   "bulk_reschedule",
-		Metadata: map[string]interface{}{
-			"total_items":   len(req.IssueIDs),
-			"success_count": successCount,
-			"failure_count": failureCount,
-			"new_date":      newDateStr,
-		},
-		IPAddress: getIPAddress(r),
-		UserAgent: r.Header.Get("User-Agent"),
-	})
-
-	// Return response
-	response := BulkOperationResponse{
-		Total:      len(req.IssueIDs),
-		Successful: successCount,
-		Failed:     failureCount,
-		Results:    results,
+	if environment == "" {
+		http.Error(w, "Environment not set in session", http.StatusUnauthorized)
+		return
 	}
 
+	// Determine issue IDs: explicit IDs or criteria-based
+	var issueIDs []int64
+	selectionMode := "explicit_ids"
+
+	if len(req.IssueIDs) > 0 {
+		// Explicit issue IDs provided (existing behavior)
+		issueIDs = req.IssueIDs
+	} else if req.Criteria != nil {
+		// Criteria-based selection (NEW)
+		var err error
+		issueIDs, err = s.db.GetIssueIDsByCriteria(ctx, environment, *req.Criteria)
+		if err != nil {
+			log.Printf("Failed to get issue IDs by criteria: %v", err)
+			http.Error(w, "Failed to query issues by criteria", http.StatusInternalServerError)
+			return
+		}
+		selectionMode = "criteria"
+	} else {
+		http.Error(w, "Must provide either issue_ids or criteria", http.StatusBadRequest)
+		return
+	}
+
+	if len(issueIDs) == 0 {
+		http.Error(w, "No issues match the criteria", http.StatusBadRequest)
+		return
+	}
+
+	// Merge criteria into params for audit trail
+	params := req.Params
+	if params == nil {
+		params = make(map[string]interface{})
+	}
+	params["selection_mode"] = selectionMode
+	params["criteria"] = req.Criteria
+
+	// Create bulk operation job in database
+	jobID, err := s.db.CreateBulkOperationJob(ctx, db.CreateBulkOperationJobParams{
+		Environment:   environment,
+		UserID:        userID,
+		OperationType: "reschedule",
+		IssueIDs:      issueIDs,
+		Params:        params,
+	})
+	if err != nil {
+		log.Printf("Failed to create bulk operation job: %v", err)
+		http.Error(w, "Failed to create bulk operation job", http.StatusInternalServerError)
+		return
+	}
+
+	// Publish to NATS for async processing
+	jobMsg := map[string]interface{}{
+		"job_id":      jobID,
+		"environment": environment,
+		"user_id":     userID,
+		"operation":   "reschedule",
+		"issue_ids":   req.IssueIDs,
+		"params":      req.Params,
+	}
+
+	msgBytes, _ := json.Marshal(jobMsg)
+	subject := fmt.Sprintf("bulkop.request.%s", environment)
+
+	if err := s.natsManager.Publish(subject, msgBytes); err != nil {
+		log.Printf("Failed to publish bulk operation job to NATS: %v", err)
+		http.Error(w, "Failed to queue bulk operation", http.StatusInternalServerError)
+		return
+	}
+
+	// Return job ID immediately
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"job_id": jobID,
+		"status": "pending",
+		"message": fmt.Sprintf("Bulk reschedule operation queued for %d issues to date %s", len(issueIDs), newDate),
+	})
 }
 
-// getIPAddress extracts the client IP address from the request
 func getIPAddress(r *http.Request) string {
 	// Check for X-Forwarded-For header (proxy/load balancer)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {

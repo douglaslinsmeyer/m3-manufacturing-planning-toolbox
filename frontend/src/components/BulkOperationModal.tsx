@@ -7,6 +7,8 @@ export interface BulkOperationResult {
   status: 'success' | 'error' | 'pending';
   message?: string;
   error?: string;
+  is_duplicate?: boolean;         // NEW
+  primary_issue_id?: number;      // NEW
 }
 
 interface BulkOperationModalProps {
@@ -107,13 +109,20 @@ export function BulkOperationModal({
 
                   {/* Content */}
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-baseline gap-2">
+                    <div className="flex items-baseline gap-2 flex-wrap">
                       <span className="font-medium text-gray-900 dark:text-white">
                         {result.production_order}
                       </span>
                       <span className="text-xs text-gray-500 dark:text-gray-400">
                         (Issue #{result.issue_id})
                       </span>
+
+                      {/* Duplicate indicator badge */}
+                      {result.is_duplicate && result.primary_issue_id && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300">
+                          Same order as #{result.primary_issue_id}
+                        </span>
+                      )}
                     </div>
                     {result.message && (
                       <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">

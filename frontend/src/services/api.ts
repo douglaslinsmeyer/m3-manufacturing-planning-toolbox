@@ -76,6 +76,23 @@ class ApiService {
     );
   }
 
+  // Generic HTTP methods for direct API access
+  async get<T = any>(url: string, config?: any): Promise<{ data: T }> {
+    return this.client.get(url, config);
+  }
+
+  async post<T = any>(url: string, data?: any, config?: any): Promise<{ data: T }> {
+    return this.client.post(url, data, config);
+  }
+
+  async put<T = any>(url: string, data?: any, config?: any): Promise<{ data: T }> {
+    return this.client.put(url, data, config);
+  }
+
+  async delete<T = any>(url: string, config?: any): Promise<{ data: T }> {
+    return this.client.delete(url, config);
+  }
+
   // Authentication
   async login(environment: 'TRN' | 'PRD'): Promise<{ authUrl: string }> {
     const response = await this.client.post('/auth/login', { environment });
@@ -292,54 +309,67 @@ class ApiService {
 
   // Bulk Issue Operations
   async bulkDelete(issueIds: number[]): Promise<{
-    total: number;
-    successful: number;
-    failed: number;
-    results: Array<{
-      issue_id: number;
-      production_order: string;
-      status: 'success' | 'error';
-      message?: string;
-      error?: string;
-    }>;
+    job_id: string;
+    status: string;
+    message: string;
   }> {
     const response = await this.client.post('/issues/bulk-delete', { issue_ids: issueIds });
     return response.data;
   }
 
   async bulkClose(issueIds: number[]): Promise<{
-    total: number;
-    successful: number;
-    failed: number;
-    results: Array<{
-      issue_id: number;
-      production_order: string;
-      status: 'success' | 'error';
-      message?: string;
-      error?: string;
-    }>;
+    job_id: string;
+    status: string;
+    message: string;
   }> {
     const response = await this.client.post('/issues/bulk-close', { issue_ids: issueIds });
     return response.data;
   }
 
   async bulkReschedule(issueIds: number[], newDate: string): Promise<{
-    total: number;
-    successful: number;
-    failed: number;
-    results: Array<{
-      issue_id: number;
-      production_order: string;
-      status: 'success' | 'error';
-      message?: string;
-      error?: string;
-    }>;
+    job_id: string;
+    status: string;
+    message: string;
   }> {
     const response = await this.client.post('/issues/bulk-reschedule', {
       issue_ids: issueIds,
       params: { new_date: newDate },
     });
     return response.data;
+  }
+
+  // Get issue-level results for a bulk operation job
+  async getBulkOperationIssueResults(jobId: string): Promise<{
+    job_id: string;
+    results: Array<{
+      issue_id: number;
+      production_order: string;
+      order_type: string;
+      status: 'success' | 'error';
+      message?: string;
+      error?: string;
+      is_duplicate: boolean;
+      primary_issue_id?: number;
+    }>;
+    total: number;
+  }> {
+    const response = await this.client.get(`/jobs/${jobId}/issue-results`);
+
+    // Transform backend format to frontend format
+    return {
+      job_id: response.data.job_id,
+      total: response.data.total,
+      results: response.data.results.map((r: any) => ({
+        issue_id: r.issue_id,
+        production_order: r.order_number,
+        order_type: r.order_type,
+        status: r.success ? 'success' : 'error',
+        message: r.success ? 'Operation completed successfully' : undefined,
+        error: r.error_message || undefined,
+        is_duplicate: r.is_duplicate,
+        primary_issue_id: r.primary_issue_id || undefined,
+      })),
+    };
   }
 
   // Anomalies

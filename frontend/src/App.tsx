@@ -12,6 +12,7 @@ import Anomalies from './pages/Anomalies';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import AuditLogs from './pages/AuditLogs';
+import { BulkOperations } from './pages/BulkOperations';
 
 // Protected route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -31,80 +32,97 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) =
   return isAuthenticated ? <>{children}</> : <Navigate to="/login" replace />;
 };
 
+// Wrapper for protected routes that includes ContextManagementProvider
+const ProtectedRouteWithContext: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  return (
+    <ProtectedRoute>
+      <ContextManagementProvider>
+        {children}
+      </ContextManagementProvider>
+    </ProtectedRoute>
+  );
+};
+
 function App() {
   return (
     <AuthProvider>
-      <ContextManagementProvider>
-        <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
-          <Routes>
-            <Route path="/login" element={<Login />} />
+      <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
           <Route
             path="/"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <Dashboard />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/manufacturing-orders/:id"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <ManufacturingOrderDetail />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/planned-orders/:id"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <PlannedOrderDetail />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/issues"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <Issues />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
+            }
+          />
+          <Route
+            path="/bulk-operations"
+            element={
+              <ProtectedRouteWithContext>
+                <BulkOperations />
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/anomalies"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <Anomalies />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/settings"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <Settings />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/profile"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <Profile />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
           <Route
             path="/audit-logs"
             element={
-              <ProtectedRoute>
+              <ProtectedRouteWithContext>
                 <AuditLogs />
-              </ProtectedRoute>
+              </ProtectedRouteWithContext>
             }
           />
-          </Routes>
-        </Router>
-      </ContextManagementProvider>
+        </Routes>
+      </Router>
     </AuthProvider>
   );
 }

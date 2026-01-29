@@ -10,6 +10,25 @@ const PhaseProgressBar: React.FC<PhaseProgressBarProps> = ({ phase, label }) => 
   const getOperationProgress = (operation: string | undefined, recordCount?: number): number => {
     if (!operation) return 5; // Just started, no operation yet
 
+    // Check if operation string already includes a percentage (e.g., "(91%)")
+    const percentMatch = operation.match(/\((\d+)%\)/);
+    if (percentMatch) {
+      const percent = parseInt(percentMatch[1]);
+      return Math.min(percent, 95); // Cap at 95% until completed
+    }
+
+    // Check for "X/Y" pattern in Parsed or Inserted messages
+    // Examples: "Parsed 5000/197270 records" or "Inserted 10000/197270 planned orders"
+    const progressMatch = operation.match(/(?:parsed|inserted)\s+(\d+)\/(\d+)/i);
+    if (progressMatch) {
+      const current = parseInt(progressMatch[1]);
+      const total = parseInt(progressMatch[2]);
+      if (total > 0) {
+        const percent = Math.floor((current / total) * 100);
+        return Math.min(percent, 95); // Cap at 95% until completed
+      }
+    }
+
     // Querying phase: 0-30%
     if (operation.toLowerCase().includes('querying') || operation.toLowerCase().includes('loading page')) {
       // Check for pagination progress "Loading page X/Y"
@@ -26,23 +45,17 @@ const PhaseProgressBar: React.FC<PhaseProgressBarProps> = ({ phase, label }) => 
 
     // Processing phase: 30-50%
     if (operation.toLowerCase().includes('processing')) {
+      // Check for processing progress pattern
+      const processMatch = operation.match(/processing\s+(\d+)/i);
+      if (processMatch && recordCount && recordCount > 0) {
+        return 40; // Processing phase mid-point
+      }
       return 40;
     }
 
     // Inserting phase: 50-95%
     if (operation.toLowerCase().includes('inserting')) {
-      // Try to extract total count from operation string
-      // Example: "Inserting 15234 customer order lines into database..."
-      const countMatch = operation.match(/inserting (\d+)/i);
-      if (countMatch && recordCount) {
-        const totalRecords = parseInt(countMatch[1]);
-        if (totalRecords > 0) {
-          // Calculate progress within 50-95% range (45% span)
-          const insertProgress = Math.min((recordCount / totalRecords) * 45, 45);
-          return 50 + Math.floor(insertProgress);
-        }
-      }
-      return 70; // Mid-point of insert phase if no count available
+      return 70; // Mid-point of insert phase if no specific progress available
     }
 
     // Unknown operation - conservative estimate
@@ -80,6 +93,11 @@ const PhaseProgressBar: React.FC<PhaseProgressBarProps> = ({ phase, label }) => 
 
     // Running phase - calculate based on operation
     const progress = getOperationProgress(phase.currentOperation, phase.recordCount);
+
+    // Debug logging
+    if (phase.phase === 'cos' && phase.status === 'running') {
+      console.log(`[PhaseProgressBar] ${phase.phase}: operation="${phase.currentOperation}", recordCount=${phase.recordCount}, calculated progress=${progress}%`);
+    }
 
     // Cap at 95% until actually completed (prevents confusing "100% but still running")
     return `${Math.min(progress, 95)}%`;

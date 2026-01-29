@@ -12,6 +12,8 @@ export interface BulkAction {
 
 interface BulkActionToolbarProps {
   selectedCount: number;
+  uniqueOrderCount?: number;  // NEW
+  duplicateCount?: number;     // NEW
   availableActions: BulkAction[];
   onExecute: (actionId: string) => void;
   onClear: () => void;
@@ -19,6 +21,8 @@ interface BulkActionToolbarProps {
 
 export function BulkActionToolbar({
   selectedCount,
+  uniqueOrderCount,
+  duplicateCount,
   availableActions,
   onExecute,
   onClear,
@@ -27,15 +31,32 @@ export function BulkActionToolbar({
     return null;
   }
 
+  const hasDuplicates = duplicateCount && duplicateCount > 0;
+
   return (
     <div className="fixed bottom-6 left-1/2 transform -translate-x-1/2 z-50">
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700 px-6 py-4">
         <div className="flex items-center gap-6">
-          {/* Selection count */}
+          {/* Selection count with duplicate info */}
           <div className="flex items-center gap-3">
             <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-              {selectedCount} {selectedCount === 1 ? 'item' : 'items'} selected
+              {selectedCount} {selectedCount === 1 ? 'issue' : 'issues'} selected
             </span>
+
+            {/* Duplicate badge */}
+            {hasDuplicates && uniqueOrderCount && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs font-medium"
+                title={`${duplicateCount} duplicate production ${duplicateCount === 1 ? 'order' : 'orders'} selected`}
+              >
+                <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                </svg>
+                {uniqueOrderCount} unique {uniqueOrderCount === 1 ? 'order' : 'orders'}
+                {duplicateCount > 0 && `, ${duplicateCount} duplicate${duplicateCount === 1 ? '' : 's'}`}
+              </span>
+            )}
+
             <button
               onClick={onClear}
               className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"

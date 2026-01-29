@@ -129,6 +129,9 @@ type CustomerOrderLineRecord struct {
 	// Enrichment: Delivery Method (from OOHEAD)
 	DeliveryMethod string
 
+	// Enrichment: Delivery Method Description (from CSYTAB)
+	DeliveryMethodDescription string
+
 	// M3 Attributes (ATV1-ATV0)
 	ATV1, ATV2, ATV3, ATV4, ATV5 string
 	ATV6, ATV7, ATV8, ATV9, ATV0 string
@@ -288,6 +291,9 @@ func ParseCustomerOrderLine(record map[string]interface{}) (*CustomerOrderLineRe
 
 		// Enrichment: Delivery Method
 		DeliveryMethod: getString(record, "delivery_method"),
+
+		// Enrichment: Delivery Method Description
+		DeliveryMethodDescription: getString(record, "delivery_method_description"),
 
 		// Attributes (ATV1-ATV0)
 		ATV1: getStringFromAny(record, "ATV1"),

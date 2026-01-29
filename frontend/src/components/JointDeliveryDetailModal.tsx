@@ -152,7 +152,7 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
             <div className="bg-slate-50 rounded-lg p-4 mb-5 border border-slate-200">
               {/* Customer and Order Information */}
               {(issueData.customer_name || issueData.co_type_description || issueData.delivery_method) && (
-                <div className="mb-4 pb-4 border-b border-slate-200">
+                <div className="mb-4 pb-4">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {issueData.customer_name && (
                       <div>
@@ -198,71 +198,35 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
                 </div>
               )}
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
-                    Date Range
+              {/* Delivery Dates Section */}
+              <div className={issueData.customer_name || issueData.co_type_description || issueData.delivery_method ? "mt-4 pt-4 border-t border-slate-200" : ""}>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
+                      Confirmed Delivery Date{confirmedDeliveryDates.length > 1 ? 's' : ''}
+                    </div>
+                    <div className="text-sm font-semibold text-slate-900">
+                      {confirmedDeliveryDates.length > 0 ? confirmedDeliveryDates.map(d => formatDate(d)).join(', ') : '—'}
+                    </div>
                   </div>
-                  <div className="text-sm font-semibold text-slate-900">
-                    {formatDate(issueData.min_date)}
-                    <span className="mx-2 text-slate-400">→</span>
-                    {formatDate(issueData.max_date)}
+                  <div>
+                    <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
+                      Requested Delivery Date{requestedDeliveryDates.length > 1 ? 's' : ''}
+                    </div>
+                    <div className="text-sm font-semibold text-slate-900">
+                      {requestedDeliveryDates.length > 0 ? requestedDeliveryDates.map(d => formatDate(d)).join(', ') : '—'}
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
-                    Variance
-                  </div>
-                  <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-sm font-semibold ring-1 ${getVarianceBadgeColor(dateVarianceDays)}`}>
-                    {dateVarianceDays.toLocaleString()} {dateVarianceDays === 1 ? 'day' : 'days'}
-                  </span>
-                </div>
-                <div>
-                  <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
-                    Production Orders
-                  </div>
-                  <div className="text-sm font-semibold text-slate-900">
-                    {issueData.num_production_orders.toLocaleString()} {issueData.num_production_orders === 1 ? 'order' : 'orders'}
+                  <div>
+                    <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
+                      Variance
+                    </div>
+                    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-sm font-semibold ring-1 ${getVarianceBadgeColor(dateVarianceDays)}`}>
+                      {dateVarianceDays.toLocaleString()} {dateVarianceDays === 1 ? 'day' : 'days'}
+                    </span>
                   </div>
                 </div>
               </div>
-
-              {/* Delivery Dates Section */}
-              {(confirmedDeliveryDates.length > 0 || requestedDeliveryDates.length > 0) && (
-                <div className="mt-4 pt-4 border-t border-slate-200">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {confirmedDeliveryDates.length > 0 && (
-                      <div>
-                        <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
-                          Confirmed Delivery Date{confirmedDeliveryDates.length > 1 ? 's' : ''}
-                        </div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          {confirmedDeliveryDates.map(d => formatDate(d)).join(', ')}
-                        </div>
-                      </div>
-                    )}
-                    {requestedDeliveryDates.length > 0 && (
-                      <div>
-                        <div className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1">
-                          Requested Delivery Date{requestedDeliveryDates.length > 1 ? 's' : ''}
-                        </div>
-                        <div className="text-sm font-semibold text-slate-900">
-                          {requestedDeliveryDates.map(d => formatDate(d)).join(', ')}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {issueData.tolerance_days !== undefined && (
-                <div className="mt-3 pt-3 border-t border-slate-200">
-                  <span className="text-xs text-slate-600">
-                    Tolerance: {issueData.tolerance_days.toLocaleString()} {issueData.tolerance_days === 1 ? 'day' : 'days'}
-                    {issueData.tolerance_days === 0 && ' (exact match required)'}
-                  </span>
-                </div>
-              )}
             </div>
 
             {/* Production Orders Table */}

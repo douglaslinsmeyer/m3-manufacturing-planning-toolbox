@@ -39,13 +39,14 @@ type EffectiveContext struct {
 	Division  string
 	Facility  string
 	Warehouse string
+	Language  string
 }
 
 // LoadUserDefaults fetches user defaults and stores in session
 // Priority order: user_settings (custom) → profile cache (M3) → M3 API
 func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions.Session, m3Client *m3api.Client) error {
 	// Initialize with empty defaults that will be populated from various sources
-	var company, division, facility, warehouse, fullName string
+	var company, division, facility, warehouse, fullName, language string
 
 	// Priority 1: Check user_settings for custom defaults
 	if s.settingsService != nil {
@@ -104,17 +105,20 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 					if warehouse == "" {
 						warehouse = profile.M3Info.DefaultWarehouse
 					}
+					if language == "" {
+						language = profile.M3Info.LanguageCode
+					}
 					fullName = profile.M3Info.FullName
 
-					fmt.Printf("DEBUG LoadUserDefaults: After M3 cache - Company: %s, Div: %s, Fac: %s, Whse: %s\n",
-						company, division, facility, warehouse)
+					fmt.Printf("DEBUG LoadUserDefaults: After M3 cache - Company: %s, Div: %s, Fac: %s, Whse: %s, Lang: %s\n",
+						company, division, facility, warehouse, language)
 				}
 			}
 		}
 	}
 
 	// Priority 3: Fallback to M3 API call if any fields still missing
-	if company == "" || division == "" || facility == "" || warehouse == "" || fullName == "" {
+	if company == "" || division == "" || facility == "" || warehouse == "" || language == "" || fullName == "" {
 		fmt.Printf("INFO: Loading missing defaults from M3 API\n")
 		userInfo, err := compass.GetUserInfo(ctx, m3Client)
 		if err != nil {
@@ -127,6 +131,7 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 		fmt.Printf("  Division: '%s'\n", userInfo.Division)
 		fmt.Printf("  Facility: '%s'\n", userInfo.Facility)
 		fmt.Printf("  Warehouse: '%s'\n", userInfo.Warehouse)
+		fmt.Printf("  Language: '%s'\n", userInfo.Language)
 		fmt.Printf("  FullName: '%s'\n", userInfo.FullName)
 
 		// Fill in missing values
@@ -142,6 +147,9 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 		if warehouse == "" {
 			warehouse = userInfo.Warehouse
 		}
+		if language == "" {
+			language = userInfo.Language
+		}
 		if fullName == "" {
 			fullName = userInfo.FullName
 		}
@@ -152,6 +160,7 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 	session.Values["user_division"] = division
 	session.Values["user_facility"] = facility
 	session.Values["user_warehouse"] = warehouse
+	session.Values["user_language"] = language
 	session.Values["user_full_name"] = fullName
 
 	// Debug: Verify what was stored
@@ -160,6 +169,7 @@ func (s *ContextService) LoadUserDefaults(ctx context.Context, session *sessions
 	fmt.Printf("  user_division: '%v'\n", session.Values["user_division"])
 	fmt.Printf("  user_facility: '%v'\n", session.Values["user_facility"])
 	fmt.Printf("  user_warehouse: '%v'\n", session.Values["user_warehouse"])
+	fmt.Printf("  user_language: '%v'\n", session.Values["user_language"])
 
 	return nil
 }
@@ -206,6 +216,15 @@ func (s *ContextService) GetEffectiveContext(session *sessions.Session) Effectiv
 		effective.Warehouse = user
 	}
 
+	// Language: temporary override or user default (fallback to GB)
+	if temp, ok := session.Values["temp_language"].(string); ok && temp != "" {
+		effective.Language = temp
+	} else if user, ok := session.Values["user_language"].(string); ok && user != "" {
+		effective.Language = user
+	} else {
+		effective.Language = "GB" // Default to English
+	}
+
 	fmt.Printf("DEBUG GetEffectiveContext: Returning effective context: %+v\n", effective)
 	return effective
 }
@@ -225,6 +244,11 @@ func (s *ContextService) GetUserDefaults(session *sessions.Session) EffectiveCon
 	}
 	if warehouse, ok := session.Values["user_warehouse"].(string); ok {
 		defaults.Warehouse = warehouse
+	}
+	if language, ok := session.Values["user_language"].(string); ok {
+		defaults.Language = language
+	} else {
+		defaults.Language = "GB" // Default to English
 	}
 
 	return defaults

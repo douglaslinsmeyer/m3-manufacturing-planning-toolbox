@@ -9,6 +9,7 @@ interface DetectorSectionProps {
   detectorDescription: string;
   settings: SystemSetting[];
   onSettingsChange: (updated: SystemSetting[]) => void;
+  keyPrefix?: string; // Optional prefix for setting keys (default: "detector")
 }
 
 const DetectorSection: React.FC<DetectorSectionProps> = ({
@@ -17,10 +18,11 @@ const DetectorSection: React.FC<DetectorSectionProps> = ({
   detectorDescription,
   settings,
   onSettingsChange,
+  keyPrefix = 'detector', // Default to "detector" for backward compatibility
 }) => {
   // Filter settings for this specific detector
   const detectorSettings = settings.filter(s =>
-    s.key.startsWith(`detector_${detectorName}_`)
+    s.key.startsWith(`${keyPrefix}_${detectorName}_`)
   );
 
   // Separate enabled toggle from other settings

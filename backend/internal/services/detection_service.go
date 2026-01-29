@@ -46,7 +46,7 @@ func (s *DetectionService) SetProgressCallback(callback ProgressCallback) {
 // reportProgress calls the progress callback if set
 func (s *DetectionService) reportProgress(phase string, stepNum, totalSteps int, message string) {
 	if s.progressCallback != nil {
-		s.progressCallback(phase, stepNum, totalSteps, message, 0, 0, 0)
+		s.progressCallback(phase, stepNum, totalSteps, message, 0, 0, 0, 0)
 	}
 }
 

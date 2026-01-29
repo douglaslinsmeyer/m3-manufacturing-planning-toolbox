@@ -16,7 +16,9 @@ import (
 	"github.com/pinggolf/m3-planning-tools/internal/api"
 	"github.com/pinggolf/m3-planning-tools/internal/config"
 	"github.com/pinggolf/m3-planning-tools/internal/db"
+	"github.com/pinggolf/m3-planning-tools/internal/m3api"
 	"github.com/pinggolf/m3-planning-tools/internal/queue"
+	"github.com/pinggolf/m3-planning-tools/internal/services"
 	"github.com/pinggolf/m3-planning-tools/internal/workers"
 )
 
@@ -79,6 +81,34 @@ func main() {
 	defer natsManager.Close()
 	log.Println("NATS connection established")
 
+	// Initialize rate limiter service
+	log.Println("Initializing rate limiter service...")
+	rateLimiter := services.NewRateLimiterService(queries)
+	log.Println("Rate limiter service initialized")
+
+	// Create M3 API client factory (for bulk operation worker)
+	// Note: Bulk operations use per-request tokens from job messages
+	createM3Client := func(baseURL string, tokenGetter func() (string, error)) *m3api.Client {
+		return m3api.NewClient(baseURL, tokenGetter)
+	}
+
+	// Initialize M3 API client for workers with placeholder (tokens provided per-job)
+	// Use TRN as default environment for M3 client initialization
+	trnEnvConfig, err := cfg.GetEnvironmentConfig("TRN")
+	if err != nil {
+		log.Printf("Warning: Could not get TRN environment config: %v", err)
+	}
+
+	// Placeholder token getter - workers will use job-specific tokens from NATS messages
+	var m3Client *m3api.Client
+	if trnEnvConfig != nil {
+		m3Client = createM3Client(trnEnvConfig.APIBaseURL, func() (string, error) {
+			return "", fmt.Errorf("token should be provided per-job via NATS message")
+		})
+	} else {
+		log.Println("Warning: M3 client not initialized - bulk operations may not work")
+	}
+
 	// Start snapshot worker
 	log.Println("Starting snapshot worker...")
 	snapshotWorker := workers.NewSnapshotWorker(natsManager, queries, cfg)
@@ -86,6 +116,14 @@ func main() {
 		log.Fatalf("Failed to start snapshot worker: %v", err)
 	}
 	log.Println("Snapshot worker started")
+
+	// Start bulk operation worker
+	log.Println("Starting bulk operation worker...")
+	bulkOpWorker := workers.NewBulkOperationWorker(natsManager, queries, m3Client, rateLimiter)
+	if err := bulkOpWorker.Start(context.Background()); err != nil {
+		log.Fatalf("Failed to start bulk operation worker: %v", err)
+	}
+	log.Println("Bulk operation worker started")
 
 	// Initialize API server
 	// Note: Context cache refresh is triggered after user login via API handlers

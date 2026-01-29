@@ -26,23 +26,23 @@ type IssueDetectionJob struct {
 
 // DetectedIssue represents a detected issue
 type DetectedIssue struct {
-	ID                    int64
-	Environment           string // M3 environment (TRN or PRD)
-	JobID                 string
-	DetectorType          string
-	DetectedAt            sql.NullTime
-	Facility              string
-	Warehouse             sql.NullString
-	IssueKey              string
-	ProductionOrderNumber sql.NullString
-	ProductionOrderType   sql.NullString
-	CONumber              sql.NullString
-	COLine                sql.NullString
-	COSuffix              sql.NullString
-	IssueData             string // JSONB
-	CreatedAt             sql.NullTime
-	IsIgnored             bool
-	MOTypeDescription     sql.NullString
+	ID                    int64          `json:"id"`
+	Environment           string         `json:"environment"` // M3 environment (TRN or PRD)
+	JobID                 string         `json:"job_id"`
+	DetectorType          string         `json:"detector_type"`
+	DetectedAt            sql.NullTime   `json:"detected_at"`
+	Facility              string         `json:"facility"`
+	Warehouse             sql.NullString `json:"warehouse"`
+	IssueKey              string         `json:"issue_key"`
+	ProductionOrderNumber sql.NullString `json:"production_order_number"`
+	ProductionOrderType   sql.NullString `json:"production_order_type"`
+	CONumber              sql.NullString `json:"co_number"`
+	COLine                sql.NullString `json:"co_line"`
+	COSuffix              sql.NullString `json:"co_suffix"`
+	IssueData             string         `json:"issue_data"` // JSONB
+	CreatedAt             sql.NullTime   `json:"created_at"`
+	IsIgnored             bool           `json:"is_ignored"`
+	MOTypeDescription     sql.NullString `json:"mo_type_description"`
 }
 
 // CreateIssueDetectionJob creates a new detection job
@@ -657,4 +657,230 @@ func (q *Queries) IsIssueIgnored(ctx context.Context, params CheckIgnoredParams)
 		params.ProductionOrderNumber,
 	).Scan(&exists)
 	return exists, err
+}
+
+// IssueCriteria represents filter criteria for bulk operations
+type IssueCriteria struct {
+	DetectorType   string
+	Facility       string
+	Warehouse      string
+	ProductNumber  string
+	IncludeIgnored bool
+}
+
+// BulkPreviewSummary represents aggregated summary statistics for bulk operations preview
+type BulkPreviewSummary struct {
+	ByOrderType map[string]int `json:"by_order_type"`
+	ByFacility  map[string]int `json:"by_facility"`
+	ByDetector  map[string]int `json:"by_detector"`
+}
+
+// GetIssueIDsByCriteria fetches issue IDs matching filter criteria for bulk operations
+// This method is optimized to return only IDs to minimize memory usage for large result sets
+func (q *Queries) GetIssueIDsByCriteria(ctx context.Context, environment string, criteria IssueCriteria) ([]int64, error) {
+	query := `
+		SELECT di.id
+		FROM detected_issues di
+		LEFT JOIN planned_manufacturing_orders mop
+			ON di.environment = mop.environment
+			AND di.production_order_type = 'MOP'
+			AND mop.plpn = di.production_order_number
+			AND mop.faci = di.facility
+		LEFT JOIN manufacturing_orders mo
+			ON di.environment = mo.environment
+			AND di.production_order_type = 'MO'
+			AND mo.mfno = di.production_order_number
+			AND mo.faci = di.facility
+		LEFT JOIN ignored_issues ig
+			ON di.environment = ig.environment
+			AND di.facility = ig.facility
+			AND di.detector_type = ig.detector_type
+			AND di.issue_key = ig.issue_key
+			AND di.production_order_number = ig.production_order_number
+		WHERE di.environment = $1
+		AND di.job_id = (
+			SELECT id FROM refresh_jobs
+			WHERE environment = $1
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
+	`
+
+	args := make([]interface{}, 0)
+	args = append(args, environment)
+	argNum := 2
+
+	// Dynamic filter building based on criteria
+	if criteria.DetectorType != "" {
+		query += fmt.Sprintf(" AND di.detector_type = $%d", argNum)
+		args = append(args, criteria.DetectorType)
+		argNum++
+	}
+
+	if criteria.Facility != "" {
+		query += fmt.Sprintf(" AND di.facility = $%d", argNum)
+		args = append(args, criteria.Facility)
+		argNum++
+	}
+
+	if criteria.Warehouse != "" {
+		query += fmt.Sprintf(" AND di.warehouse = $%d", argNum)
+		args = append(args, criteria.Warehouse)
+		argNum++
+	}
+
+	// NEW: Product number (PRNO) filtering
+	if criteria.ProductNumber != "" {
+		query += fmt.Sprintf(" AND COALESCE(mop.prno, mo.prno) = $%d", argNum)
+		args = append(args, criteria.ProductNumber)
+		argNum++
+	}
+
+	// Include/exclude ignored issues
+	if !criteria.IncludeIgnored {
+		query += " AND ig.id IS NULL"
+	}
+
+	// Deterministic ordering for consistent results
+	query += " ORDER BY di.id"
+
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query issue IDs by criteria: %w", err)
+	}
+	defer rows.Close()
+
+	issueIDs := make([]int64, 0)
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan issue ID: %w", err)
+		}
+		issueIDs = append(issueIDs, id)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating issue IDs: %w", err)
+	}
+
+	return issueIDs, nil
+}
+
+// GetBulkPreviewSummary returns aggregated counts for bulk operations preview
+// Groups by order type, facility, and detector type to show what will be affected
+func (q *Queries) GetBulkPreviewSummary(ctx context.Context, environment string, criteria IssueCriteria) (*BulkPreviewSummary, error) {
+	query := `
+		SELECT
+			di.production_order_type,
+			di.facility,
+			di.detector_type,
+			COUNT(*) as count
+		FROM detected_issues di
+		LEFT JOIN planned_manufacturing_orders mop
+			ON di.environment = mop.environment
+			AND di.production_order_type = 'MOP'
+			AND mop.plpn = di.production_order_number
+			AND mop.faci = di.facility
+		LEFT JOIN manufacturing_orders mo
+			ON di.environment = mo.environment
+			AND di.production_order_type = 'MO'
+			AND mo.mfno = di.production_order_number
+			AND mo.faci = di.facility
+		LEFT JOIN ignored_issues ig
+			ON di.environment = ig.environment
+			AND di.facility = ig.facility
+			AND di.detector_type = ig.detector_type
+			AND di.issue_key = ig.issue_key
+			AND di.production_order_number = ig.production_order_number
+		WHERE di.environment = $1
+		AND di.job_id = (
+			SELECT id FROM refresh_jobs
+			WHERE environment = $1
+			ORDER BY created_at DESC
+			LIMIT 1
+		)
+		AND COALESCE(mop.deleted_remotely, mo.deleted_remotely, false) = false
+	`
+
+	args := make([]interface{}, 0)
+	args = append(args, environment)
+	argNum := 2
+
+	// Apply same filters as GetIssueIDsByCriteria
+	if criteria.DetectorType != "" {
+		query += fmt.Sprintf(" AND di.detector_type = $%d", argNum)
+		args = append(args, criteria.DetectorType)
+		argNum++
+	}
+
+	if criteria.Facility != "" {
+		query += fmt.Sprintf(" AND di.facility = $%d", argNum)
+		args = append(args, criteria.Facility)
+		argNum++
+	}
+
+	if criteria.Warehouse != "" {
+		query += fmt.Sprintf(" AND di.warehouse = $%d", argNum)
+		args = append(args, criteria.Warehouse)
+		argNum++
+	}
+
+	if criteria.ProductNumber != "" {
+		query += fmt.Sprintf(" AND COALESCE(mop.prno, mo.prno) = $%d", argNum)
+		args = append(args, criteria.ProductNumber)
+		argNum++
+	}
+
+	if !criteria.IncludeIgnored {
+		query += " AND ig.id IS NULL"
+	}
+
+	// Group by all dimensions
+	query += `
+		GROUP BY di.production_order_type, di.facility, di.detector_type
+		ORDER BY di.facility, di.production_order_type, di.detector_type
+	`
+
+	rows, err := q.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query bulk preview summary: %w", err)
+	}
+	defer rows.Close()
+
+	summary := &BulkPreviewSummary{
+		ByOrderType: make(map[string]int),
+		ByFacility:  make(map[string]int),
+		ByDetector:  make(map[string]int),
+	}
+
+	for rows.Next() {
+		var orderType, facility, detectorType sql.NullString
+		var count int
+
+		if err := rows.Scan(&orderType, &facility, &detectorType, &count); err != nil {
+			return nil, fmt.Errorf("failed to scan summary row: %w", err)
+		}
+
+		// Aggregate by order type (MO vs MOP)
+		if orderType.Valid {
+			summary.ByOrderType[orderType.String] += count
+		}
+
+		// Aggregate by facility
+		if facility.Valid {
+			summary.ByFacility[facility.String] += count
+		}
+
+		// Aggregate by detector type
+		if detectorType.Valid {
+			summary.ByDetector[detectorType.String] += count
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating summary rows: %w", err)
+	}
+
+	return summary, nil
 }

@@ -43,6 +43,7 @@ type SnapshotRefreshMessage struct {
 	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
+	Language    string `json:"language"`
 }
 
 // PhaseProgress represents the status of a single parallel phase
@@ -99,6 +100,7 @@ type DataBatchJobMessage struct {
 	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
+	Language    string `json:"language"`
 }
 
 // BatchStartMessage signals that a worker has picked up a batch job
@@ -568,19 +570,9 @@ func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
 	snapshotService := services.NewSnapshotService(compassClient, w.db)
 
 	// Set progress callback to publish intermediate updates
-	snapshotService.SetProgressCallback(func(phase string, stepNum, totalSteps int, message string, mopCount, moCount, coCount int) {
-		// Determine current record count based on data type
-		currentCount := 0
-		switch job.DataType {
-		case "mops":
-			currentCount = mopCount
-		case "mos":
-			currentCount = moCount
-		case "cos":
-			currentCount = coCount
-		}
-
-		w.publishPhaseSubProgress(job.ParentJobID, job.DataType, message, currentCount)
+	snapshotService.SetProgressCallback(func(phase string, stepNum, totalSteps int, message string, mopCount, moCount, coCount, currentRecordCount int) {
+		// Use the currentRecordCount parameter which contains the real-time progress
+		w.publishPhaseSubProgress(job.ParentJobID, job.DataType, message, currentRecordCount)
 	})
 
 	var recordCount int
@@ -595,7 +587,7 @@ func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
 		recordCount, fetchErr = snapshotService.RefreshManufacturingOrders(ctx, job.Environment, job.Company, job.Facility)
 
 	case "cos":
-		recordCount, fetchErr = snapshotService.RefreshOpenCustomerOrderLines(ctx, job.Environment, job.Company, job.Facility)
+		recordCount, fetchErr = snapshotService.RefreshOpenCustomerOrderLines(ctx, job.Environment, job.Company, job.Facility, job.Language)
 
 	default:
 		log.Printf("Unknown data type: %s", job.DataType)
@@ -772,6 +764,7 @@ func (w *SnapshotWorker) publishDataJobs(req SnapshotRefreshMessage) error {
 			AccessToken: req.AccessToken,
 			Company:     req.Company,
 			Facility:    req.Facility,
+			Language:    req.Language,
 		}
 
 		data, _ := json.Marshal(job)

@@ -21,6 +21,7 @@ type RefreshRequest struct {
 	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
+	Language    string `json:"language"`
 }
 
 // handleSnapshotRefresh initiates a data refresh from M3 via NATS
@@ -54,6 +55,7 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Environment: %s", environment)
 	log.Printf("Company: %s", effectiveContext.Company)
 	log.Printf("Facility: %s", effectiveContext.Facility)
+	log.Printf("Language: %s", effectiveContext.Language)
 	log.Printf("=======================================")
 
 	// Generate job ID
@@ -78,6 +80,7 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 		AccessToken: accessToken,
 		Company:     effectiveContext.Company,
 		Facility:    effectiveContext.Facility,
+		Language:    effectiveContext.Language,
 	}
 
 	msgData, _ := json.Marshal(refreshMsg)

@@ -12,8 +12,8 @@ import (
 )
 
 // ProgressCallback is called to report progress during refresh operations
-// Parameters: phase, stepNum, totalSteps, message, mopCount, moCount, coCount
-type ProgressCallback func(phase string, stepNum, totalSteps int, message string, mopCount, moCount, coCount int)
+// Parameters: phase, stepNum, totalSteps, message, mopCount, moCount, coCount, currentRecordCount
+type ProgressCallback func(phase string, stepNum, totalSteps int, message string, mopCount, moCount, coCount, currentRecordCount int)
 
 // SnapshotService handles data refresh operations
 type SnapshotService struct {
@@ -42,14 +42,14 @@ func (s *SnapshotService) SetProgressCallback(callback ProgressCallback) {
 // reportProgress calls the progress callback if set
 func (s *SnapshotService) reportProgress(phase string, stepNum, totalSteps int, message string) {
 	if s.progressCallback != nil {
-		s.progressCallback(phase, stepNum, totalSteps, message, s.mopCount, s.moCount, s.coCount)
+		s.progressCallback(phase, stepNum, totalSteps, message, s.mopCount, s.moCount, s.coCount, 0)
 	}
 }
 
 // reportSubProgress reports a sub-operation within the current phase
 func (s *SnapshotService) reportSubProgress(operation string, recordCount int) {
 	if s.progressCallback != nil {
-		s.progressCallback("", 0, 0, operation, s.mopCount, s.moCount, s.coCount)
+		s.progressCallback("", 0, 0, operation, s.mopCount, s.moCount, s.coCount, recordCount)
 	}
 }
 
@@ -57,11 +57,11 @@ func (s *SnapshotService) reportSubProgress(operation string, recordCount int) {
 // Filtered by environment, company and facility context
 // This is more efficient than querying by specific order numbers when there are many orders
 // Returns the count of records processed
-func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, environment, company string, facility string) (int, error) {
-	log.Printf("Refreshing all open customer order lines (status < 30) for environment '%s', company '%s' and facility '%s'...", environment, company, facility)
+func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, environment, company string, facility string, language string) (int, error) {
+	log.Printf("Refreshing all open customer order lines (status < 30) for environment '%s', company '%s', facility '%s' and language '%s'...", environment, company, facility, language)
 
 	// Build query for all open CO lines with context filters
-	qb := compass.NewQueryBuilder(0, company, facility)
+	qb := compass.NewQueryBuilder(0, company, facility, language)
 	query := qb.BuildOpenCustomerOrderLinesQuery()
 
 	// Execute query
@@ -187,6 +187,7 @@ func (s *SnapshotService) RefreshOpenCustomerOrderLines(ctx context.Context, env
 			ORTP: coLine.ORTP,
 			COTypeDescription: coLine.COTypeDescription,
 			DeliveryMethod: coLine.DeliveryMethod,
+			DeliveryMethodDescription: coLine.DeliveryMethodDescription,
 			ATV1: coLine.ATV1,
 			ATV2: coLine.ATV2,
 			ATV3: coLine.ATV3,
@@ -274,7 +275,7 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 	// Build targeted query (no lastSyncDate needed - we want all lines for these orders)
 	// Note: This deprecated method doesn't filter by context in the query builder call
 	// because BuildCustomerOrderLinesByOrderNumbersQuery doesn't use context fields
-	qb := compass.NewQueryBuilder(0, company, facility)
+	qb := compass.NewQueryBuilder(0, company, facility, "GB")
 	query := qb.BuildCustomerOrderLinesByOrderNumbersQuery(orderNumbers)
 
 	// Execute query (DEPRECATED method - use batch refresh instead)
@@ -390,6 +391,7 @@ func (s *SnapshotService) RefreshCustomerOrderLinesByNumbers(ctx context.Context
 			ORTP: coLine.ORTP,
 			COTypeDescription: coLine.COTypeDescription,
 			DeliveryMethod: coLine.DeliveryMethod,
+			DeliveryMethodDescription: coLine.DeliveryMethodDescription,
 			ATV1: coLine.ATV1,
 			ATV2: coLine.ATV2,
 			ATV3: coLine.ATV3,
@@ -459,7 +461,7 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, enviro
 	log.Printf("Using full refresh date: %d", fullRefreshDate)
 
 	// Build query with context filters
-	qb := compass.NewQueryBuilder(fullRefreshDate, company, facility)
+	qb := compass.NewQueryBuilder(fullRefreshDate, company, facility, "GB")
 	query := qb.BuildManufacturingOrdersQuery()
 
 	// Execute query (DEPRECATED method - use batch refresh instead)
@@ -653,7 +655,7 @@ func (s *SnapshotService) RefreshPlannedOrders(ctx context.Context, environment,
 	log.Printf("Using full refresh date: %d", fullRefreshDate)
 
 	// Build query with MPREAL join and context filters
-	qb := compass.NewQueryBuilder(fullRefreshDate, company, facility)
+	qb := compass.NewQueryBuilder(fullRefreshDate, company, facility, "GB")
 	query := qb.BuildPlannedOrdersWithCOLinksQuery()
 
 	// Execute query (DEPRECATED method - use batch refresh instead)

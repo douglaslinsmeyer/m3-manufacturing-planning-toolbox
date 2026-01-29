@@ -10,14 +10,20 @@ type QueryBuilder struct {
 	lastSyncDate int    // YYYYMMDD format
 	company      string // Company number (CONO)
 	facility     string // Facility (FACI)
+	language     string // Language code (LNCD)
 }
 
 // NewQueryBuilder creates a new query builder
-func NewQueryBuilder(lastSyncDate int, company string, facility string) *QueryBuilder {
+func NewQueryBuilder(lastSyncDate int, company string, facility string, language string) *QueryBuilder {
+	// Default to English if language is not provided
+	if language == "" {
+		language = "GB"
+	}
 	return &QueryBuilder{
 		lastSyncDate: lastSyncDate,
 		company:      company,
 		facility:     facility,
+		language:     language,
 	}
 }
 
@@ -485,6 +491,9 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 		// Enrichment: Delivery Method (from OOHEAD)
 		"delivery_method",
 
+		// Enrichment: Delivery Method Description (from CSYTAB)
+		"delivery_method_description",
+
 		// Attributes (ATV1-ATV0)
 		"ATV1", "ATV2", "ATV3", "ATV4", "ATV5",
 		"ATV6", "ATV7", "ATV8", "ATV9", "ATV0",
@@ -523,6 +532,8 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 			fieldList = append(fieldList, "ootype.TX40 as co_type_description")
 		} else if field == "delivery_method" {
 			fieldList = append(fieldList, "oh.MODL as delivery_method")
+		} else if field == "delivery_method_description" {
+			fieldList = append(fieldList, "dm.TX15 as delivery_method_description")
 		} else {
 			// All other fields come from OOLINE with ol. prefix
 			fieldList = append(fieldList, "ol."+field)
@@ -546,13 +557,19 @@ LEFT JOIN OCUSMA cu
 LEFT JOIN OOTYPE ootype
   ON oh.ORTP = ootype.ORTP
   AND ootype.deleted = 'false'
+LEFT JOIN CSYTAB dm
+  ON dm.CONO = '%s'
+  AND dm.STCO = 'MODL'
+  AND dm.LNCD = '%s'
+  AND dm.STKY = oh.MODL
+  AND dm.deleted = 'false'
 WHERE ol.deleted = 'false'
   AND ol.ORST >= '20'
   AND ol.ORST < '30'
   AND ol.CONO = '%s'
   AND ol.FACI = '%s'
 ORDER BY ol.ORNO, ol.PONR, ol.POSX
-`, strings.Join(fieldList, ", "), qb.company, qb.facility)
+`, strings.Join(fieldList, ", "), qb.company, qb.language, qb.company, qb.facility)
 
 	return strings.TrimSpace(query)
 }

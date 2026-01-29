@@ -82,6 +82,9 @@ type CustomerOrderLine struct {
 	// Enrichment: Delivery Method (from OOHEAD)
 	DeliveryMethod string
 
+	// Enrichment: Delivery Method Description (from CSYTAB)
+	DeliveryMethodDescription string
+
 	// M3 Attributes (ATV1-ATV0)
 	ATV1, ATV2, ATV3, ATV4, ATV5 string
 	ATV6, ATV7, ATV8, ATV9, ATV0 string
@@ -153,6 +156,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			dlix, ortp,
 			co_type_description,
 			delivery_method,
+			delivery_method_description,
 			atv1, atv2, atv3, atv4, atv5, atv6, atv7, atv8, atv9, atv0,
 			uca1, uca2, uca3, uca4, uca5, uca6, uca7, uca8, uca9, uca0,
 			udn1, udn2, udn3, udn4, udn5, udn6,
@@ -187,15 +191,16 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			$81, $82,
 			$83,
 			$84,
-			$85, $86, $87, $88, $89, $90, $91, $92, $93, $94,
-			$95, $96, $97, $98, $99, $100, $101, $102, $103, $104,
-			$105, $106, $107, $108, $109, $110,
-			$111, $112, $113,
-			$114,
-			$115, $116, $117, $118,
-			$119, $120,
-			$121, $122, $123, $124, $125, $126,
-			$127,
+			$85,
+			$86, $87, $88, $89, $90, $91, $92, $93, $94, $95,
+			$96, $97, $98, $99, $100, $101, $102, $103, $104, $105,
+			$106, $107, $108, $109, $110, $111,
+			$112, $113, $114,
+			$115,
+			$116, $117, $118, $119,
+			$120, $121,
+			$122, $123, $124, $125, $126, $127,
+			$128,
 			NOW()
 		)
 		ON CONFLICT (environment, orno, ponr, posx)
@@ -217,6 +222,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			customer_name = EXCLUDED.customer_name,
 			co_type_description = EXCLUDED.co_type_description,
 			delivery_method = EXCLUDED.delivery_method,
+			delivery_method_description = EXCLUDED.delivery_method_description,
 			lmdt = EXCLUDED.lmdt,
 			lmts = EXCLUDED.lmts,
 			m3_timestamp = EXCLUDED.m3_timestamp,
@@ -254,6 +260,7 @@ func (q *Queries) BatchInsertCustomerOrderLines(ctx context.Context, lines []*Cu
 			line.DLIX, line.ORTP,
 			line.COTypeDescription,
 			line.DeliveryMethod,
+			line.DeliveryMethodDescription,
 			line.ATV1, line.ATV2, line.ATV3, line.ATV4, line.ATV5, line.ATV6, line.ATV7, line.ATV8, line.ATV9, line.ATV0,
 			line.UCA1, line.UCA2, line.UCA3, line.UCA4, line.UCA5, line.UCA6, line.UCA7, line.UCA8, line.UCA9, line.UCA0,
 			line.UDN1, line.UDN2, line.UDN3, line.UDN4, line.UDN5, line.UDN6,

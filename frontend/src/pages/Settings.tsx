@@ -469,6 +469,7 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
               newSettings.categories['anomaly_detection'] = updated;
               onSettingsChange(newSettings);
             }}
+            keyPrefix="anomaly"
           />
 
           {/* Date Clustering Detector */}
@@ -482,6 +483,7 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
               newSettings.categories['anomaly_detection'] = updated;
               onSettingsChange(newSettings);
             }}
+            keyPrefix="anomaly"
           />
 
           {/* MOP-to-Demand Ratio Detector */}
@@ -495,6 +497,7 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
               newSettings.categories['anomaly_detection'] = updated;
               onSettingsChange(newSettings);
             }}
+            keyPrefix="anomaly"
           />
 
           {/* Absolute Volume Detector */}
@@ -508,6 +511,7 @@ const SystemSettingsForm: React.FC<SystemSettingsFormProps> = ({
               newSettings.categories['anomaly_detection'] = updated;
               onSettingsChange(newSettings);
             }}
+            keyPrefix="anomaly"
           />
         </div>
 

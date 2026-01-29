@@ -558,6 +558,27 @@ const Issues: React.FC = () => {
     setSelectedIssues(new Set());
   };
 
+  // Calculate duplicate info from selected issues
+  const getDuplicateInfo = () => {
+    if (selectedIssues.size === 0) {
+      return { uniqueOrders: 0, duplicates: 0 };
+    }
+
+    const orderNumbers = new Set<string>();
+    issues.forEach((issue) => {
+      if (selectedIssues.has(issue.id)) {
+        orderNumbers.add(issue.production_order_number);
+      }
+    });
+
+    const uniqueOrders = orderNumbers.size;
+    const duplicates = selectedIssues.size - uniqueOrders;
+
+    return { uniqueOrders, duplicates };
+  };
+
+  const duplicateInfo = getDuplicateInfo();
+
   // Get available bulk actions based on selected issues
   const getAvailableActions = (): BulkAction[] => {
     const selected = Array.from(selectedIssues)
@@ -621,88 +642,154 @@ const Issues: React.FC = () => {
   // Bulk operation handlers
   const handleBulkDelete = async () => {
     const issueIds = Array.from(selectedIssues);
-    setBulkModalTitle('Bulk Delete');
+
+    // Initialize modal with pending state
+    const pendingResults: BulkOperationResult[] = issueIds.map((id) => ({
+      issue_id: id,
+      production_order: issues.find((i) => i.id === id)?.production_order_number || 'Unknown',
+      status: 'pending' as const,
+    }));
+
+    setBulkModalTitle('Bulk Delete Production Orders');
     setBulkTotal(issueIds.length);
     setBulkCompleted(0);
-    setBulkResults([]);
+    setBulkResults(pendingResults);
     setBulkModalOpen(true);
     setIsBulkProcessing(true);
 
     try {
-      const result = await api.bulkDelete(issueIds);
+      // Call bulk delete API (returns job_id)
+      const response = await api.bulkDelete(issueIds);
+      const jobId = response.job_id;
 
-      // Convert API results to modal format
-      const modalResults: BulkOperationResult[] = result.results.map(r => ({
-        issue_id: r.issue_id,
-        production_order: r.production_order,
-        status: r.status,
-        message: r.message,
-        error: r.error,
-      }));
+      // Poll for issue results
+      const pollInterval = setInterval(async () => {
+        try {
+          const issueResults = await api.getBulkOperationIssueResults(jobId);
 
-      setBulkResults(modalResults);
-      setBulkCompleted(result.total);
+          // Convert to modal format
+          const modalResults: BulkOperationResult[] = issueResults.results.map(r => ({
+            issue_id: r.issue_id,
+            production_order: r.production_order,
+            status: r.status,
+            message: r.message,
+            error: r.error,
+            is_duplicate: r.is_duplicate,
+            primary_issue_id: r.primary_issue_id,
+          }));
 
-      // Refresh data
-      await Promise.all([fetchIssues(), fetchSummary()]);
-      clearSelection();
+          setBulkResults(modalResults);
+          setBulkCompleted(modalResults.filter(r => r.status !== 'pending').length);
 
-      // Show toast summary
-      if (result.failed === 0) {
-        toast.success(`Successfully deleted ${result.successful} production orders`);
-      } else if (result.successful > 0) {
-        toast.warning(`Deleted ${result.successful} orders, ${result.failed} failed`);
-      } else {
-        toast.error('Failed to delete any production orders');
-      }
-    } catch (error) {
+          // Stop polling when all complete
+          const allComplete = modalResults.every(r => r.status !== 'pending');
+          if (allComplete) {
+            clearInterval(pollInterval);
+            setIsBulkProcessing(false);
+
+            // Refresh data
+            await Promise.all([fetchIssues(), fetchSummary()]);
+            clearSelection();
+
+            // Show toast
+            const successCount = modalResults.filter(r => r.status === 'success').length;
+            const failCount = modalResults.filter(r => r.status === 'error').length;
+
+            if (failCount === 0) {
+              toast.success(`Successfully deleted ${successCount} production orders`);
+            } else if (successCount > 0) {
+              toast.warning(`Deleted ${successCount} orders, ${failCount} failed`);
+            } else {
+              toast.error('Failed to delete any production orders');
+            }
+          }
+        } catch (error) {
+          clearInterval(pollInterval);
+          console.error('Failed to fetch issue results:', error);
+          toast.error('Failed to fetch operation results');
+          setIsBulkProcessing(false);
+        }
+      }, 1000); // Poll every 1 second
+    } catch (error: any) {
       console.error('Bulk delete failed:', error);
-      toast.error('Bulk delete operation failed. Please try again.');
-    } finally {
+      toast.error(error.message || 'Bulk delete failed');
       setIsBulkProcessing(false);
     }
   };
 
   const handleBulkClose = async () => {
     const issueIds = Array.from(selectedIssues);
-    setBulkModalTitle('Bulk Close');
+
+    // Initialize modal with pending state
+    const pendingResults: BulkOperationResult[] = issueIds.map((id) => ({
+      issue_id: id,
+      production_order: issues.find((i) => i.id === id)?.production_order_number || 'Unknown',
+      status: 'pending' as const,
+    }));
+
+    setBulkModalTitle('Bulk Close Manufacturing Orders');
     setBulkTotal(issueIds.length);
     setBulkCompleted(0);
-    setBulkResults([]);
+    setBulkResults(pendingResults);
     setBulkModalOpen(true);
     setIsBulkProcessing(true);
 
     try {
-      const result = await api.bulkClose(issueIds);
+      // Call bulk close API (returns job_id)
+      const response = await api.bulkClose(issueIds);
+      const jobId = response.job_id;
 
-      // Convert API results to modal format
-      const modalResults: BulkOperationResult[] = result.results.map(r => ({
-        issue_id: r.issue_id,
-        production_order: r.production_order,
-        status: r.status,
-        message: r.message,
-        error: r.error,
-      }));
+      // Poll for issue results
+      const pollInterval = setInterval(async () => {
+        try {
+          const issueResults = await api.getBulkOperationIssueResults(jobId);
 
-      setBulkResults(modalResults);
-      setBulkCompleted(result.total);
+          // Convert to modal format
+          const modalResults: BulkOperationResult[] = issueResults.results.map(r => ({
+            issue_id: r.issue_id,
+            production_order: r.production_order,
+            status: r.status,
+            message: r.message,
+            error: r.error,
+            is_duplicate: r.is_duplicate,
+            primary_issue_id: r.primary_issue_id,
+          }));
 
-      // Refresh data
-      await Promise.all([fetchIssues(), fetchSummary()]);
-      clearSelection();
+          setBulkResults(modalResults);
+          setBulkCompleted(modalResults.filter(r => r.status !== 'pending').length);
 
-      // Show toast summary
-      if (result.failed === 0) {
-        toast.success(`Successfully closed ${result.successful} manufacturing orders`);
-      } else if (result.successful > 0) {
-        toast.warning(`Closed ${result.successful} orders, ${result.failed} failed`);
-      } else {
-        toast.error('Failed to close any manufacturing orders');
-      }
-    } catch (error) {
+          // Stop polling when all complete
+          const allComplete = modalResults.every(r => r.status !== 'pending');
+          if (allComplete) {
+            clearInterval(pollInterval);
+            setIsBulkProcessing(false);
+
+            // Refresh data
+            await Promise.all([fetchIssues(), fetchSummary()]);
+            clearSelection();
+
+            // Show toast
+            const successCount = modalResults.filter(r => r.status === 'success').length;
+            const failCount = modalResults.filter(r => r.status === 'error').length;
+
+            if (failCount === 0) {
+              toast.success(`Successfully closed ${successCount} manufacturing orders`);
+            } else if (successCount > 0) {
+              toast.warning(`Closed ${successCount} orders, ${failCount} failed`);
+            } else {
+              toast.error('Failed to close any manufacturing orders');
+            }
+          }
+        } catch (error) {
+          clearInterval(pollInterval);
+          console.error('Failed to fetch issue results:', error);
+          toast.error('Failed to fetch operation results');
+          setIsBulkProcessing(false);
+        }
+      }, 1000); // Poll every 1 second
+    } catch (error: any) {
       console.error('Bulk close failed:', error);
-      toast.error('Bulk close operation failed. Please try again.');
-    } finally {
+      toast.error(error.message || 'Bulk close failed');
       setIsBulkProcessing(false);
     }
   };
@@ -722,44 +809,77 @@ const Issues: React.FC = () => {
     }
 
     const issueIds = Array.from(selectedIssues);
-    setBulkModalTitle('Bulk Reschedule');
+
+    // Initialize modal with pending state
+    const pendingResults: BulkOperationResult[] = issueIds.map((id) => ({
+      issue_id: id,
+      production_order: issues.find((i) => i.id === id)?.production_order_number || 'Unknown',
+      status: 'pending' as const,
+    }));
+
+    setBulkModalTitle('Bulk Reschedule Production Orders');
     setBulkTotal(issueIds.length);
     setBulkCompleted(0);
-    setBulkResults([]);
+    setBulkResults(pendingResults);
     setBulkModalOpen(true);
     setIsBulkProcessing(true);
 
     try {
-      const result = await api.bulkReschedule(issueIds, dateInput);
+      // Call bulk reschedule API (returns job_id)
+      const response = await api.bulkReschedule(issueIds, dateInput);
+      const jobId = response.job_id;
 
-      // Convert API results to modal format
-      const modalResults: BulkOperationResult[] = result.results.map(r => ({
-        issue_id: r.issue_id,
-        production_order: r.production_order,
-        status: r.status,
-        message: r.message,
-        error: r.error,
-      }));
+      // Poll for issue results
+      const pollInterval = setInterval(async () => {
+        try {
+          const issueResults = await api.getBulkOperationIssueResults(jobId);
 
-      setBulkResults(modalResults);
-      setBulkCompleted(result.total);
+          // Convert to modal format
+          const modalResults: BulkOperationResult[] = issueResults.results.map(r => ({
+            issue_id: r.issue_id,
+            production_order: r.production_order,
+            status: r.status,
+            message: r.message,
+            error: r.error,
+            is_duplicate: r.is_duplicate,
+            primary_issue_id: r.primary_issue_id,
+          }));
 
-      // Refresh data
-      await Promise.all([fetchIssues(), fetchSummary()]);
-      clearSelection();
+          setBulkResults(modalResults);
+          setBulkCompleted(modalResults.filter(r => r.status !== 'pending').length);
 
-      // Show toast summary
-      if (result.failed === 0) {
-        toast.success(`Successfully rescheduled ${result.successful} production orders to ${formatM3Date(dateInput)}`);
-      } else if (result.successful > 0) {
-        toast.warning(`Rescheduled ${result.successful} orders, ${result.failed} failed`);
-      } else {
-        toast.error('Failed to reschedule any production orders');
-      }
-    } catch (error) {
+          // Stop polling when all complete
+          const allComplete = modalResults.every(r => r.status !== 'pending');
+          if (allComplete) {
+            clearInterval(pollInterval);
+            setIsBulkProcessing(false);
+
+            // Refresh data
+            await Promise.all([fetchIssues(), fetchSummary()]);
+            clearSelection();
+
+            // Show toast
+            const successCount = modalResults.filter(r => r.status === 'success').length;
+            const failCount = modalResults.filter(r => r.status === 'error').length;
+
+            if (failCount === 0) {
+              toast.success(`Successfully rescheduled ${successCount} production orders to ${formatM3Date(dateInput)}`);
+            } else if (successCount > 0) {
+              toast.warning(`Rescheduled ${successCount} orders, ${failCount} failed`);
+            } else {
+              toast.error('Failed to reschedule any production orders');
+            }
+          }
+        } catch (error) {
+          clearInterval(pollInterval);
+          console.error('Failed to fetch issue results:', error);
+          toast.error('Failed to fetch operation results');
+          setIsBulkProcessing(false);
+        }
+      }, 1000); // Poll every 1 second
+    } catch (error: any) {
       console.error('Bulk reschedule failed:', error);
-      toast.error('Bulk reschedule operation failed. Please try again.');
-    } finally {
+      toast.error(error.message || 'Bulk reschedule failed');
       setIsBulkProcessing(false);
     }
   };
@@ -1153,6 +1273,8 @@ const Issues: React.FC = () => {
         {/* Bulk Action Toolbar */}
         <BulkActionToolbar
           selectedCount={selectedIssues.size}
+          uniqueOrderCount={duplicateInfo.uniqueOrders}
+          duplicateCount={duplicateInfo.duplicates}
           availableActions={getAvailableActions()}
           onExecute={handleBulkAction}
           onClear={clearSelection}
