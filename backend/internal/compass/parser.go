@@ -161,6 +161,14 @@ type CustomerOrderLineRecord struct {
 	// Metadata
 	Timestamp string
 	Deleted   string
+
+	// MITMAS Item Master fields
+	ItemType                string
+	ItemDescriptionMaster   string // Separate from ITDS
+	ItemGroup               string
+	ProductGroup            string
+	ProcurementGroup        string
+	GroupTechnologyClass    string
 }
 
 // ParseCustomerOrderLine converts a Compass record to a CustomerOrderLineRecord
@@ -354,6 +362,14 @@ func ParseCustomerOrderLine(record map[string]interface{}) (*CustomerOrderLineRe
 		LMTS:      getStringFromAny(record, "LMTS"),
 		Timestamp: getString(record, "timestamp"),
 		Deleted:   getString(record, "deleted"),
+
+		// MITMAS Item Master fields
+		ItemType:              getString(record, "item_type"),
+		ItemDescriptionMaster: getString(record, "item_description_master"),
+		ItemGroup:             getString(record, "item_group"),
+		ProductGroup:          getString(record, "product_group"),
+		ProcurementGroup:      getString(record, "procurement_group"),
+		GroupTechnologyClass:  getString(record, "group_technology_class"),
 	}
 
 	return col, nil
@@ -510,6 +526,7 @@ type ManufacturingOrderRecord struct {
 	WHLO string
 	WHSL string
 	BANO string
+	PendingPutawayQty string
 
 	// Reference orders
 	RORC int
@@ -560,6 +577,14 @@ type ManufacturingOrderRecord struct {
 	Timestamp int64
 	Deleted   string
 
+	// MITMAS Item Master fields
+	ItemType              string
+	ItemDescription       string
+	ItemGroup             string
+	ProductGroup          string
+	ProcurementGroup      string
+	GroupTechnologyClass  string
+
 	// Additional fields stored in attributes JSONB
 	Attributes map[string]interface{}
 }
@@ -608,6 +633,7 @@ func ParseManufacturingOrder(record map[string]interface{}) (*ManufacturingOrder
 		WHLO: getString(record, "WHLO"),
 		WHSL: getString(record, "WHSL"),
 		BANO: getString(record, "BANO"),
+		PendingPutawayQty: getString(record, "PAQT"),
 
 		RORC: getInt(record, "RORC"),
 		RORN: getString(record, "RORN"),
@@ -648,6 +674,14 @@ func ParseManufacturingOrder(record map[string]interface{}) (*ManufacturingOrder
 
 		Timestamp: getInt64(record, "timestamp"),
 		Deleted:   getString(record, "deleted"),
+
+		// MITMAS Item Master fields
+		ItemType:             getString(record, "item_type"),
+		ItemDescription:      getString(record, "item_description"),
+		ItemGroup:            getString(record, "item_group"),
+		ProductGroup:         getString(record, "product_group"),
+		ProcurementGroup:     getString(record, "procurement_group"),
+		GroupTechnologyClass: getString(record, "group_technology_class"),
 	}
 
 	// Build attributes JSONB for additional fields
@@ -799,6 +833,14 @@ type PlannedOrderRecord struct {
 	Timestamp int64
 	Deleted   string
 
+	// MITMAS Item Master fields
+	ItemType              string
+	ItemDescription       string
+	ItemGroup             string
+	ProductGroup          string
+	ProcurementGroup      string
+	GroupTechnologyClass  string
+
 	// Additional fields stored in attributes
 	Attributes map[string]interface{}
 }
@@ -866,6 +908,14 @@ func ParsePlannedOrder(record map[string]interface{}) (*PlannedOrderRecord, erro
 
 		Timestamp: getInt64(record, "timestamp"),
 		Deleted:   getString(record, "deleted"),
+
+		// MITMAS Item Master fields
+		ItemType:             getString(record, "item_type"),
+		ItemDescription:      getString(record, "item_description"),
+		ItemGroup:            getString(record, "item_group"),
+		ProductGroup:         getString(record, "product_group"),
+		ProcurementGroup:     getString(record, "procurement_group"),
+		GroupTechnologyClass: getString(record, "group_technology_class"),
 	}
 
 	// Build messages JSONB

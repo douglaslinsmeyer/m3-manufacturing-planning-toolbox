@@ -612,6 +612,14 @@ func (s *SnapshotService) RefreshManufacturingOrders(ctx context.Context, enviro
 			LinkedCOLine:   linkedCOLine,
 			LinkedCOSuffix: linkedCOSuffix,
 			AllocatedQty:   allocatedQty,
+
+			// MITMAS Item Master fields
+			ItemType:             mo.ItemType,
+			ItemDescription:      mo.ItemDescription,
+			ItemGroup:            mo.ItemGroup,
+			ProductGroup:         mo.ProductGroup,
+			ProcurementGroup:     mo.ProcurementGroup,
+			GroupTechnologyClass: mo.GroupTechnologyClass,
 		}
 
 		dbRecords = append(dbRecords, dbRecord)

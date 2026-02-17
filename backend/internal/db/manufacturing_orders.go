@@ -55,6 +55,7 @@ type ManufacturingOrder struct {
 	WHLO           string
 	WHSL           string
 	BANO           string
+	PendingPutawayQty string // Pending putaway quantity from MPTAWY.TRQT
 
 	// M3 Reference Orders
 	RORC           string
@@ -114,6 +115,14 @@ type ManufacturingOrder struct {
 	LinkedCOSuffix string
 	AllocatedQty   string
 
+	// MITMAS Item Master fields
+	ItemType             string
+	ItemDescription      string
+	ItemGroup            string
+	ProductGroup         string
+	ProcurementGroup     string
+	GroupTechnologyClass string
+
 	SyncTime       sql.NullTime
 }
 
@@ -137,7 +146,7 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			orqt, maqt, orqa, rvqt, rvqa, maqa,
 			stdt, fidt, msti, mfti, fstd, ffid, rsdt, refd, rpdt,
 			prio, resp, plgr, wcln, prdy,
-			whlo, whsl, bano,
+			whlo, whsl, bano, pending_putaway_qty,
 			rorc, rorn, rorl, rorx,
 			prhl, mfhl, prlo, mflo, levl,
 			cfin, atnr,
@@ -149,6 +158,7 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			rgdt, rgtm, lmdt, lmts, chno, chid,
 			m3_timestamp,
 			linked_co_number, linked_co_line, linked_co_suffix, allocated_qty,
+			item_type, item_description, item_group, product_group, procurement_group, group_technology_class,
 			sync_timestamp
 		) VALUES (
 			$1,
@@ -157,18 +167,19 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			$12, $13, $14, $15, $16, $17,
 			$18, $19, $20, $21, $22, $23, $24, $25, $26,
 			$27, $28, $29, $30, $31,
-			$32, $33, $34,
-			$35, $36, $37, $38,
-			$39, $40, $41, $42, $43,
-			$44, $45,
-			$46, $47,
-			$48, $49, $50, $51,
-			$52, $53, $54,
-			$55, $56, $57,
-			$58, $59,
-			$60, $61, $62, $63, $64, $65,
-			$66,
-			$67, $68, $69, $70,
+			$32, $33, $34, $35,
+			$36, $37, $38, $39,
+			$40, $41, $42, $43, $44,
+			$45, $46,
+			$47, $48,
+			$49, $50, $51, $52,
+			$53, $54, $55,
+			$56, $57, $58,
+			$59, $60,
+			$61, $62, $63, $64, $65, $66,
+			$67,
+			$68, $69, $70, $71,
+			$72, $73, $74, $75, $76, $77,
 			NOW()
 		)
 		ON CONFLICT (environment, faci, mfno)
@@ -200,6 +211,7 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			whlo = EXCLUDED.whlo,
 			whsl = EXCLUDED.whsl,
 			bano = EXCLUDED.bano,
+			pending_putaway_qty = EXCLUDED.pending_putaway_qty,
 			rorc = EXCLUDED.rorc,
 			rorn = EXCLUDED.rorn,
 			rorl = EXCLUDED.rorl,
@@ -236,6 +248,12 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			linked_co_line = EXCLUDED.linked_co_line,
 			linked_co_suffix = EXCLUDED.linked_co_suffix,
 			allocated_qty = EXCLUDED.allocated_qty,
+			item_type = EXCLUDED.item_type,
+			item_description = EXCLUDED.item_description,
+			item_group = EXCLUDED.item_group,
+			product_group = EXCLUDED.product_group,
+			procurement_group = EXCLUDED.procurement_group,
+			group_technology_class = EXCLUDED.group_technology_class,
 			sync_timestamp = NOW(),
 			updated_at = NOW()
 	`)
@@ -253,7 +271,7 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			mo.ORQT, mo.MAQT, mo.ORQA, mo.RVQT, mo.RVQA, mo.MAQA,
 			mo.STDT, mo.FIDT, mo.MSTI, mo.MFTI, mo.FSTD, mo.FFID, mo.RSDT, mo.REFD, mo.RPDT,
 			mo.PRIO, mo.RESP, mo.PLGR, mo.WCLN, mo.PRDY,
-			mo.WHLO, mo.WHSL, mo.BANO,
+			mo.WHLO, mo.WHSL, mo.BANO, mo.PendingPutawayQty,
 			mo.RORC, mo.RORN, mo.RORL, mo.RORX,
 			mo.PRHL, mo.MFHL, mo.PRLO, mo.MFLO, mo.LEVL,
 			mo.CFIN, mo.ATNR,
@@ -265,6 +283,7 @@ func (q *Queries) BatchInsertManufacturingOrders(ctx context.Context, orders []*
 			mo.RGDT, mo.RGTM, mo.LMDT, mo.LMTS, mo.CHNO, mo.CHID,
 			mo.M3Timestamp,
 			mo.LinkedCONumber, mo.LinkedCOLine, mo.LinkedCOSuffix, mo.AllocatedQty,
+			mo.ItemType, mo.ItemDescription, mo.ItemGroup, mo.ProductGroup, mo.ProcurementGroup, mo.GroupTechnologyClass,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to insert MO %s: %w", mo.MFNO, err)
@@ -292,7 +311,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			release_date, material_start_date, material_finish_date,
 			status, proposal_status,
 			priority, responsible, planner_group, production_line,
-			warehouse, location, batch_number,
+			warehouse, location, batch_number, pending_putaway_qty,
 			rorc, rorn, rorl, rorx,
 			config_number, attribute_number,
 			project_number, element_number,
@@ -313,7 +332,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			'', mo.msti, mo.mfti,
 			mo.whst, '',
 			mo.prio, mo.resp, mo.plgr, mo.wcln,
-			mo.whlo, mo.whsl, mo.bano,
+			mo.whlo, mo.whsl, mo.bano, mo.pending_putaway_qty,
 			mo.rorc, mo.rorn, mo.rorl, mo.rorx,
 			mo.cfin, mo.atnr,
 			mo.proj, mo.elno,
@@ -343,6 +362,7 @@ func (q *Queries) UpdateProductionOrdersFromMOs(ctx context.Context) error {
 			warehouse = EXCLUDED.warehouse,
 			location = EXCLUDED.location,
 			batch_number = EXCLUDED.batch_number,
+			pending_putaway_qty = EXCLUDED.pending_putaway_qty,
 			config_number = EXCLUDED.config_number,
 			attribute_number = EXCLUDED.attribute_number,
 			project_number = EXCLUDED.project_number,

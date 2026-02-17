@@ -12,7 +12,6 @@ import Anomalies from './pages/Anomalies';
 import Settings from './pages/Settings';
 import Profile from './pages/Profile';
 import AuditLogs from './pages/AuditLogs';
-import { BulkOperations } from './pages/BulkOperations';
 
 // Protected route wrapper
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -78,14 +77,6 @@ function App() {
             element={
               <ProtectedRouteWithContext>
                 <Issues />
-              </ProtectedRouteWithContext>
-            }
-          />
-          <Route
-            path="/bulk-operations"
-            element={
-              <ProtectedRouteWithContext>
-                <BulkOperations />
               </ProtectedRouteWithContext>
             }
           />

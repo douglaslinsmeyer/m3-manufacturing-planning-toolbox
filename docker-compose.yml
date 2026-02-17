@@ -69,14 +69,9 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    ports:
-      - "3000:3000"
+      target: production
     environment:
       - REACT_APP_API_URL=http://localhost:8080
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    command: npm start
 
 volumes:
   postgres_data:

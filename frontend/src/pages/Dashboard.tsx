@@ -346,7 +346,11 @@ const Dashboard: React.FC = () => {
                     <div
                       key={i}
                       className={`h-1.5 w-1.5 rounded-full transition-colors ${
-                        i < snapshotStatus.completedSteps! ? 'bg-primary-600' : 'bg-slate-300'
+                        i < snapshotStatus.completedSteps!
+                          ? 'bg-primary-600'  // Completed steps
+                          : i === snapshotStatus.completedSteps!
+                            ? 'bg-primary-400'  // Current step (lighter blue)
+                            : 'bg-slate-300'    // Future steps
                       }`}
                     />
                   ))}

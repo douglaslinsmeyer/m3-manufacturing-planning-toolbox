@@ -82,6 +82,7 @@ export interface EffectiveContext {
   division: string;
   facility: string;
   warehouse: string;
+  environment: string;
   hasTemporaryOverrides: boolean;
   userDefaults: UserContext;
   loadError?: string;

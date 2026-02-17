@@ -1,0 +1,18 @@
+# Development docker-compose configuration
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: development
+    ports:
+      - "3000:3000"  # Vite dev server port
+    environment:
+      - REACT_APP_API_URL=http://localhost:8080
+      - VITE_API_URL=http://localhost:8080
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules  # Prevent overwriting node_modules
+    command: npm run dev -- --host 0.0.0.0

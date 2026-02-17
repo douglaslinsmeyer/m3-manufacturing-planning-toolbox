@@ -1,6 +1,6 @@
 import React from 'react';
 import { ActionMenuButton, ActionMenuItem } from './ActionMenuButton';
-import { Trash2, XCircle, Calendar, EyeOff, Eye, InformationCircleIcon } from 'lucide-react';
+import { Trash2, XCircle, Calendar, EyeOff, Eye, Info } from 'lucide-react';
 
 interface Issue {
   id: number;

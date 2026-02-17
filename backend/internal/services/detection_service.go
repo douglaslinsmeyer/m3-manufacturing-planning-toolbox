@@ -30,6 +30,8 @@ func NewDetectionService(database *db.Queries, configService *DetectorConfigServ
 	registry.Register(detectors.NewUnlinkedProductionOrdersDetector(configService))
 	registry.Register(detectors.NewJointDeliveryDateMismatchDetector(configService))
 	registry.Register(detectors.NewDLIXDateMismatchDetector(configService))
+	// DISABLED: CO Quantity Mismatch detector requires PAQT from MPTAWY table which has severe performance issues
+	// registry.Register(detectors.NewCOQuantityMismatchDetector(configService))
 
 	return &DetectionService{
 		db:            database,

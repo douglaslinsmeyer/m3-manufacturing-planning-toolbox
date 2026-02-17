@@ -9,10 +9,7 @@ import { ConfirmModal } from '../components/ConfirmModal';
 import { JointDeliveryDetailModal } from '../components/JointDeliveryDetailModal';
 import { ToastContainer } from '../components/Toast';
 import { useToast } from '../hooks/useToast';
-import { BulkActionToolbar, BulkAction } from '../components/BulkActionToolbar';
-import { BulkOperationModal, BulkOperationResult } from '../components/BulkOperationModal';
 import { IssueActionsMenu } from '../components/IssueActionsMenu';
-import { Trash2, XCircle, Calendar } from 'lucide-react';
 
 interface Detector {
   name: string;
@@ -125,17 +122,6 @@ const Issues: React.FC = () => {
   const [totalPages, setTotalPages] = useState<number>(0);
   const toast = useToast();
 
-  // Multi-select state
-  const [selectedIssues, setSelectedIssues] = useState<Set<number>>(new Set());
-
-  // Bulk operation modal state
-  const [bulkModalOpen, setBulkModalOpen] = useState(false);
-  const [bulkModalTitle, setBulkModalTitle] = useState('');
-  const [bulkResults, setBulkResults] = useState<BulkOperationResult[]>([]);
-  const [isBulkProcessing, setIsBulkProcessing] = useState(false);
-  const [bulkTotal, setBulkTotal] = useState(0);
-  const [bulkCompleted, setBulkCompleted] = useState(0);
-
   // Initialize filters from URL on mount and fetch data
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -195,8 +181,6 @@ const Issues: React.FC = () => {
   useEffect(() => {
     if (isInitialized) {
       fetchIssues();
-      // Clear selection when data changes
-      clearSelection();
     }
   }, [selectedDetector, selectedWarehouse, showIgnored, currentPage, pageSize, isInitialized]);
 
@@ -535,370 +519,6 @@ const Issues: React.FC = () => {
     setIssueToAlignLatest(null);
   };
 
-  // Multi-select handlers
-  const handleSelectAll = (checked: boolean) => {
-    if (checked) {
-      setSelectedIssues(new Set(issues.map(issue => issue.id)));
-    } else {
-      setSelectedIssues(new Set());
-    }
-  };
-
-  const handleSelectIssue = (issueId: number, checked: boolean) => {
-    const newSelection = new Set(selectedIssues);
-    if (checked) {
-      newSelection.add(issueId);
-    } else {
-      newSelection.delete(issueId);
-    }
-    setSelectedIssues(newSelection);
-  };
-
-  const clearSelection = () => {
-    setSelectedIssues(new Set());
-  };
-
-  // Calculate duplicate info from selected issues
-  const getDuplicateInfo = () => {
-    if (selectedIssues.size === 0) {
-      return { uniqueOrders: 0, duplicates: 0 };
-    }
-
-    const orderNumbers = new Set<string>();
-    issues.forEach((issue) => {
-      if (selectedIssues.has(issue.id)) {
-        orderNumbers.add(issue.production_order_number);
-      }
-    });
-
-    const uniqueOrders = orderNumbers.size;
-    const duplicates = selectedIssues.size - uniqueOrders;
-
-    return { uniqueOrders, duplicates };
-  };
-
-  const duplicateInfo = getDuplicateInfo();
-
-  // Get available bulk actions based on selected issues
-  const getAvailableActions = (): BulkAction[] => {
-    const selected = Array.from(selectedIssues)
-      .map(id => issues.find(i => i.id === id))
-      .filter((issue): issue is Issue => issue !== undefined);
-
-    if (selected.length === 0) {
-      return [];
-    }
-
-    const allMOPs = selected.every(i => i.productionOrderType === 'MOP');
-    const allMOs = selected.every(i => i.productionOrderType === 'MO');
-    const allDeletableMOs = allMOs && selected.every(i => {
-      const status = parseInt(i.issueData.status || '99', 10);
-      return !isNaN(status) && status <= 22;
-    });
-    const allCloseableMOs = allMOs && selected.every(i => {
-      const status = parseInt(i.issueData.status || '99', 10);
-      return !isNaN(status) && status > 22;
-    });
-
-    const actions: BulkAction[] = [];
-
-    // Delete action
-    actions.push({
-      id: 'delete',
-      label: 'Delete',
-      icon: <Trash2 className="h-4 w-4" />,
-      variant: 'danger',
-      enabled: allMOPs || allDeletableMOs,
-      disabledReason: !allMOPs && !allDeletableMOs
-        ? 'Select only MOPs or deletable MOs (status ≤22)'
-        : undefined,
-    });
-
-    // Close action
-    actions.push({
-      id: 'close',
-      label: 'Close',
-      icon: <XCircle className="h-4 w-4" />,
-      variant: 'warning',
-      enabled: allCloseableMOs,
-      disabledReason: !allCloseableMOs
-        ? 'Select only MOs with status >22'
-        : undefined,
-    });
-
-    // Reschedule action
-    actions.push({
-      id: 'reschedule',
-      label: 'Reschedule',
-      icon: <Calendar className="h-4 w-4" />,
-      variant: 'primary',
-      enabled: true,
-      disabledReason: undefined,
-    });
-
-    return actions;
-  };
-
-  // Bulk operation handlers
-  const handleBulkDelete = async () => {
-    const issueIds = Array.from(selectedIssues);
-
-    // Initialize modal with pending state
-    const pendingResults: BulkOperationResult[] = issueIds.map((id) => ({
-      issue_id: id,
-      production_order: issues.find((i) => i.id === id)?.production_order_number || 'Unknown',
-      status: 'pending' as const,
-    }));
-
-    setBulkModalTitle('Bulk Delete Production Orders');
-    setBulkTotal(issueIds.length);
-    setBulkCompleted(0);
-    setBulkResults(pendingResults);
-    setBulkModalOpen(true);
-    setIsBulkProcessing(true);
-
-    try {
-      // Call bulk delete API (returns job_id)
-      const response = await api.bulkDelete(issueIds);
-      const jobId = response.job_id;
-
-      // Poll for issue results
-      const pollInterval = setInterval(async () => {
-        try {
-          const issueResults = await api.getBulkOperationIssueResults(jobId);
-
-          // Convert to modal format
-          const modalResults: BulkOperationResult[] = issueResults.results.map(r => ({
-            issue_id: r.issue_id,
-            production_order: r.production_order,
-            status: r.status,
-            message: r.message,
-            error: r.error,
-            is_duplicate: r.is_duplicate,
-            primary_issue_id: r.primary_issue_id,
-          }));
-
-          setBulkResults(modalResults);
-          setBulkCompleted(modalResults.filter(r => r.status !== 'pending').length);
-
-          // Stop polling when all complete
-          const allComplete = modalResults.every(r => r.status !== 'pending');
-          if (allComplete) {
-            clearInterval(pollInterval);
-            setIsBulkProcessing(false);
-
-            // Refresh data
-            await Promise.all([fetchIssues(), fetchSummary()]);
-            clearSelection();
-
-            // Show toast
-            const successCount = modalResults.filter(r => r.status === 'success').length;
-            const failCount = modalResults.filter(r => r.status === 'error').length;
-
-            if (failCount === 0) {
-              toast.success(`Successfully deleted ${successCount} production orders`);
-            } else if (successCount > 0) {
-              toast.warning(`Deleted ${successCount} orders, ${failCount} failed`);
-            } else {
-              toast.error('Failed to delete any production orders');
-            }
-          }
-        } catch (error) {
-          clearInterval(pollInterval);
-          console.error('Failed to fetch issue results:', error);
-          toast.error('Failed to fetch operation results');
-          setIsBulkProcessing(false);
-        }
-      }, 1000); // Poll every 1 second
-    } catch (error: any) {
-      console.error('Bulk delete failed:', error);
-      toast.error(error.message || 'Bulk delete failed');
-      setIsBulkProcessing(false);
-    }
-  };
-
-  const handleBulkClose = async () => {
-    const issueIds = Array.from(selectedIssues);
-
-    // Initialize modal with pending state
-    const pendingResults: BulkOperationResult[] = issueIds.map((id) => ({
-      issue_id: id,
-      production_order: issues.find((i) => i.id === id)?.production_order_number || 'Unknown',
-      status: 'pending' as const,
-    }));
-
-    setBulkModalTitle('Bulk Close Manufacturing Orders');
-    setBulkTotal(issueIds.length);
-    setBulkCompleted(0);
-    setBulkResults(pendingResults);
-    setBulkModalOpen(true);
-    setIsBulkProcessing(true);
-
-    try {
-      // Call bulk close API (returns job_id)
-      const response = await api.bulkClose(issueIds);
-      const jobId = response.job_id;
-
-      // Poll for issue results
-      const pollInterval = setInterval(async () => {
-        try {
-          const issueResults = await api.getBulkOperationIssueResults(jobId);
-
-          // Convert to modal format
-          const modalResults: BulkOperationResult[] = issueResults.results.map(r => ({
-            issue_id: r.issue_id,
-            production_order: r.production_order,
-            status: r.status,
-            message: r.message,
-            error: r.error,
-            is_duplicate: r.is_duplicate,
-            primary_issue_id: r.primary_issue_id,
-          }));
-
-          setBulkResults(modalResults);
-          setBulkCompleted(modalResults.filter(r => r.status !== 'pending').length);
-
-          // Stop polling when all complete
-          const allComplete = modalResults.every(r => r.status !== 'pending');
-          if (allComplete) {
-            clearInterval(pollInterval);
-            setIsBulkProcessing(false);
-
-            // Refresh data
-            await Promise.all([fetchIssues(), fetchSummary()]);
-            clearSelection();
-
-            // Show toast
-            const successCount = modalResults.filter(r => r.status === 'success').length;
-            const failCount = modalResults.filter(r => r.status === 'error').length;
-
-            if (failCount === 0) {
-              toast.success(`Successfully closed ${successCount} manufacturing orders`);
-            } else if (successCount > 0) {
-              toast.warning(`Closed ${successCount} orders, ${failCount} failed`);
-            } else {
-              toast.error('Failed to close any manufacturing orders');
-            }
-          }
-        } catch (error) {
-          clearInterval(pollInterval);
-          console.error('Failed to fetch issue results:', error);
-          toast.error('Failed to fetch operation results');
-          setIsBulkProcessing(false);
-        }
-      }, 1000); // Poll every 1 second
-    } catch (error: any) {
-      console.error('Bulk close failed:', error);
-      toast.error(error.message || 'Bulk close failed');
-      setIsBulkProcessing(false);
-    }
-  };
-
-  const handleBulkReschedule = async () => {
-    // Prompt for new date
-    const dateInput = prompt('Enter new date (YYYYMMDD format):');
-    if (!dateInput) {
-      return; // User cancelled
-    }
-
-    // Validate date format
-    const dateRegex = /^\d{8}$/;
-    if (!dateRegex.test(dateInput)) {
-      toast.error('Invalid date format. Please use YYYYMMDD (e.g., 20260201)');
-      return;
-    }
-
-    const issueIds = Array.from(selectedIssues);
-
-    // Initialize modal with pending state
-    const pendingResults: BulkOperationResult[] = issueIds.map((id) => ({
-      issue_id: id,
-      production_order: issues.find((i) => i.id === id)?.production_order_number || 'Unknown',
-      status: 'pending' as const,
-    }));
-
-    setBulkModalTitle('Bulk Reschedule Production Orders');
-    setBulkTotal(issueIds.length);
-    setBulkCompleted(0);
-    setBulkResults(pendingResults);
-    setBulkModalOpen(true);
-    setIsBulkProcessing(true);
-
-    try {
-      // Call bulk reschedule API (returns job_id)
-      const response = await api.bulkReschedule(issueIds, dateInput);
-      const jobId = response.job_id;
-
-      // Poll for issue results
-      const pollInterval = setInterval(async () => {
-        try {
-          const issueResults = await api.getBulkOperationIssueResults(jobId);
-
-          // Convert to modal format
-          const modalResults: BulkOperationResult[] = issueResults.results.map(r => ({
-            issue_id: r.issue_id,
-            production_order: r.production_order,
-            status: r.status,
-            message: r.message,
-            error: r.error,
-            is_duplicate: r.is_duplicate,
-            primary_issue_id: r.primary_issue_id,
-          }));
-
-          setBulkResults(modalResults);
-          setBulkCompleted(modalResults.filter(r => r.status !== 'pending').length);
-
-          // Stop polling when all complete
-          const allComplete = modalResults.every(r => r.status !== 'pending');
-          if (allComplete) {
-            clearInterval(pollInterval);
-            setIsBulkProcessing(false);
-
-            // Refresh data
-            await Promise.all([fetchIssues(), fetchSummary()]);
-            clearSelection();
-
-            // Show toast
-            const successCount = modalResults.filter(r => r.status === 'success').length;
-            const failCount = modalResults.filter(r => r.status === 'error').length;
-
-            if (failCount === 0) {
-              toast.success(`Successfully rescheduled ${successCount} production orders to ${formatM3Date(dateInput)}`);
-            } else if (successCount > 0) {
-              toast.warning(`Rescheduled ${successCount} orders, ${failCount} failed`);
-            } else {
-              toast.error('Failed to reschedule any production orders');
-            }
-          }
-        } catch (error) {
-          clearInterval(pollInterval);
-          console.error('Failed to fetch issue results:', error);
-          toast.error('Failed to fetch operation results');
-          setIsBulkProcessing(false);
-        }
-      }, 1000); // Poll every 1 second
-    } catch (error: any) {
-      console.error('Bulk reschedule failed:', error);
-      toast.error(error.message || 'Bulk reschedule failed');
-      setIsBulkProcessing(false);
-    }
-  };
-
-  const handleBulkAction = (actionId: string) => {
-    switch (actionId) {
-      case 'delete':
-        handleBulkDelete();
-        break;
-      case 'close':
-        handleBulkClose();
-        break;
-      case 'reschedule':
-        handleBulkReschedule();
-        break;
-      default:
-        console.warn('Unknown bulk action:', actionId);
-    }
-  };
 
   return (
     <AppLayout>
@@ -1012,14 +632,6 @@ const Issues: React.FC = () => {
               <table className="min-w-full divide-y divide-slate-200">
                 <thead className="bg-slate-50">
                   <tr>
-                    <th className="px-6 py-3 text-left">
-                      <input
-                        type="checkbox"
-                        checked={issues.length > 0 && selectedIssues.size === issues.length}
-                        onChange={(e) => handleSelectAll(e.target.checked)}
-                        className="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
-                      />
-                    </th>
                     <th className="px-6 py-3 text-left text-xs font-medium uppercase tracking-wider text-slate-500">
                       Issue Type
                     </th>
@@ -1043,14 +655,6 @@ const Issues: React.FC = () => {
                       key={issue.id}
                       className={issue.isIgnored ? 'bg-slate-100 opacity-75 hover:bg-slate-150' : 'hover:bg-slate-50'}
                     >
-                      <td className="px-6 py-4">
-                        <input
-                          type="checkbox"
-                          checked={selectedIssues.has(issue.id)}
-                          onChange={(e) => handleSelectIssue(issue.id, e.target.checked)}
-                          className="h-4 w-4 rounded border-slate-300 text-primary-600 focus:ring-primary-500"
-                        />
-                      </td>
                       <td className="whitespace-nowrap px-6 py-4 text-sm font-medium text-slate-900">
                         {detectorLabels[issue.detectorType] || issue.detectorType}
                       </td>
@@ -1263,36 +867,12 @@ const Issues: React.FC = () => {
               setDetailModalOpen(false);  // Close detail modal
               handleAlignLatestClick(selectedIssueForDetail);  // Open confirm modal
             }}
-            issueData={selectedIssueForDetail.issueData}
+            issueData={selectedIssueForDetail.issueData as any}
             coNumber={selectedIssueForDetail.coNumber}
             currentOrderNumber={selectedIssueForDetail.productionOrderNumber}
             issueType={selectedIssueForDetail.detectorType as 'joint_delivery_date_mismatch' | 'dlix_date_mismatch'}
           />
         )}
-
-        {/* Bulk Action Toolbar */}
-        <BulkActionToolbar
-          selectedCount={selectedIssues.size}
-          uniqueOrderCount={duplicateInfo.uniqueOrders}
-          duplicateCount={duplicateInfo.duplicates}
-          availableActions={getAvailableActions()}
-          onExecute={handleBulkAction}
-          onClear={clearSelection}
-        />
-
-        {/* Bulk Operation Modal */}
-        <BulkOperationModal
-          isOpen={bulkModalOpen}
-          title={bulkModalTitle}
-          total={bulkTotal}
-          completed={bulkCompleted}
-          results={bulkResults}
-          onClose={() => {
-            setBulkModalOpen(false);
-            setBulkResults([]);
-          }}
-          isProcessing={isBulkProcessing}
-        />
       </div>
     </AppLayout>
   );

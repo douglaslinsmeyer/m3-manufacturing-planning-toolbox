@@ -268,6 +268,9 @@ func (s *Server) setupRoutes() {
 	// Analysis endpoints
 	protected.HandleFunc("/analysis/timeline", s.handleGetTimeline).Methods("GET")
 
+	// Data lookup endpoints
+	protected.HandleFunc("/lookup/cfin/{cfin}", s.handleLookupCFIN).Methods("GET")
+
 	// Issue detection endpoints
 	protected.HandleFunc("/issues", s.handleListIssues).Methods("GET")
 	protected.HandleFunc("/issues/summary", s.handleGetIssueSummary).Methods("GET")
@@ -286,20 +289,6 @@ func (s *Server) setupRoutes() {
 	protected.HandleFunc("/issues/{id}/close-mo", s.handleCloseMO).Methods("POST")
 	protected.HandleFunc("/issues/{id}/align-earliest", s.handleAlignEarliestMOs).Methods("POST")
 	protected.HandleFunc("/issues/{id}/align-latest", s.handleAlignLatestMOs).Methods("POST")
-
-	// Bulk issue operations endpoints
-	protected.HandleFunc("/issues/bulk-preview", s.handleBulkPreview).Methods("POST")
-	protected.HandleFunc("/issues/bulk-delete", s.handleBulkDelete).Methods("POST")
-	protected.HandleFunc("/issues/bulk-close", s.handleBulkClose).Methods("POST")
-	protected.HandleFunc("/issues/bulk-reschedule", s.handleBulkReschedule).Methods("POST")
-
-	// Bulk operation job management endpoints
-	protected.HandleFunc("/jobs", s.handleListBulkOperationJobs).Methods("GET")
-	protected.HandleFunc("/jobs/{jobId}", s.handleGetBulkOperationJob).Methods("GET")
-	protected.HandleFunc("/jobs/{jobId}/progress", s.handleGetBulkOperationJobProgress).Methods("GET")
-	protected.HandleFunc("/jobs/{jobId}/results", s.handleGetBulkOperationJobResults).Methods("GET")
-	protected.HandleFunc("/jobs/{jobId}/issue-results", s.handleGetBulkOperationIssueResults).Methods("GET")
-	protected.HandleFunc("/jobs/{jobId}/cancel", s.handleCancelBulkOperation).Methods("POST")
 
 	// Audit log endpoints
 	protected.HandleFunc("/audit-logs", s.handleListAuditLogs).Methods("GET")

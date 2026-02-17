@@ -135,7 +135,8 @@ const PhaseProgressBar: React.FC<PhaseProgressBarProps> = ({ phase, label }) => 
             </div>
             <div className="h-px w-3 bg-slate-300" />
             <div className={`flex items-center gap-1 ${
-              phase.currentOperation?.toLowerCase().includes('processing')
+              phase.currentOperation?.toLowerCase().includes('processing') ||
+              phase.currentOperation?.toLowerCase().includes('parsed')
                 ? 'text-primary-600 font-semibold'
                 : 'text-slate-400'
             }`}>

@@ -314,7 +314,6 @@ const Anomalies: React.FC = () => {
                             ? `Warehouse ${anomaly.entityId}`
                             : 'System-wide'}
                         </strong>
-                        {anomaly.warehouse && ` in warehouse ${anomaly.warehouse}`}
                       </div>
                       <div className="flex items-center gap-4 text-sm text-gray-600">
                         <span>Affected: {anomaly.affectedCount?.toLocaleString() || 0} records</span>

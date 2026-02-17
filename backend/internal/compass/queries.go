@@ -144,6 +144,7 @@ func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
 
 		// Warehouse
 		"mo.WHLO", "mo.WHSL", "mo.BANO",
+		// "pp.TRQT as PAQT",  // DISABLED: MPTAWY table has severe performance issues
 
 		// Reference orders
 		"mo.RORC", "mo.RORN", "mo.RORL", "mo.RORX",
@@ -175,6 +176,14 @@ func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
 		// Data Lake
 		"mo.timestamp", "mo.deleted",
 
+		// MITMAS Item Master fields
+		"m.ITTY as item_type",
+		"m.ITDS as item_description",
+		"m.ITGR as item_group",
+		"m.ITCL as product_group",
+		"m.PRGP as procurement_group",
+		"m.GRTI as group_technology_class",
+
 		// CO link (direct or indirect via DO/PO)
 		"COALESCE(mpreal_direct.DRDN, co_link.DRDN) as linked_co_number",
 		"COALESCE(mpreal_direct.DRDL, co_link.DRDL) as linked_co_line",
@@ -185,6 +194,9 @@ func (qb *QueryBuilder) BuildManufacturingOrdersQuery() string {
 	query := fmt.Sprintf(`
 SELECT %s
 FROM MWOHED mo
+-- DISABLED: MPTAWY join removed due to severe table performance issues
+-- Even simple SELECT queries on MPTAWY hang for 10+ minutes
+-- TODO: Re-enable when MPTAWY performance is fixed
 -- Direct link: MO → CO
 LEFT JOIN MPREAL mpreal_direct
   ON mpreal_direct.ARDN = mo.MFNO
@@ -204,6 +216,11 @@ LEFT JOIN MPREAL co_link
   AND co_link.AOCA IN ('500', '501')
   AND co_link.DOCA = '311'
   AND co_link.deleted = 'false'
+-- Item Master enrichment
+LEFT JOIN MITMAS m
+  ON m.ITNO = mo.ITNO
+  AND m.CONO = mo.CONO
+  AND m.deleted = 'false'
 WHERE mo.deleted = 'false'
   AND mo.LMDT >= %d
   AND mo.WHST <= '20'
@@ -267,6 +284,14 @@ func (qb *QueryBuilder) BuildPlannedOrdersWithCOLinksQuery() string {
 		// Data Lake
 		"mop.timestamp", "mop.deleted",
 
+		// MITMAS Item Master fields
+		"m.ITTY as item_type",
+		"m.ITDS as item_description",
+		"m.ITGR as item_group",
+		"m.ITCL as product_group",
+		"m.PRGP as procurement_group",
+		"m.GRTI as group_technology_class",
+
 		// CO link (direct or indirect via DO/PO)
 		"COALESCE(mpreal_direct.DRDN, co_link.DRDN) as linked_co_number",
 		"COALESCE(mpreal_direct.DRDL, co_link.DRDL) as linked_co_line",
@@ -296,6 +321,11 @@ LEFT JOIN MPREAL co_link
   AND co_link.AOCA IN ('500', '501')
   AND co_link.DOCA = '311'
   AND co_link.deleted = 'false'
+-- Item Master enrichment
+LEFT JOIN MITMAS m
+  ON m.ITNO = mop.ITNO
+  AND m.CONO = mop.CONO
+  AND m.deleted = 'false'
 WHERE mop.deleted = 'false'
   AND mop.LMDT >= %d
   AND mop.PSTS = '20'
@@ -516,6 +546,14 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 
 		// Data Lake
 		"timestamp", "deleted",
+
+		// MITMAS Item Master fields (enrichment)
+		"item_type",
+		"item_description_master",
+		"item_group",
+		"product_group",
+		"procurement_group",
+		"group_technology_class",
 	}
 
 	// Build field list with table aliases
@@ -534,6 +572,18 @@ func (qb *QueryBuilder) BuildOpenCustomerOrderLinesQuery() string {
 			fieldList = append(fieldList, "oh.MODL as delivery_method")
 		} else if field == "delivery_method_description" {
 			fieldList = append(fieldList, "dm.TX15 as delivery_method_description")
+		} else if field == "item_type" {
+			fieldList = append(fieldList, "m.ITTY as item_type")
+		} else if field == "item_description_master" {
+			fieldList = append(fieldList, "m.ITDS as item_description_master")
+		} else if field == "item_group" {
+			fieldList = append(fieldList, "m.ITGR as item_group")
+		} else if field == "product_group" {
+			fieldList = append(fieldList, "m.ITCL as product_group")
+		} else if field == "procurement_group" {
+			fieldList = append(fieldList, "m.PRGP as procurement_group")
+		} else if field == "group_technology_class" {
+			fieldList = append(fieldList, "m.GRTI as group_technology_class")
 		} else {
 			// All other fields come from OOLINE with ol. prefix
 			fieldList = append(fieldList, "ol."+field)
@@ -563,6 +613,10 @@ LEFT JOIN CSYTAB dm
   AND dm.LNCD = '%s'
   AND dm.STKY = oh.MODL
   AND dm.deleted = 'false'
+LEFT JOIN MITMAS m
+  ON m.ITNO = ol.ITNO
+  AND m.CONO = ol.CONO
+  AND m.deleted = 'false'
 WHERE ol.deleted = 'false'
   AND ol.ORST >= '20'
   AND ol.ORST < '30'

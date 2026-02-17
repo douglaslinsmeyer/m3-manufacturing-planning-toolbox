@@ -96,10 +96,10 @@ export const JointDeliveryDetailModal: React.FC<JointDeliveryDetailModalProps> =
 
   // Extract unique delivery dates
   const confirmedDeliveryDates = Array.from(
-    new Set(issueData.orders.map(o => o.confirmed_delivery_date).filter(d => d && d !== '0'))
+    new Set(issueData.orders.map(o => o.confirmed_delivery_date).filter((d): d is string => !!d && d !== '0'))
   );
   const requestedDeliveryDates = Array.from(
-    new Set(issueData.orders.map(o => o.requested_delivery_date).filter(d => d && d !== '0'))
+    new Set(issueData.orders.map(o => o.requested_delivery_date).filter((d): d is string => !!d && d !== '0'))
   );
 
 

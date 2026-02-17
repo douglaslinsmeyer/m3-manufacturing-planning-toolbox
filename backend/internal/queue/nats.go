@@ -114,23 +114,10 @@ const (
 	SubjectAnalysisProgress      = "analysis.progress.%s"      // analysis.progress.{jobID}
 	SubjectAnalysisComplete      = "analysis.complete.%s"      // analysis.complete.{jobID}
 
-	// Bulk operation subjects
-	SubjectBulkOpRequestTRN      = "bulkop.request.TRN"             // Bulk operation request for TRN
-	SubjectBulkOpRequestPRD      = "bulkop.request.PRD"             // Bulk operation request for PRD
-	SubjectBulkOpBatch           = "bulkop.batch.%s.%s"             // bulkop.batch.{ENV}.{jobID}
-	SubjectBulkOpBatchStart      = "bulkop.batch.start.%s"          // bulkop.batch.start.{jobID}
-	SubjectBulkOpBatchComplete   = "bulkop.batch.complete.%s"       // bulkop.batch.complete.{jobID}
-	SubjectBulkOpProgress        = "bulkop.progress.%s"             // bulkop.progress.{jobID}
-	SubjectBulkOpComplete        = "bulkop.complete.%s"             // bulkop.complete.{jobID}
-	SubjectBulkOpError           = "bulkop.error.%s"                // bulkop.error.{jobID}
-	SubjectBulkOpCancel          = "bulkop.cancel.%s"               // bulkop.cancel.{jobID}
-
 	// Queue groups (for load balancing)
 	QueueGroupSnapshot           = "snapshot-workers"
 	QueueGroupBatchWorkers       = "batch-workers"
 	QueueGroupAnalysis           = "analysis-workers"
-	QueueGroupBulkOpCoordinator  = "bulkop-coordinators"
-	QueueGroupBulkOpWorkers      = "bulkop-workers"
 )
 
 // GetSnapshotRefreshSubject returns the subject for snapshot refresh based on environment
@@ -213,53 +200,4 @@ func GetDetectorCoordinateSubject(environment string) string {
 	default:
 		return fmt.Sprintf("snapshot.detector.coordinate.%s", environment)
 	}
-}
-
-// GetBulkOpRequestSubject returns the subject for bulk operation requests
-// Example: GetBulkOpRequestSubject("TRN") → "bulkop.request.TRN"
-func GetBulkOpRequestSubject(environment string) string {
-	switch environment {
-	case "TRN":
-		return SubjectBulkOpRequestTRN
-	case "PRD":
-		return SubjectBulkOpRequestPRD
-	default:
-		return fmt.Sprintf("bulkop.request.%s", environment)
-	}
-}
-
-// GetBulkOpBatchSubject returns the subject for a specific bulk operation batch
-// Example: GetBulkOpBatchSubject("TRN", "abc123") → "bulkop.batch.TRN.abc123"
-func GetBulkOpBatchSubject(environment, jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpBatch, environment, jobID)
-}
-
-// GetBulkOpBatchStartSubject returns the subject for bulk operation batch start events
-func GetBulkOpBatchStartSubject(jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpBatchStart, jobID)
-}
-
-// GetBulkOpBatchCompleteSubject returns the subject for bulk operation batch completion events
-func GetBulkOpBatchCompleteSubject(jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpBatchComplete, jobID)
-}
-
-// GetBulkOpProgressSubject returns the subject for bulk operation progress updates
-func GetBulkOpProgressSubject(jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpProgress, jobID)
-}
-
-// GetBulkOpCompleteSubject returns the subject for bulk operation completion
-func GetBulkOpCompleteSubject(jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpComplete, jobID)
-}
-
-// GetBulkOpErrorSubject returns the subject for bulk operation errors
-func GetBulkOpErrorSubject(jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpError, jobID)
-}
-
-// GetBulkOpCancelSubject returns the subject for bulk operation cancellation
-func GetBulkOpCancelSubject(jobID string) string {
-	return fmt.Sprintf(SubjectBulkOpCancel, jobID)
 }

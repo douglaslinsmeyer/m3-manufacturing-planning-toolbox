@@ -78,7 +78,8 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			prno,
 			cono,
 			orty,
-			whst
+			whst,
+			cfin
 		FROM manufacturing_orders
 		WHERE environment = $1
 		  AND cono = $2
@@ -99,9 +100,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 
 	for moRows.Next() {
 		var orderNumber, orderType, faci, whlo, itno, orderedQty, stdt, fidt, prno, cono string
-		var orty, whst sql.NullString
+		var orty, whst, cfin sql.NullString
 
-		if err := moRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &prno, &cono, &orty, &whst); err != nil {
+		if err := moRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &prno, &cono, &orty, &whst, &cfin); err != nil {
 			log.Printf("Error scanning MO row: %v", err)
 			continue
 		}
@@ -121,6 +122,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 		}
 		if whst.Valid {
 			issueData["status"] = whst.String
+		}
+		if cfin.Valid && cfin.String != "" {
+			issueData["cfin"] = cfin.String
 		}
 
 		if err := d.insertIssue(ctx, queries, refreshJobID, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {
@@ -151,7 +155,8 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 			cono,
 			orty,
 			prno,
-			psts
+			psts,
+			cfin
 		FROM planned_manufacturing_orders
 		WHERE environment = $1
 		  AND cono = $2
@@ -172,9 +177,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 
 	for mopRows.Next() {
 		var orderNumber, orderType, faci, whlo, itno, orderedQty, stdt, fidt, cono string
-		var orty, prno, psts sql.NullString
+		var orty, prno, psts, cfin sql.NullString
 
-		if err := mopRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &cono, &orty, &prno, &psts); err != nil {
+		if err := mopRows.Scan(&orderNumber, &orderType, &faci, &whlo, &itno, &orderedQty, &stdt, &fidt, &cono, &orty, &prno, &psts, &cfin); err != nil {
 			log.Printf("Error scanning MOP row: %v", err)
 			continue
 		}
@@ -195,6 +200,9 @@ func (d *UnlinkedProductionOrdersDetector) Detect(ctx context.Context, queries *
 		}
 		if psts.Valid {
 			issueData["status"] = psts.String
+		}
+		if cfin.Valid && cfin.String != "" {
+			issueData["cfin"] = cfin.String
 		}
 
 		if err := d.insertIssue(ctx, queries, refreshJobID, environment, orderNumber, orderType, faci, whlo, issueData); err != nil {

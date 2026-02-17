@@ -224,6 +224,7 @@ func (w *SnapshotWorker) Start() error {
 		"unlinked_production_orders",
 		"joint_delivery_date_mismatch",
 		"dlix_date_mismatch",
+		// DISABLED: "co_quantity_mismatch" - requires PAQT from MPTAWY table which has severe performance issues
 	}
 
 	for _, env := range environments {
@@ -410,7 +411,7 @@ func (w *SnapshotWorker) processRefresh(req SnapshotRefreshMessage) error {
 	// Phase 0: Truncate database (must complete first)
 	log.Printf("Phase 0: Truncating database for job %s", req.JobID)
 	w.publishDetailedProgress(req.JobID, "running", "Preparing database", "Truncating tables",
-		0, 6, 0, 0, 0, 0, nil, nil, 0, 0, 0, 0)
+		0, 4, 0, 0, 0, 0, nil, nil, 0, 0, 0, 0)
 
 	if err := w.db.TruncateAnalysisTables(ctx, req.Environment); err != nil {
 		// Check if error is due to cancellation
@@ -532,7 +533,10 @@ func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
 
 	log.Printf("Processing %s data for job %s", job.DataType, job.JobID)
 
-	ctx := context.Background()
+	// Create context with timeout for Compass SQL queries
+	// 30 minutes should be sufficient for even large datasets
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
 
 	// Check if parent job has been cancelled
 	if w.isJobCancelled(job.ParentJobID) {
@@ -1045,7 +1049,7 @@ func (w *SnapshotWorker) runFinalize(req SnapshotRefreshMessage, totalCos, total
 	// Phase 4: Parallel Detection via NATS
 	log.Printf("Phase 4: Publishing detector jobs for job %s", req.JobID)
 	w.publishDetailedProgress(req.JobID, "running", "Starting issue detection", "Publishing detector jobs",
-		4, 4, 85,
+		3, 4, 85,
 		totalCos, totalMos, totalMops,
 		nil,
 		nil,

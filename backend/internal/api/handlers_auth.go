@@ -501,7 +501,7 @@ func (s *Server) primeContextCache(environment string, m3Client *m3api.Client) {
 		return
 	}
 
-	fmt.Printf("Context cache priming completed for %s using bulk operations\n", environment)
+	fmt.Printf("Context cache priming completed for %s using bulk API calls\n", environment)
 }
 
 // handleRefreshProfile re-fetches user profile from Infor API

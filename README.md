@@ -74,16 +74,38 @@ Users can switch between TRN and PRD environments:
 
 ### Using Docker Compose
 
+#### Production Build (Optimized)
+
 ```bash
-# Start all services
-docker-compose up -d
+# Start all services with production frontend (nginx, ~92MB)
+docker compose up -d
+
+# Rebuild after code changes
+docker compose up --build -d
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Stop services
-docker-compose down
+docker compose down
 ```
+
+#### Development Build (with Hot Reload)
+
+```bash
+# Start with development frontend (Vite dev server, ~400MB, supports HMR)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+# View logs
+docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f frontend
+
+# Stop services
+docker compose -f docker-compose.yml -f docker-compose.dev.yml down
+```
+
+**Frontend Build Comparison:**
+- **Production**: nginx serving static files (~92MB, optimized for deployment)
+- **Development**: Vite dev server with HMR (~400MB, optimized for development)
 
 The application will be available at:
 - Frontend: http://localhost:3000

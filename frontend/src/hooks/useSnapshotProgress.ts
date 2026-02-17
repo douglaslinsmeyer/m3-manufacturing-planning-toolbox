@@ -20,7 +20,7 @@ export function useSnapshotProgress(jobId: string | null): UseSnapshotProgressRe
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const retryCountRef = useRef(0);
-  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const retryTimeoutRef = useRef<number | null>(null);
   const jobCompletedRef = useRef(false);
 
   useEffect(() => {
