@@ -1,5 +1,12 @@
 # M3 Manufacturing Planning Tools - Development Notes
 
+## Git Workflow
+
+- Canonical repo: `pinggolf/lp-production-planning-issues-workbench` (remote `ppiw`); `origin` (`douglaslinsmeyer/m3-manufacturing-planning-toolbox`) is a personal mirror — keep both `main` branches in sync after merges
+- Never commit directly to `main` — make all changes on a branch in a separate git worktree (`git worktree add .worktrees/<name> -b <branch>`)
+- Contribute changes via pull request to the pinggolf repo
+- PRs do not need human review — enable auto-merge so they merge as soon as all CI checks are green (`gh pr merge --auto`)
+
 ## M3 Data Fabric (Compass SQL) Important Findings
 
 ### Date Field Handling
