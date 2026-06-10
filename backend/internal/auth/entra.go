@@ -52,7 +52,7 @@ func NewEntraAuthenticator(cfg *config.Config) *EntraAuthenticator {
 func (e *EntraAuthenticator) init() error {
 	e.initOnce.Do(func() {
 		if e.cfg.EntraTenantID == "" || e.cfg.EntraClientID == "" || e.cfg.EntraClientSecret == "" {
-			e.initErr = fmt.Errorf("Entra ID is not configured (ENTRA_TENANT_ID / ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET)")
+			e.initErr = fmt.Errorf("entra ID is not configured (ENTRA_TENANT_ID / ENTRA_CLIENT_ID / ENTRA_CLIENT_SECRET)")
 			return
 		}
 

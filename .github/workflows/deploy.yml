@@ -147,25 +147,37 @@ jobs:
       - name: Materialize Postgres secret
         # #488 contract — no Secret manifest in git. POSTGRES_PASSWORD is a
         # GitHub Actions secret; this projects it into the postgres-credentials
-        # K8s Secret the manifests reference.
+        # K8s Secret the manifests reference. Secrets are passed via env so
+        # shell quoting survives arbitrary characters in the values.
+        env:
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
         run: |
           kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
           kubectl create secret generic postgres-credentials -n $NAMESPACE \
             --from-literal=POSTGRES_USER=appuser \
-            --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+            --from-literal=POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
             --from-literal=POSTGRES_DB=lp_production_planning_issues_workbench \
-            --from-literal=DATABASE_URL="postgres://appuser:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/lp_production_planning_issues_workbench?sslmode=disable" \
+            --from-literal=DATABASE_URL="postgres://appuser:$POSTGRES_PASSWORD@postgres:5432/lp_production_planning_issues_workbench?sslmode=disable" \
             --dry-run=client -o yaml | kubectl apply -f -
       - name: Materialize app secrets
         # Runtime credentials for the backend. Keys not yet set as GitHub
-        # secrets materialize as empty strings until provided.
+        # secrets materialize as empty strings until provided. Secrets are
+        # passed via env (NOT inline ${{ }} in the script) so values that
+        # contain quotes/spaces — like the M3_IONAPI JSON — don't break
+        # shell parsing.
+        env:
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          ENTRA_TENANT_ID: ${{ secrets.ENTRA_TENANT_ID }}
+          ENTRA_CLIENT_ID: ${{ secrets.ENTRA_CLIENT_ID }}
+          ENTRA_CLIENT_SECRET: ${{ secrets.ENTRA_CLIENT_SECRET }}
+          M3_IONAPI: ${{ secrets.M3_IONAPI }}
         run: |
           kubectl create secret generic app-secrets -n $NAMESPACE \
-            --from-literal=SESSION_SECRET="${{ secrets.SESSION_SECRET }}" \
-            --from-literal=ENTRA_TENANT_ID="${{ secrets.ENTRA_TENANT_ID }}" \
-            --from-literal=ENTRA_CLIENT_ID="${{ secrets.ENTRA_CLIENT_ID }}" \
-            --from-literal=ENTRA_CLIENT_SECRET="${{ secrets.ENTRA_CLIENT_SECRET }}" \
-            --from-literal=M3_IONAPI="${{ secrets.M3_IONAPI }}" \
+            --from-literal=SESSION_SECRET="$SESSION_SECRET" \
+            --from-literal=ENTRA_TENANT_ID="$ENTRA_TENANT_ID" \
+            --from-literal=ENTRA_CLIENT_ID="$ENTRA_CLIENT_ID" \
+            --from-literal=ENTRA_CLIENT_SECRET="$ENTRA_CLIENT_SECRET" \
+            --from-literal=M3_IONAPI="$M3_IONAPI" \
             --dry-run=client -o yaml | kubectl apply -f -
       - name: Apply manifests
         # Staged apply with --server-side --force-conflicts (Sprint 17 N2):
