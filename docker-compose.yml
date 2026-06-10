@@ -1,3 +1,6 @@
+# Pinned so existing containers/volumes (incl. postgres_data) survive folder renames
+name: m3-manufacturing-planning-toolbox
+
 services:
   postgres:
     image: postgres:15-alpine
