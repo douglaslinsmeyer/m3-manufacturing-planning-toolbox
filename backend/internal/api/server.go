@@ -3,7 +3,6 @@ package api
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"net/http"
 
 	"github.com/gorilla/mux"
@@ -25,7 +24,8 @@ type Server struct {
 	db                    *db.Queries
 	router                *mux.Router
 	sessionStore          sessions.Store
-	authManager           *auth.Manager
+	entra                 *auth.EntraAuthenticator
+	ionTokens             *auth.IONTokenManager
 	natsManager           *queue.Manager
 	contextService        *services.ContextService
 	auditService          *services.AuditService
@@ -35,7 +35,7 @@ type Server struct {
 }
 
 // NewServer creates a new API server instance
-func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manager, database *sql.DB) *Server {
+func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manager, database *sql.DB, ionTokens *auth.IONTokenManager) *Server {
 	// Initialize session store (cookie-based for auth tokens only)
 	// User profiles stored in Postgres to avoid cookie size limits and enable scaling
 	sessionStore := sessions.NewCookieStore([]byte(cfg.SessionSecret))
@@ -47,8 +47,8 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 		SameSite: http.SameSiteLaxMode,
 	}
 
-	// Initialize auth manager
-	authManager := auth.NewManager(cfg, sessionStore)
+	// Initialize Entra ID user authenticator (OIDC discovery is lazy)
+	entra := auth.NewEntraAuthenticator(cfg)
 
 	// Initialize context service
 	// Note: We'll create a placeholder repository here since the actual repository
@@ -77,7 +77,8 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 		db:                    queries,
 		router:                mux.NewRouter(),
 		sessionStore:          sessionStore,
-		authManager:           authManager,
+		entra:                 entra,
+		ionTokens:             ionTokens,
 		natsManager:           natsManager,
 		contextService:        contextService,
 		auditService:          auditService,
@@ -90,94 +91,38 @@ func NewServer(cfg *config.Config, queries *db.Queries, natsManager *queue.Manag
 	return s
 }
 
-// getCompassClient returns a Compass client for the current user session
+// getCompassClient returns a Compass client backed by the ION API
+// service-account token (M3 access is not tied to the signed-in user).
 func (s *Server) getCompassClient(r *http.Request) (*compass.Client, error) {
-	session, _ := s.sessionStore.Get(r, "m3-session")
-
-	// Get environment
-	environment, ok := session.Values["environment"].(string)
-	if !ok {
-		return nil, fmt.Errorf("no environment in session")
-	}
-
-	// Get environment config
-	envConfig, err := s.config.GetEnvironmentConfig(environment)
+	envConfig, err := s.config.GetEnvironmentConfig(s.config.M3Env)
 	if err != nil {
 		return nil, err
 	}
-
-	// Create token getter function
-	getToken := func() (string, error) {
-		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
-		_, err := s.authManager.RefreshTokenIfNeeded(session)
-		if err != nil {
-			return "", err
-		}
-		return s.authManager.GetAccessToken(session)
-	}
-
-	return compass.NewClient(envConfig.CompassBaseURL, getToken), nil
+	return compass.NewClient(envConfig.CompassBaseURL, s.ionTokens.GetToken), nil
 }
 
-// getM3APIClient returns an M3 API client for the current user session
+// getM3APIClient returns an M3 API client backed by the ION API
+// service-account token.
 func (s *Server) getM3APIClient(r *http.Request) (*m3api.Client, error) {
-	session, _ := s.sessionStore.Get(r, "m3-session")
-
-	// Get environment
-	environment, ok := session.Values["environment"].(string)
-	if !ok {
-		return nil, fmt.Errorf("no environment in session")
-	}
-
-	// Get environment config
-	envConfig, err := s.config.GetEnvironmentConfig(environment)
+	envConfig, err := s.config.GetEnvironmentConfig(s.config.M3Env)
 	if err != nil {
 		return nil, err
 	}
-
-	// Create token getter function
-	getToken := func() (string, error) {
-		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
-		_, err := s.authManager.RefreshTokenIfNeeded(session)
-		if err != nil {
-			return "", err
-		}
-		return s.authManager.GetAccessToken(session)
-	}
-
-	return m3api.NewClient(envConfig.APIBaseURL, getToken), nil
+	return m3api.NewClient(envConfig.APIBaseURL, s.ionTokens.GetToken), nil
 }
 
-// getInforClient returns an Infor API client for the current user session
+// getInforClient returns an Infor ION API client backed by the ION API
+// service-account token.
 func (s *Server) getInforClient(r *http.Request) (*infor.Client, error) {
-	session, _ := s.sessionStore.Get(r, "m3-session")
-
-	// Get environment
-	environment, ok := session.Values["environment"].(string)
-	if !ok {
-		return nil, fmt.Errorf("no environment in session")
-	}
-
-	// Get environment config
-	envConfig, err := s.config.GetEnvironmentConfig(environment)
+	envConfig, err := s.config.GetEnvironmentConfig(s.config.M3Env)
 	if err != nil {
 		return nil, err
-	}
-
-	// Create token getter function
-	getToken := func() (string, error) {
-		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
-		_, err := s.authManager.RefreshTokenIfNeeded(session)
-		if err != nil {
-			return "", err
-		}
-		return s.authManager.GetAccessToken(session)
 	}
 
 	// Base URL: https://mingle-ionapi.inforcloudsuite.com/{tenant}/
 	baseURL := fmt.Sprintf("https://mingle-ionapi.inforcloudsuite.com/%s/", envConfig.TenantID)
 
-	return infor.NewClient(baseURL, getToken), nil
+	return infor.NewClient(baseURL, s.ionTokens.GetToken), nil
 }
 
 // Router returns the configured HTTP router with CORS
@@ -309,26 +254,13 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		session, _ := s.sessionStore.Get(r, "m3-session")
 
-		// Check if user is authenticated
+		// Check if user is authenticated. Session lifetime is enforced by
+		// the cookie store's MaxAge; M3 access uses the service-account
+		// token, so there is no per-user token to refresh here.
 		authenticated, ok := session.Values["authenticated"].(bool)
 		if !ok || !authenticated {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
-		}
-
-		// Check if token is still valid and refresh if needed
-		refreshed, err := s.authManager.RefreshTokenIfNeeded(session)
-		if err != nil {
-			http.Error(w, "Authentication expired", http.StatusUnauthorized)
-			return
-		}
-
-		// Save session if tokens were refreshed to persist new token data
-		if refreshed {
-			if err := session.Save(r, w); err != nil {
-				log.Printf("Failed to save session after token refresh: %v", err)
-				// Don't fail the request - session might still work on next call
-			}
 		}
 
 		next.ServeHTTP(w, r)

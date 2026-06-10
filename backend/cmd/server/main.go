@@ -14,6 +14,7 @@ import (
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/pinggolf/m3-planning-tools/internal/api"
+	"github.com/pinggolf/m3-planning-tools/internal/auth"
 	"github.com/pinggolf/m3-planning-tools/internal/config"
 	"github.com/pinggolf/m3-planning-tools/internal/db"
 	"github.com/pinggolf/m3-planning-tools/internal/queue"
@@ -79,18 +80,27 @@ func main() {
 	defer natsManager.Close()
 	log.Println("NATS connection established")
 
+	// Initialize the ION API service-account token manager. All M3/Compass
+	// access (API server and workers) authenticates with this service
+	// account; user identity is handled separately via Entra ID.
+	ionTokens, err := auth.NewIONTokenManager(cfg.M3IONAPI)
+	if err != nil {
+		log.Fatalf("Failed to parse M3_IONAPI credentials: %v", err)
+	}
+	if !ionTokens.Configured() {
+		log.Println("WARNING: M3_IONAPI is not set — M3/Compass calls will fail until configured")
+	}
+
 	// Start snapshot worker
 	log.Println("Starting snapshot worker...")
-	snapshotWorker := workers.NewSnapshotWorker(natsManager, queries, cfg)
+	snapshotWorker := workers.NewSnapshotWorker(natsManager, queries, cfg, ionTokens)
 	if err := snapshotWorker.Start(); err != nil {
 		log.Fatalf("Failed to start snapshot worker: %v", err)
 	}
 	log.Println("Snapshot worker started")
 
 	// Initialize API server
-	// Note: Context cache refresh is triggered after user login via API handlers
-	// This uses user session tokens instead of service account tokens
-	server := api.NewServer(cfg, queries, natsManager, database)
+	server := api.NewServer(cfg, queries, natsManager, database, ionTokens)
 
 	// Create HTTP server
 	httpServer := &http.Server{

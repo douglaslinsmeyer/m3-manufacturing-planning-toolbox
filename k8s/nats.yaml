@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nats
-  namespace: lp-manufacturing-planning-toolbox
+  namespace: lp-production-planning-issues-workbench
   labels:
     group: "ERP-MIS"
     app_name: "nats"
@@ -64,7 +64,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: nats
-  namespace: lp-manufacturing-planning-toolbox
+  namespace: lp-production-planning-issues-workbench
   labels:
     group: "ERP-MIS"
     app_name: "nats"

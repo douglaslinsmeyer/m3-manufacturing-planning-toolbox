@@ -2,9 +2,9 @@ apiVersion: v1
 kind: ResourceQuota
 metadata:
   name: default-quota
-  namespace: lp-manufacturing-planning-toolbox
+  namespace: lp-production-planning-issues-workbench
   labels:
-    app_name: "manufacturing-planning-toolbox"
+    app_name: "production-planning-issues-workbench"
     group: "ERP-MIS"
     app.kubernetes.io/managed-by: ping-launchpad
 spec:

@@ -1076,12 +1076,12 @@ func (s *Server) rescheduleMO(ctx context.Context, m3Client *m3api.Client, mfno,
 		"PRNO": prno,
 		"MFNO": mfno,
 		"ORQA": orqa,
-		"WLDE": "0",           // Infinite/no bottlenecks
-		"STDT": newStartDate,  // New aligned start date
-		"DSP1": "1",           // Auto-approve: date earlier than today
-		"DSP2": "1",           // Auto-approve: MO connected to order
-		"DSP3": "1",           // Auto-approve: order contains subcontract
-		"DSP4": "1",           // Auto-approve: quantity not divisible
+		"WLDE": "0",          // Infinite/no bottlenecks
+		"STDT": newStartDate, // New aligned start date
+		"DSP1": "1",          // Auto-approve: date earlier than today
+		"DSP2": "1",          // Auto-approve: MO connected to order
+		"DSP3": "1",          // Auto-approve: order contains subcontract
+		"DSP4": "1",          // Auto-approve: quantity not divisible
 	}
 
 	log.Printf("Rescheduling MO %s to %s (FACI: %s, PRNO: %s, ORQA: %s)", mfno, newStartDate, facility, prno, orqa)
@@ -1172,7 +1172,6 @@ func (s *Server) updateMOPDates(ctx context.Context, m3Client *m3api.Client, plp
 
 	return nil
 }
-
 
 func getIPAddress(r *http.Request) string {
 	// Check for X-Forwarded-For header (proxy/load balancer)

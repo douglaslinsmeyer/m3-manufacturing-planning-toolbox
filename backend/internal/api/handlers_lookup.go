@@ -28,10 +28,10 @@ type CustomerOrderLineResponse struct {
 
 // CFINLookupResponse represents the response for CFIN lookup
 type CFINLookupResponse struct {
-	CFIN          string                        `json:"cfin"`
-	Found         bool                          `json:"found"`
-	CustomerLines []CustomerOrderLineResponse   `json:"customer_order_lines"`
-	Message       string                        `json:"message,omitempty"`
+	CFIN          string                      `json:"cfin"`
+	Found         bool                        `json:"found"`
+	CustomerLines []CustomerOrderLineResponse `json:"customer_order_lines"`
+	Message       string                      `json:"message,omitempty"`
 }
 
 // handleLookupCFIN performs on-demand lookup of customer orders by CFIN from Compass SQL

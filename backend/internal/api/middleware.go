@@ -1,43 +1,43 @@
 package api
 
 import (
-	"fmt"
 	"log"
 	"net/http"
+	"strings"
 )
 
-// adminMiddleware checks if the user has system administrator role
+// adminRole is the Entra ID app-role value that grants administrative access
+// (defined on the lp-production-planning-issues-workbench app registration).
+const adminRole = "admin"
+
+// adminMiddleware checks if the signed-in user carries the admin app role.
+// Roles come from the Entra ID token's `roles` claim, captured in the
+// session at login.
 func (s *Server) adminMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("DEBUG: adminMiddleware called for path: %s", r.URL.Path)
+		session, _ := s.sessionStore.Get(r, "m3-session")
 
-		// Get user ID from session
-		userID, err := s.getUserIDFromSession(r)
-		if err != nil {
-			log.Printf("ERROR: Failed to get user ID in adminMiddleware: %v", err)
+		authenticated, ok := session.Values["authenticated"].(bool)
+		if !ok || !authenticated {
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
 		}
 
-		log.Printf("DEBUG: Checking admin role for user: %s", userID)
-
-		// Check if user has admin role (Infor-SystemAdministrator)
-		hasAdminRole, err := s.userProfileService.HasRole(r.Context(), userID, "Infor-SystemAdministrator")
-		if err != nil {
-			log.Printf("ERROR: Failed to check admin role: %v", err)
-			http.Error(w, fmt.Sprintf("Failed to check permissions: %v", err), http.StatusInternalServerError)
-			return
+		rawRoles, _ := session.Values["user_roles"].(string)
+		hasAdminRole := false
+		for _, role := range strings.Split(rawRoles, ",") {
+			if strings.TrimSpace(role) == adminRole {
+				hasAdminRole = true
+				break
+			}
 		}
-
-		log.Printf("DEBUG: User %s has admin role: %v", userID, hasAdminRole)
 
 		if !hasAdminRole {
-			log.Printf("WARN: User %s attempted to access admin endpoint without permission", userID)
-			http.Error(w, "Forbidden: System administrator role required", http.StatusForbidden)
+			log.Printf("WARN: User %v attempted to access admin endpoint without the %q app role", session.Values["user_email"], adminRole)
+			http.Error(w, "Forbidden: administrator role required", http.StatusForbidden)
 			return
 		}
 
-		log.Printf("DEBUG: Admin check passed for user: %s", userID)
 		next.ServeHTTP(w, r)
 	})
 }

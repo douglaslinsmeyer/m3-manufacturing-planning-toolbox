@@ -1,6 +1,6 @@
-# M3 Manufacturing Planning Tools
+# Production Planning Issues Workbench
 
-A web application for analyzing M3 CloudSuite manufacturing orders and planned manufacturing orders to identify inconsistencies, errors, and planning issues.
+A web application ("Production Planning Issues Workbench") for analyzing M3 CloudSuite manufacturing orders and planned manufacturing orders to identify inconsistencies, errors, and planning issues. Deployed on the PING SII cluster via Launchpad: https://lp-production-planning-issues-workbench.sii.ping.com
 
 ## Overview
 
@@ -11,7 +11,7 @@ This tool provides snapshot-based analysis of M3 data, identifying:
 
 ## Architecture
 
-- **Backend**: Go REST API with OAuth 2.0 authentication
+- **Backend**: Go REST API — Entra ID (OIDC) user sign-in, ION API service-account (.ionapi) for all M3/Compass access
 - **Frontend**: React with TypeScript
 - **Database**: PostgreSQL with unified production order view
 - **Data Sources**:
@@ -34,33 +34,17 @@ Three-table architecture for production orders:
 
 ## Environment Configuration
 
-This application uses the **same OAuth credentials as the M3 Shop Floor app**, enabling seamless integration with existing M3 authentication.
+Authentication is split in two:
 
-The `.env` file has already been created with the correct credentials. If you need to regenerate it:
+- **User sign-in**: Microsoft Entra ID (OIDC authorization-code flow). App registration `lp-production-planning-issues-workbench`; the `admin` app role gates the Settings/admin endpoints.
+- **M3 data access**: an Infor ION API **Backend Service** service account. Set `M3_IONAPI` to the full JSON content of the `.ionapi` file downloaded from Infor ION API > Authorized Apps. No user tokens are used for M3/Compass calls.
+
+The app talks to exactly **one** M3 environment per deployment, selected by the `M3_ENVIRONMENT` / `M3_TENANT_ID` / `M3_API_BASE_URL` / `M3_COMPASS_BASE_URL` settings (no in-app TRN/PRD switching).
 
 ```bash
 cp .env.template .env
-# Then update with credentials from Shop Floor app
+# Fill in ENTRA_CLIENT_SECRET and M3_IONAPI
 ```
-
-### Environment Switching
-
-Users can switch between TRN and PRD environments:
-
-1. **At Login**: Select TRN or PRD before signing in
-2. **From Dashboard**: Click the environment badge (TRN/PRD) in the header to switch
-   - Switching environments logs you out and clears all cached data
-   - You'll be redirected to login with the new environment
-
-### Configuration Details
-
-#### TRN (Training) Environment
-- Testing and development environment
-- Pre-configured with Shop Floor app credentials
-
-#### PRD (Production) Environment
-- Production environment
-- Pre-configured with Shop Floor app credentials
 
 #### Database
 - `DATABASE_URL`: PostgreSQL connection string
@@ -200,7 +184,7 @@ npm run lint
 
 ### Authentication Endpoints
 
-- `POST /api/auth/login` - Initiate OAuth login
+- `POST /api/auth/login` - Initiate Entra ID OIDC login
 - `GET /api/auth/callback` - OAuth callback handler
 - `POST /api/auth/logout` - Logout and clear session
 - `GET /api/auth/status` - Check authentication status

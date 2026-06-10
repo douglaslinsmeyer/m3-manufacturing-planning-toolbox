@@ -94,8 +94,8 @@ class ApiService {
   }
 
   // Authentication
-  async login(environment: 'TRN' | 'PRD'): Promise<{ authUrl: string }> {
-    const response = await this.client.post('/auth/login', { environment });
+  async login(): Promise<{ authUrl: string }> {
+    const response = await this.client.post('/auth/login', {});
     return response.data;
   }
 

@@ -8,7 +8,7 @@ interface AuthContextType {
   userContext?: UserContext;
   userProfile?: UserProfile;
   loading: boolean;
-  login: (environment: 'TRN' | 'PRD') => Promise<void>;
+  login: () => Promise<void>;
   logout: () => Promise<void>;
   setUserContext: (context: UserContext) => Promise<void>;
   refreshProfile: () => Promise<void>;
@@ -43,10 +43,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     }
   };
 
-  const login = async (env: 'TRN' | 'PRD') => {
+  const login = async () => {
     try {
-      const { authUrl } = await api.login(env);
-      // Redirect to OAuth provider
+      const { authUrl } = await api.login();
+      // Redirect to Microsoft Entra ID for sign-in
       window.location.href = authUrl;
     } catch (error) {
       console.error('Login failed:', error);

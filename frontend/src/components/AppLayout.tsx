@@ -92,7 +92,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
 
   // Check if user is admin
   const isAdmin = userProfile?.groups?.some(
-    g => g.type === 'Security Role' && g.display === 'Infor-SystemAdministrator'
+    g => g.type === 'App Role' && g.value === 'admin'
   ) || false;
 
   // Fetch anomaly count on mount
@@ -126,12 +126,6 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
     }
   };
 
-  const handleSwitchEnvironment = async () => {
-    if (window.confirm(`Switch to ${environment === 'TRN' ? 'PRD' : 'TRN'} environment? This will log you out.`)) {
-      await handleLogout();
-    }
-  };
-
   const handleNavClick = () => {
     setMobileMenuOpen(false);
   };
@@ -148,9 +142,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
         </button>
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary-500">
-            <span className="text-xs font-bold text-white">M3</span>
+            <span className="text-xs font-bold text-white">PW</span>
           </div>
-          <span className="text-sm font-semibold text-white">Planning Tools</span>
+          <span className="text-sm font-semibold text-white">Issues Workbench</span>
         </div>
         <span className={`px-2 py-0.5 rounded text-xs font-bold ${
           environment === 'PRD' ? 'bg-error-500 text-white' : 'bg-primary-500 text-white'
@@ -176,9 +170,9 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
           <div className="flex h-16 items-center justify-between gap-3 px-4 border-b border-slate-800">
             <div className="flex items-center gap-3">
               <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary-500">
-                <span className="text-sm font-bold text-white">M3</span>
+                <span className="text-sm font-bold text-white">PW</span>
               </div>
-              <span className="text-lg font-semibold text-white">Planning Tools</span>
+              <span className="text-lg font-semibold text-white">Issues Workbench</span>
             </div>
             <button
               onClick={() => setMobileMenuOpen(false)}
@@ -188,14 +182,13 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
             </button>
           </div>
 
-          {/* Environment Badge */}
+          {/* Environment Badge (single environment per deployment) */}
           <div className="px-4 py-3">
-            <button
-              onClick={handleSwitchEnvironment}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+            <div
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm font-medium ${
                 environment === 'PRD'
-                  ? 'bg-error-500/20 text-error-400 hover:bg-error-500/30'
-                  : 'bg-primary-500/20 text-primary-400 hover:bg-primary-500/30'
+                  ? 'bg-error-500/20 text-error-400'
+                  : 'bg-primary-500/20 text-primary-400'
               }`}
             >
               <span>Environment</span>
@@ -204,7 +197,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children }) => {
               }`}>
                 {environment}
               </span>
-            </button>
+            </div>
           </div>
 
           {/* Navigation */}

@@ -6,17 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/gorilla/sessions"
+	"github.com/pinggolf/m3-planning-tools/internal/auth"
 	"github.com/pinggolf/m3-planning-tools/internal/infor"
 	"github.com/pinggolf/m3-planning-tools/internal/m3api"
 	"github.com/pinggolf/m3-planning-tools/internal/services"
 )
-
-// LoginRequest represents the login request payload
-type LoginRequest struct {
-	Environment string `json:"environment"` // "TRN" or "PRD"
-}
 
 // LoginResponse represents the login response
 type LoginResponse struct {
@@ -73,180 +70,124 @@ type M3UserInfoResponse struct {
 	TimeZone         string `json:"timeZone"`
 }
 
-// handleLogin initiates the OAuth login flow
+// handleLogin initiates the Entra ID OIDC login flow. The M3 environment is
+// fixed per deployment, so no environment selection happens at login.
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
-	var req LoginRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-
-	// Validate environment
-	if req.Environment != "TRN" && req.Environment != "PRD" {
-		http.Error(w, "Invalid environment. Must be TRN or PRD", http.StatusBadRequest)
-		return
-	}
-
-	// Get session
 	session, _ := s.sessionStore.Get(r, "m3-session")
 
-	// Store environment in session
-	session.Values["environment"] = req.Environment
+	state, err := auth.GenerateState()
+	if err != nil {
+		http.Error(w, "Failed to generate login state", http.StatusInternalServerError)
+		return
+	}
 
-	// Save session
+	session.Values["oauth_state"] = state
+	session.Values["environment"] = s.config.M3Env
 	if err := session.Save(r, w); err != nil {
 		http.Error(w, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
 
-	// Generate OAuth authorization URL
-	authURL, err := s.authManager.GetAuthorizationURL(req.Environment)
+	authURL, err := s.entra.AuthorizationURL(state)
 	if err != nil {
+		log.Printf("ERROR: failed to build Entra authorization URL: %v", err)
 		http.Error(w, "Failed to generate authorization URL", http.StatusInternalServerError)
 		return
 	}
 
-	// Return auth URL to frontend
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(LoginResponse{
-		AuthURL: authURL,
-	})
+	json.NewEncoder(w).Encode(LoginResponse{AuthURL: authURL})
 }
 
-// handleAuthCallback handles the OAuth callback
+// handleAuthCallback handles the Entra ID OAuth callback
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	// Get session
 	session, _ := s.sessionStore.Get(r, "m3-session")
 
-	// Get environment from session
-	environment, ok := session.Values["environment"].(string)
-	if !ok {
-		http.Error(w, "Invalid session", http.StatusBadRequest)
+	// CSRF protection: the state must match what login stored in the session
+	expectedState, _ := session.Values["oauth_state"].(string)
+	if expectedState == "" || r.URL.Query().Get("state") != expectedState {
+		http.Error(w, "Invalid login state", http.StatusBadRequest)
 		return
 	}
+	delete(session.Values, "oauth_state")
 
-	// Extract authorization code from query parameters
 	code := r.URL.Query().Get("code")
 	if code == "" {
 		http.Error(w, "Missing authorization code", http.StatusBadRequest)
 		return
 	}
 
-	// Exchange code for tokens
-	tokens, err := s.authManager.ExchangeCodeForTokens(r.Context(), environment, code)
+	user, err := s.entra.ExchangeCode(r.Context(), code)
 	if err != nil {
+		log.Printf("ERROR: Entra code exchange failed: %v", err)
 		http.Error(w, "Failed to exchange authorization code", http.StatusInternalServerError)
 		return
 	}
 
-	// Store tokens and authentication status in session
+	// Authenticated session: identity comes from Entra ID; M3 data access
+	// uses the ION API service account and is not tied to this user.
 	session.Values["authenticated"] = true
-	session.Values["access_token"] = tokens.AccessToken
-	session.Values["refresh_token"] = tokens.RefreshToken
-	session.Values["token_expiry"] = tokens.Expiry.Unix()
+	session.Values["environment"] = s.config.M3Env
+	session.Values["user_profile_id"] = user.ObjectID
+	session.Values["user_id"] = user.Email
+	session.Values["user_email"] = user.Email
+	session.Values["user_full_name"] = user.Name
+	session.Values["user_roles"] = strings.Join(user.Roles, ",")
 
-	// Fetch and cache combined user profile (Infor + M3) in Postgres
-	inforClient, err := s.getInforClient(r)
-	if err != nil {
-		log.Printf("WARNING: Failed to create Infor client: %v\n", err)
-	} else {
-		// Fetch Infor user management profile
-		inforProfile, err := inforClient.GetUserProfile(r.Context())
-		if err != nil {
-			log.Printf("WARNING: Failed to fetch Infor user profile: %v\n", err)
-		} else {
-			// Create combined profile
-			combinedProfile := &infor.CombinedUserProfile{
-				UserProfile: *inforProfile,
-			}
-
-			// Fetch M3 user info (defaults and preferences)
-			if m3Client, err := s.getM3APIClient(r); err == nil {
-				if m3Info, err := infor.GetM3UserInfo(r.Context(), m3Client); err == nil {
-					combinedProfile.M3Info = m3Info
-					log.Printf("INFO: Successfully fetched M3 user info for: %s\n", m3Info.UserID)
-				} else {
-					log.Printf("WARNING: Failed to fetch M3 user info: %v\n", err)
-				}
-			}
-
-			// Cache combined profile in Postgres with 15-min TTL
-			if err := s.userProfileService.SetProfile(r.Context(), combinedProfile); err != nil {
-				log.Printf("WARNING: Failed to cache user profile in Postgres: %v\n", err)
-			} else {
-				log.Printf("INFO: Successfully cached combined user profile for: %s (ID: %s)\n", inforProfile.DisplayName, inforProfile.ID)
-				// Store user ID in session for quick lookups
-				session.Values["user_profile_id"] = inforProfile.ID
-
-				// Extract M3 defaults from profile to session (for fast context access)
-				if combinedProfile.M3Info != nil {
-					session.Values["user_company"] = combinedProfile.M3Info.DefaultCompany
-					session.Values["user_division"] = combinedProfile.M3Info.DefaultDivision
-					session.Values["user_facility"] = combinedProfile.M3Info.DefaultFacility
-					session.Values["user_warehouse"] = combinedProfile.M3Info.DefaultWarehouse
-					session.Values["user_full_name"] = combinedProfile.M3Info.FullName
-					log.Printf("INFO: Populated session with M3 defaults from profile (Company: %s, Div: %s, Fac: %s, Whse: %s)\n",
-						combinedProfile.M3Info.DefaultCompany,
-						combinedProfile.M3Info.DefaultDivision,
-						combinedProfile.M3Info.DefaultFacility,
-						combinedProfile.M3Info.DefaultWarehouse)
-				}
-			}
-		}
+	// Cache the profile in Postgres so /auth/status and the settings
+	// handlers keep working against the same store as before.
+	if err := s.userProfileService.SetProfile(r.Context(), entraProfile(user)); err != nil {
+		log.Printf("WARNING: Failed to cache user profile in Postgres: %v", err)
 	}
 
-	// Get M3 API client for context cache priming
-	m3Client, err := s.getM3APIClient(r)
-	if err != nil {
-		log.Printf("ERROR: Failed to initialize M3 API client during auth: %v\n", err)
+	// Prime the M3 context cache (companies/divisions/facilities/warehouses)
+	// in the background using the service-account client. Per-user M3
+	// defaults are no longer fetched at login — context selection comes from
+	// the user's saved settings or manual selection.
+	if m3Client, err := s.getM3APIClient(r); err != nil {
+		log.Printf("WARNING: Failed to initialize M3 API client during auth: %v", err)
 		session.Values["context_load_error"] = err.Error()
 	} else {
-		// ALWAYS prime the cache in the background - this populates companies/divisions/facilities/warehouses
-		// so users can select them even if LoadUserDefaults fails
-		go s.primeContextCache(environment, m3Client)
-
-		// Check if M3 defaults already populated from profile (to avoid duplicate API call)
-		if _, hasCompany := session.Values["user_company"].(string); !hasCompany {
-			// M3 defaults not in session - call LoadUserDefaults as fallback
-			log.Printf("INFO: M3 defaults not found in session, calling LoadUserDefaults\n")
-			if err := s.contextService.LoadUserDefaults(r.Context(), session, m3Client); err != nil {
-				// Log error but don't fail login - user can select context manually
-				log.Printf("WARNING: Failed to load user defaults from M3 (user can select manually): %v\n", err)
-				session.Values["context_load_error"] = err.Error()
-			} else {
-				// Success - clear any previous errors
-				delete(session.Values, "context_load_error")
-				log.Printf("INFO: Successfully loaded user defaults for environment %s\n", environment)
-			}
-		} else {
-			// M3 defaults already in session from profile - skip LoadUserDefaults
-			log.Printf("INFO: M3 defaults already in session from profile cache (skipping LoadUserDefaults)\n")
-			delete(session.Values, "context_load_error")
-		}
+		go s.primeContextCache(s.config.M3Env, m3Client)
+		delete(session.Values, "context_load_error")
 	}
 
-	// Save session with user defaults
 	if err := session.Save(r, w); err != nil {
 		http.Error(w, "Failed to save session", http.StatusInternalServerError)
 		return
 	}
 
-	// Redirect to frontend
 	http.Redirect(w, r, s.config.FrontendURL, http.StatusFound)
+}
+
+// entraProfile synthesizes the cached profile record from Entra ID claims.
+// App roles are stored as groups so the existing role plumbing keeps working.
+func entraProfile(user *auth.EntraUser) *infor.CombinedUserProfile {
+	groups := make([]infor.Group, len(user.Roles))
+	for i, role := range user.Roles {
+		groups[i] = infor.Group{Value: role, Display: role, Type: "App Role"}
+	}
+	return &infor.CombinedUserProfile{
+		UserProfile: infor.UserProfile{
+			ID:          user.ObjectID,
+			UserName:    user.Email,
+			DisplayName: user.Name,
+			Emails:      []infor.Email{{Value: user.Email, Type: "work", Primary: true}},
+			Groups:      groups,
+		},
+	}
 }
 
 // handleLogout logs out the user
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
-	// Get session
 	session, _ := s.sessionStore.Get(r, "m3-session")
 
-	// Store the old environment for logging purposes
 	oldEnvironment, _ := session.Values["environment"].(string)
 
 	// Delete user profile from Postgres cache
 	if userProfileID, ok := session.Values["user_profile_id"].(string); ok && userProfileID != "" {
 		if err := s.userProfileService.DeleteProfile(r.Context(), userProfileID); err != nil {
-			log.Printf("WARNING: Failed to delete user profile from cache: %v\n", err)
+			log.Printf("WARNING: Failed to delete user profile from cache: %v", err)
 		}
 	}
 
@@ -254,14 +195,10 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	session.Values = make(map[interface{}]interface{})
 	session.Options.MaxAge = -1
 
-	// Save session
 	if err := session.Save(r, w); err != nil {
 		http.Error(w, "Failed to clear session", http.StatusInternalServerError)
 		return
 	}
-
-	// TODO: Clear any cached data for this user's environment
-	// This is where we would clear NATS job data, cached snapshots, etc.
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
@@ -277,13 +214,10 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 	authenticated, ok := session.Values["authenticated"].(bool)
 	if !ok || !authenticated {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(AuthStatusResponse{
-			Authenticated: false,
-		})
+		json.NewEncoder(w).Encode(AuthStatusResponse{Authenticated: false})
 		return
 	}
 
-	// Get environment and user context
 	environment, _ := session.Values["environment"].(string)
 
 	var userContext *UserContextResponse
@@ -296,52 +230,25 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Get combined user profile from Postgres cache (15-min TTL)
+	// Get user profile from Postgres cache; if the cache TTL has lapsed,
+	// rebuild it from the session's Entra claims (no external call needed).
 	var userProfile *UserProfileResponse
 	if userProfileID, ok := session.Values["user_profile_id"].(string); ok && userProfileID != "" {
 		profile, err := s.userProfileService.GetProfile(r.Context(), userProfileID)
-
-		// If profile is nil (cache expired) or error occurred, try to refresh it
 		if profile == nil || err != nil {
 			if err != nil {
-				log.Printf("WARNING: Failed to get cached user profile: %v, attempting refresh\n", err)
-			} else {
-				log.Printf("INFO: User profile cache expired, refreshing from Infor API\n")
+				log.Printf("WARNING: Failed to get cached user profile: %v, rebuilding from session", err)
 			}
-
-			// Refresh profile from Infor and M3
-			if inforClient, clientErr := s.getInforClient(r); clientErr == nil {
-				if inforProfile, profileErr := inforClient.GetUserProfile(r.Context()); profileErr == nil {
-					// Create combined profile
-					combinedProfile := &infor.CombinedUserProfile{
-						UserProfile: *inforProfile,
-					}
-
-					// Fetch M3 user info
-					if m3Client, m3Err := s.getM3APIClient(r); m3Err == nil {
-						if m3Info, m3InfoErr := infor.GetM3UserInfo(r.Context(), m3Client); m3InfoErr == nil {
-							combinedProfile.M3Info = m3Info
-							log.Printf("INFO: Refreshed M3 user info for: %s\n", m3Info.UserID)
-						}
-					}
-
-					// Re-cache the refreshed profile
-					if cacheErr := s.userProfileService.SetProfile(r.Context(), combinedProfile); cacheErr == nil {
-						profile = combinedProfile
-						log.Printf("INFO: User profile refreshed and cached for: %s\n", inforProfile.DisplayName)
-					} else {
-						log.Printf("WARNING: Failed to cache refreshed profile: %v\n", cacheErr)
-					}
-				} else {
-					log.Printf("WARNING: Failed to refresh Infor profile: %v\n", profileErr)
+			rebuilt := s.profileFromSession(session)
+			if rebuilt != nil {
+				if cacheErr := s.userProfileService.SetProfile(r.Context(), rebuilt); cacheErr != nil {
+					log.Printf("WARNING: Failed to re-cache user profile: %v", cacheErr)
 				}
-			} else {
-				log.Printf("WARNING: Failed to create Infor client for profile refresh: %v\n", clientErr)
+				profile = rebuilt
 			}
 		}
 
 		if profile != nil {
-			// Get primary email
 			primaryEmail := ""
 			for _, email := range profile.Emails {
 				if email.Primary {
@@ -350,17 +257,11 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			// Convert groups
 			groups := make([]UserProfileGroupResponse, len(profile.Groups))
 			for i, g := range profile.Groups {
-				groups[i] = UserProfileGroupResponse{
-					Value:   g.Value,
-					Display: g.Display,
-					Type:    g.Type,
-				}
+				groups[i] = UserProfileGroupResponse{Value: g.Value, Display: g.Display, Type: g.Type}
 			}
 
-			// Convert M3 info if available
 			var m3Info *M3UserInfoResponse
 			if profile.M3Info != nil {
 				m3Info = &M3UserInfoResponse{
@@ -388,29 +289,34 @@ func (s *Server) handleAuthStatus(w http.ResponseWriter, r *http.Request) {
 				Groups:      groups,
 				M3Info:      m3Info,
 			}
-		} else if err != nil {
-			log.Printf("WARNING: Failed to get user profile from cache: %v\n", err)
 		}
 	}
 
-	response := AuthStatusResponse{
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(AuthStatusResponse{
 		Authenticated: true,
 		Environment:   environment,
 		UserContext:   userContext,
 		UserProfile:   userProfile,
-	}
+	})
+}
 
-	// Debug: Log if M3 info is included
-	if userProfile != nil && userProfile.M3Info != nil {
-		log.Printf("DEBUG: Auth status returning M3 info for user: %s (Company: %s)\n", userProfile.M3Info.UserID, userProfile.M3Info.DefaultCompany)
-	} else if userProfile != nil {
-		log.Printf("DEBUG: Auth status returning profile WITHOUT M3 info for user: %s\n", userProfile.UserName)
-	} else {
-		log.Printf("DEBUG: Auth status returning NO user profile\n")
+// profileFromSession rebuilds the cached profile from session claims.
+func (s *Server) profileFromSession(session *sessions.Session) *infor.CombinedUserProfile {
+	oid := getSessionString(session, "user_profile_id")
+	if oid == "" {
+		return nil
 	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(response)
+	var roles []string
+	if raw := getSessionString(session, "user_roles"); raw != "" {
+		roles = strings.Split(raw, ",")
+	}
+	return entraProfile(&auth.EntraUser{
+		ObjectID: oid,
+		Email:    getSessionString(session, "user_email"),
+		Name:     getSessionString(session, "user_full_name"),
+		Roles:    roles,
+	})
 }
 
 // handleGetContext returns the user's current organizational context
@@ -452,7 +358,6 @@ func (s *Server) handleSetContext(w http.ResponseWriter, r *http.Request) {
 		session.Values["warehouse"] = req.Warehouse
 	}
 
-	// Save session
 	if err := session.Save(r, w); err != nil {
 		http.Error(w, "Failed to save session", http.StatusInternalServerError)
 		return
@@ -493,9 +398,7 @@ func (s *Server) primeContextCache(environment string, m3Client *m3api.Client) {
 		fmt.Printf("  %s: Cached %d facilities\n", environment, len(facilities))
 	}
 
-	// 3. Use NEW bulk API to prime ALL company-scoped entities in single call
-	// This replaces the old sequential loop with 1 bulk request for:
-	// - Divisions, Warehouses, MO Types, CO Types for ALL companies
+	// 3. Use bulk API to prime ALL company-scoped entities in single call
 	if err := repo.RefreshAllContextBulk(ctx, companies); err != nil {
 		fmt.Printf("ERROR: Bulk context refresh failed: %v\n", err)
 		return
@@ -504,57 +407,30 @@ func (s *Server) primeContextCache(environment string, m3Client *m3api.Client) {
 	fmt.Printf("Context cache priming completed for %s using bulk API calls\n", environment)
 }
 
-// handleRefreshProfile re-fetches user profile from Infor API
+// handleRefreshProfile rebuilds the cached profile from the session's Entra
+// claims. Identity lives in Entra ID; there is no external profile API to
+// re-fetch under the service-account model.
 func (s *Server) handleRefreshProfile(w http.ResponseWriter, r *http.Request) {
 	session, _ := s.sessionStore.Get(r, "m3-session")
 
-	// Check authentication
 	authenticated, ok := session.Values["authenticated"].(bool)
 	if !ok || !authenticated {
 		http.Error(w, "Not authenticated", http.StatusUnauthorized)
 		return
 	}
 
-	// Get Infor client
-	inforClient, err := s.getInforClient(r)
-	if err != nil {
-		http.Error(w, "Failed to create Infor client", http.StatusInternalServerError)
+	profile := s.profileFromSession(session)
+	if profile == nil {
+		http.Error(w, "No profile in session", http.StatusInternalServerError)
 		return
 	}
 
-	// Fetch fresh Infor profile
-	inforProfile, err := inforClient.GetUserProfile(r.Context())
-	if err != nil {
-		log.Printf("ERROR: Failed to fetch Infor user profile: %v\n", err)
-		http.Error(w, "Failed to fetch user profile", http.StatusInternalServerError)
-		return
-	}
-
-	// Create combined profile
-	combinedProfile := &infor.CombinedUserProfile{
-		UserProfile: *inforProfile,
-	}
-
-	// Fetch M3 user info
-	if m3Client, err := s.getM3APIClient(r); err == nil {
-		if m3Info, err := infor.GetM3UserInfo(r.Context(), m3Client); err == nil {
-			combinedProfile.M3Info = m3Info
-			log.Printf("INFO: Successfully fetched M3 user info for: %s\n", m3Info.UserID)
-		} else {
-			log.Printf("WARNING: Failed to fetch M3 user info: %v\n", err)
-		}
-	}
-
-	// Cache combined profile in Postgres with new 15-min TTL
-	if err := s.userProfileService.SetProfile(r.Context(), combinedProfile); err != nil {
-		log.Printf("ERROR: Failed to cache profile in Postgres: %v\n", err)
+	if err := s.userProfileService.SetProfile(r.Context(), profile); err != nil {
+		log.Printf("ERROR: Failed to cache profile in Postgres: %v", err)
 		http.Error(w, "Failed to cache profile", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("INFO: Successfully refreshed combined user profile for: %s (ID: %s)\n", inforProfile.DisplayName, inforProfile.ID)
-
-	// Return updated combined profile
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(combinedProfile)
+	json.NewEncoder(w).Encode(profile)
 }

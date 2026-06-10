@@ -2,10 +2,10 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
-  namespace: lp-manufacturing-planning-toolbox
+  namespace: lp-production-planning-issues-workbench
   labels:
     group: "ERP-MIS"
-    app_name: "manufacturing-planning-toolbox"
+    app_name: "production-planning-issues-workbench"
     contact_person: "douglasl_at_ping_com"
 spec:
   replicas: 1
@@ -17,7 +17,7 @@ spec:
       labels:
         app: backend
         group: "ERP-MIS"
-        app_name: "manufacturing-planning-toolbox"
+        app_name: "production-planning-issues-workbench"
         contact_person: "douglasl_at_ping_com"
     spec:
       securityContext:
@@ -28,7 +28,7 @@ spec:
           type: RuntimeDefault
       containers:
       - name: backend
-        image: pingsiiplatformacr.azurecr.io/lp-manufacturing-planning-toolbox/backend:__GIT_SHA__
+        image: pingsiiplatformacr.azurecr.io/lp-production-planning-issues-workbench/backend:__GIT_SHA__
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -38,13 +38,11 @@ spec:
         - name: APP_PORT
           value: "8080"
         - name: FRONTEND_URL
-          value: "https://lp-manufacturing-planning-toolbox.sii.ping.com"
+          value: "https://lp-production-planning-issues-workbench.sii.ping.com"
         - name: OAUTH_REDIRECT_URI
-          value: "https://lp-manufacturing-planning-toolbox.sii.ping.com/api/auth/callback"
-        - name: OAUTH_SCOPES
-          value: "openid profile"
+          value: "https://lp-production-planning-issues-workbench.sii.ping.com/api/auth/callback"
         - name: CORS_ALLOWED_ORIGINS
-          value: "https://lp-manufacturing-planning-toolbox.sii.ping.com"
+          value: "https://lp-production-planning-issues-workbench.sii.ping.com"
         - name: CORS_ALLOW_CREDENTIALS
           value: "true"
         - name: NATS_URL
@@ -55,29 +53,17 @@ spec:
           value: "info"
         - name: LOG_FORMAT
           value: "json"
-        - name: TRN_TENANT_ID
-          value: "XK3JRT8CJCAF9GWY_TRN"
-        - name: TRN_INSTANCE_ID
-          value: "6fd9051e-60a7-46ad-ad39-78d31bde6bec"
-        - name: TRN_AUTH_ENDPOINT
-          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_TRN/as/authorization.oauth2"
-        - name: TRN_TOKEN_ENDPOINT
-          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_TRN/as/token.oauth2"
-        - name: TRN_API_BASE_URL
-          value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_TRN/"
-        - name: TRN_COMPASS_BASE_URL
-          value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_TRN/DATAFABRIC/compass/v2/"
-        - name: PRD_TENANT_ID
+        # Single M3 environment per deployment — change these five values
+        # (and the M3_IONAPI secret) to retarget the app at another tenant.
+        - name: M3_ENVIRONMENT
+          value: "PRD"
+        - name: M3_TENANT_ID
           value: "XK3JRT8CJCAF9GWY_PRD"
-        - name: PRD_INSTANCE_ID
+        - name: M3_INSTANCE_ID
           value: "20233849-6dca-4bd1-bf9f-13972ace238f"
-        - name: PRD_AUTH_ENDPOINT
-          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_PRD/as/authorization.oauth2"
-        - name: PRD_TOKEN_ENDPOINT
-          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_PRD/as/token.oauth2"
-        - name: PRD_API_BASE_URL
+        - name: M3_API_BASE_URL
           value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_PRD/"
-        - name: PRD_COMPASS_BASE_URL
+        - name: M3_COMPASS_BASE_URL
           value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_PRD/DATAFABRIC/compass/v2/"
         - name: DATABASE_URL
           valueFrom:
@@ -129,10 +115,10 @@ apiVersion: v1
 kind: Service
 metadata:
   name: backend
-  namespace: lp-manufacturing-planning-toolbox
+  namespace: lp-production-planning-issues-workbench
   labels:
     group: "ERP-MIS"
-    app_name: "manufacturing-planning-toolbox"
+    app_name: "production-planning-issues-workbench"
     contact_person: "douglasl_at_ping_com"
 spec:
   selector:

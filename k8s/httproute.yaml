@@ -1,20 +1,20 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: lp-manufacturing-planning-toolbox
-  namespace: lp-manufacturing-planning-toolbox
+  name: lp-production-planning-issues-workbench
+  namespace: lp-production-planning-issues-workbench
   labels:
-    launchpad.ping.com/app: "lp-manufacturing-planning-toolbox"
-    app.kubernetes.io/part-of: "lp-manufacturing-planning-toolbox"
+    launchpad.ping.com/app: "lp-production-planning-issues-workbench"
+    app.kubernetes.io/part-of: "lp-production-planning-issues-workbench"
     group: "ERP-MIS"
-    app_name: "manufacturing-planning-toolbox"
+    app_name: "production-planning-issues-workbench"
     contact_person: "douglasl_at_ping_com"
 spec:
   parentRefs:
   - name: sii-gateway
     namespace: nginx-gateway
   hostnames:
-  - "lp-manufacturing-planning-toolbox.sii.ping.com"
+  - "lp-production-planning-issues-workbench.sii.ping.com"
   rules:
   # API traffic (REST + SSE progress streams) -> Go backend
   - matches:

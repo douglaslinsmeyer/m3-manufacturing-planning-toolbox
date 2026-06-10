@@ -65,14 +65,14 @@ type M3CustomerOrderTypeResponse struct {
 
 // EffectiveContextResponse represents the effective context
 type EffectiveContextResponse struct {
-	Environment           string                `json:"environment"`
-	Company               string                `json:"company"`
-	Division              string                `json:"division"`
-	Facility              string                `json:"facility"`
-	Warehouse             string                `json:"warehouse"`
-	HasTemporaryOverrides bool                  `json:"hasTemporaryOverrides"`
-	UserDefaults          *UserContextResponse  `json:"userDefaults"`
-	LoadError             string                `json:"loadError,omitempty"`
+	Environment           string               `json:"environment"`
+	Company               string               `json:"company"`
+	Division              string               `json:"division"`
+	Facility              string               `json:"facility"`
+	Warehouse             string               `json:"warehouse"`
+	HasTemporaryOverrides bool                 `json:"hasTemporaryOverrides"`
+	UserDefaults          *UserContextResponse `json:"userDefaults"`
+	LoadError             string               `json:"loadError,omitempty"`
 }
 
 // TemporaryOverrideRequest represents a temporary override update
@@ -458,26 +458,14 @@ func (s *Server) handleListCustomerOrderTypes(w http.ResponseWriter, r *http.Req
 // Helper method to get context repository for an environment
 // This creates a repository with an M3 API client that uses the request's session token
 func (s *Server) getContextRepositoryForRequest(r *http.Request, environment string) (*services.ContextRepository, error) {
-	// Get session
-	session, _ := s.sessionStore.Get(r, "m3-session")
-
 	// Get environment-specific config
 	envConfig, err := s.config.GetEnvironmentConfig(environment)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get environment config: %w", err)
 	}
 
-	// Create a function to get the token from the session
-	getToken := func() (string, error) {
-		// Refresh token if needed (ignore refreshed flag - middleware handles persistence)
-		_, err := s.authManager.RefreshTokenIfNeeded(session)
-		if err != nil {
-			return "", err
-		}
-		return s.authManager.GetAccessToken(session)
-	}
-
-	m3Client := m3api.NewClient(envConfig.APIBaseURL, getToken)
+	// The M3 API client authenticates with the ION API service-account token
+	m3Client := m3api.NewClient(envConfig.APIBaseURL, s.ionTokens.GetToken)
 	return services.NewContextRepository(s.db, m3Client, environment), nil
 }
 

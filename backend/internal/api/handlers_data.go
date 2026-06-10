@@ -14,11 +14,11 @@ import (
 // Placeholder handlers for data endpoints
 // These will be implemented once we have the full database schema and M3 client
 
-// RefreshRequest represents a refresh request
+// RefreshRequest represents a refresh request. Workers authenticate to M3
+// with the ION API service account — no user token travels through NATS.
 type RefreshRequest struct {
 	JobID       string `json:"jobId"`
 	Environment string `json:"environment"`
-	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
 	Language    string `json:"language"`
@@ -28,12 +28,9 @@ type RefreshRequest struct {
 func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 	session, _ := s.sessionStore.Get(r, "m3-session")
 
-	// Get environment and access token
 	environment, _ := session.Values["environment"].(string)
-	accessToken, err := s.authManager.GetAccessToken(session)
-	if err != nil {
-		http.Error(w, "Failed to get access token", http.StatusUnauthorized)
-		return
+	if environment == "" {
+		environment = s.config.M3Env
 	}
 
 	// Get effective context (respects temporary overrides)
@@ -49,9 +46,7 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// DEBUG: Print token and context for manual testing
 	log.Printf("=== SNAPSHOT REFRESH REQUEST ===")
-	log.Printf("Token: %s", accessToken)
 	log.Printf("Environment: %s", environment)
 	log.Printf("Company: %s", effectiveContext.Company)
 	log.Printf("Facility: %s", effectiveContext.Facility)
@@ -77,7 +72,6 @@ func (s *Server) handleSnapshotRefresh(w http.ResponseWriter, r *http.Request) {
 	refreshMsg := RefreshRequest{
 		JobID:       jobID,
 		Environment: environment,
-		AccessToken: accessToken,
 		Company:     effectiveContext.Company,
 		Facility:    effectiveContext.Facility,
 		Language:    effectiveContext.Language,
@@ -221,14 +215,14 @@ func (s *Server) handleSnapshotStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Return job status
 	response := map[string]interface{}{
-		"jobId":             job.ID,
-		"status":            job.Status,
-		"progress":          job.ProgressPct,
-		"completedSteps":    job.CompletedSteps,
-		"totalSteps":        job.TotalSteps,
-		"coLinesProcessed":  job.COLinesProcessed,
-		"mosProcessed":      job.MOsProcessed,
-		"mopsProcessed":     job.MOPsProcessed,
+		"jobId":            job.ID,
+		"status":           job.Status,
+		"progress":         job.ProgressPct,
+		"completedSteps":   job.CompletedSteps,
+		"totalSteps":       job.TotalSteps,
+		"coLinesProcessed": job.COLinesProcessed,
+		"mosProcessed":     job.MOsProcessed,
+		"mopsProcessed":    job.MOPsProcessed,
 	}
 
 	if job.CurrentStep.Valid {

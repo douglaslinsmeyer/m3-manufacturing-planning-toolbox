@@ -2,7 +2,7 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: postgres-data-2fbf6226
-  namespace: lp-manufacturing-planning-toolbox
+  namespace: lp-production-planning-issues-workbench
   labels:
     group: "ERP-MIS"
     app_name: "postgres"

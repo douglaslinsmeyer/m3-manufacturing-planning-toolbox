@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/pinggolf/m3-planning-tools/internal/auth"
 	"github.com/pinggolf/m3-planning-tools/internal/compass"
 	"github.com/pinggolf/m3-planning-tools/internal/config"
 	"github.com/pinggolf/m3-planning-tools/internal/db"
@@ -22,16 +23,18 @@ type SnapshotWorker struct {
 	nats           *queue.Manager
 	db             *db.Queries
 	config         *config.Config
+	ionTokens      *auth.IONTokenManager
 	jobContexts    map[string]context.CancelFunc // Track job cancellation contexts
 	jobContextsMux sync.RWMutex                  // Protect concurrent access
 }
 
 // NewSnapshotWorker creates a new snapshot worker
-func NewSnapshotWorker(nats *queue.Manager, database *db.Queries, cfg *config.Config) *SnapshotWorker {
+func NewSnapshotWorker(nats *queue.Manager, database *db.Queries, cfg *config.Config, ionTokens *auth.IONTokenManager) *SnapshotWorker {
 	return &SnapshotWorker{
 		nats:        nats,
 		db:          database,
 		config:      cfg,
+		ionTokens:   ionTokens,
 		jobContexts: make(map[string]context.CancelFunc),
 	}
 }
@@ -41,7 +44,6 @@ type SnapshotRefreshMessage struct {
 	JobID       string `json:"jobId"`
 	Environment string `json:"environment"`
 	UserID      string `json:"userId,omitempty"`
-	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
 	Language    string `json:"language"`
@@ -97,7 +99,6 @@ type DataBatchJobMessage struct {
 	ParentJobID string `json:"parentJobId"`
 	DataType    string `json:"dataType"` // "mops", "mos", "cos"
 	Environment string `json:"environment"`
-	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
 	Facility    string `json:"facility"`
 	Language    string `json:"language"`
@@ -566,11 +567,8 @@ func (w *SnapshotWorker) handleBatchJob(msg *nats.Msg) {
 		return
 	}
 
-	// Create Compass client
-	getToken := func() (string, error) {
-		return job.AccessToken, nil
-	}
-	compassClient := compass.NewClient(envConfig.CompassBaseURL, getToken)
+	// Create Compass client authenticated with the ION API service account
+	compassClient := compass.NewClient(envConfig.CompassBaseURL, w.ionTokens.GetToken)
 	snapshotService := services.NewSnapshotService(compassClient, w.db)
 
 	// Set progress callback to publish intermediate updates
@@ -765,7 +763,6 @@ func (w *SnapshotWorker) publishDataJobs(req SnapshotRefreshMessage) error {
 			ParentJobID: req.JobID,
 			DataType:    dataType,
 			Environment: req.Environment,
-			AccessToken: req.AccessToken,
 			Company:     req.Company,
 			Facility:    req.Facility,
 			Language:    req.Language,
