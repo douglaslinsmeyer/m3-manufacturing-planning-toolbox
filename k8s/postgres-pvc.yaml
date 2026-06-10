@@ -1,13 +1,13 @@
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: postgres-data-2fbf6226
+  name: postgres-data-rinit-b
   namespace: lp-production-planning-issues-workbench
   labels:
     group: "ERP-MIS"
     app_name: "postgres"
     contact_person: "douglasl_at_ping_com"
-    pvc-config-hash: "2fbf6226"
+    pvc-config-hash: "rinit-b"
 spec:
   accessModes:
     - ReadWriteOnce

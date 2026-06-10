@@ -24,7 +24,7 @@ spec:
       annotations:
         # PVC name is derived from a hash of (storageClass, size, accessModes);
         # surfaced here so `kubectl describe` explains claimName changes.
-        pvc-config-hash: "2fbf6226"
+        pvc-config-hash: "rinit-b"
     spec:
       containers:
       - name: postgres
@@ -60,4 +60,4 @@ spec:
       volumes:
       - name: postgres-data
         persistentVolumeClaim:
-          claimName: postgres-data-2fbf6226
+          claimName: postgres-data-rinit-b
