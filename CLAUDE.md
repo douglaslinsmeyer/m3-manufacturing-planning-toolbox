@@ -6,6 +6,8 @@
 - Never commit directly to `main` — make all changes on a branch in a separate git worktree (`git worktree add .worktrees/<name> -b <branch>`)
 - Contribute changes via pull request to the pinggolf repo
 - PRs do not need human review — enable auto-merge so they merge as soon as all CI checks are green (`gh pr merge --auto`)
+- Run `make check` locally before pushing (go vet, go test, frontend tsc+build, advisory golangci-lint) — avoids CI round-trips; `make smoke` adds the Docker build smoke test
+- Branch protection on `main` requires green: Test, Trivy, PR build smoke test, CodeQL. The Lint job is advisory (`continue-on-error`) until the imported codebase's errcheck debt is fixed
 
 ## M3 Data Fabric (Compass SQL) Important Findings
 
