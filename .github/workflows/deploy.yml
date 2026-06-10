@@ -25,9 +25,9 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: golangci/golangci-lint-action@v6
+      - uses: golangci/golangci-lint-action@v8
         with:
-          version: v1.61
+          version: latest
           working-directory: backend
           args: ./...
 
