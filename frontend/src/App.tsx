@@ -45,7 +45,7 @@ const ProtectedRouteWithContext: React.FC<{ children: React.ReactNode }> = ({ ch
 function App() {
   return (
     <AuthProvider>
-      <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+      <Router>
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route

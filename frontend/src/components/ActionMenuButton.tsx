@@ -194,7 +194,9 @@ export const ActionMenuButton: React.FC<ActionMenuButtonProps> = ({
             {actions.map((action, index) => (
               <button
                 key={action.id}
-                ref={(el) => (menuItemsRef.current[index] = el)}
+                ref={(el) => {
+                  menuItemsRef.current[index] = el;
+                }}
                 type="button"
                 role="menuitem"
                 disabled={action.disabled}
