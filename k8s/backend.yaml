@@ -73,7 +73,7 @@ spec:
         envFrom:
         - secretRef:
             # Materialized by the deploy workflow from GitHub Actions secrets:
-            # SESSION_SECRET, ENTRA_*, TRN_/PRD_ client credentials, *_IONAPI.
+            # SESSION_SECRET, ENTRA_*, and M3_IONAPI.
             name: app-secrets
         securityContext:
           allowPrivilegeEscalation: false

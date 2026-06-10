@@ -36,6 +36,11 @@ RUN npm run build
 # Production stage - nginx serving static files
 FROM nginx:alpine AS production
 
+# Pull in fixed apk packages ahead of the base image refresh — the Trivy
+# CI gate blocks HIGH/CRITICAL CVEs with available fixes (e.g. libcrypto3,
+# libxml2).
+RUN apk upgrade --no-cache
+
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
