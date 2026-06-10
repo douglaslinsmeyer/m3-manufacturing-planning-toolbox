@@ -15,8 +15,9 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -o /app/bin/server \
     ./cmd/server
 
-# Use distroless for minimal image size
-FROM gcr.io/distroless/static-debian12
+# Use distroless for minimal image size; :nonroot runs as uid 65532
+# (matches the pod securityContext in k8s/backend.yaml)
+FROM gcr.io/distroless/static-debian12:nonroot
 
 WORKDIR /app
 

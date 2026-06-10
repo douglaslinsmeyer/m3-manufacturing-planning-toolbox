@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "manufacturing-planning-toolbox"
+    contact_person: "douglasl_at_ping_com"
+    sii.ping.com/gateway-access: "true"
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+    app.kubernetes.io/part-of: launchpad
+    app.kubernetes.io/managed-by: ping-launchpad
+    created-by: ping-azure-assistant
+    created-date: "2026-06-10"

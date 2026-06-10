@@ -3,6 +3,7 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -59,11 +60,11 @@ type PhaseProgress struct {
 
 // DetectorProgress represents the status of a single parallel detector
 type DetectorProgress struct {
-	DetectorName string    `json:"detectorName"`       // "unlinked_production_orders"
-	DisplayLabel string    `json:"displayLabel"`       // "Unlinked Production Orders"
-	Status       string    `json:"status"`             // "pending", "running", "completed", "failed"
-	IssuesFound  int       `json:"issuesFound"`        // Issues detected
-	DurationMs   int64     `json:"durationMs"`         // Execution time
+	DetectorName string    `json:"detectorName"` // "unlinked_production_orders"
+	DisplayLabel string    `json:"displayLabel"` // "Unlinked Production Orders"
+	Status       string    `json:"status"`       // "pending", "running", "completed", "failed"
+	IssuesFound  int       `json:"issuesFound"`  // Issues detected
+	DurationMs   int64     `json:"durationMs"`   // Execution time
 	StartTime    time.Time `json:"startTime,omitempty"`
 	EndTime      time.Time `json:"endTime,omitempty"`
 	Error        string    `json:"error,omitempty"`
@@ -90,12 +91,11 @@ type ProgressUpdate struct {
 	Error                     string             `json:"error,omitempty"`
 }
 
-
 // DataBatchJobMessage represents work for loading one data type (MOPs, MOs, or COs)
 type DataBatchJobMessage struct {
 	JobID       string `json:"jobId"`
 	ParentJobID string `json:"parentJobId"`
-	DataType    string `json:"dataType"`    // "mops", "mos", "cos"
+	DataType    string `json:"dataType"` // "mops", "mos", "cos"
 	Environment string `json:"environment"`
 	AccessToken string `json:"accessToken"`
 	Company     string `json:"company"`
@@ -673,7 +673,7 @@ func (w *SnapshotWorker) handleDetectorJob(msg *nats.Msg) {
 	if detector == nil {
 		errMsg := fmt.Sprintf("detector not found: %s", job.DetectorName)
 		log.Printf("ERROR: %s", errMsg)
-		w.publishDetectorCompletion(job, 0, fmt.Errorf(errMsg), startTime)
+		w.publishDetectorCompletion(job, 0, errors.New(errMsg), startTime)
 		return
 	}
 
@@ -777,7 +777,7 @@ func (w *SnapshotWorker) publishDataJobs(req SnapshotRefreshMessage) error {
 			errMsg := fmt.Sprintf("Failed to publish %s job: %v", dataType, err)
 			w.publishError(req.JobID, errMsg)
 			w.db.FailJob(ctx, req.JobID, err.Error())
-			return fmt.Errorf(errMsg)
+			return errors.New(errMsg)
 		}
 	}
 
@@ -919,7 +919,7 @@ func (w *SnapshotWorker) waitForDataJobs(req SnapshotRefreshMessage) error {
 
 		if !completion.Success {
 			errMsg := fmt.Sprintf("Data job %s failed: %s", completion.DataType, completion.Error)
-			log.Printf(errMsg)
+			log.Print(errMsg)
 
 			// Update phase state to failed
 			phaseStates[completion.DataType].Status = "failed"
@@ -1036,14 +1036,14 @@ func (w *SnapshotWorker) runFinalize(req SnapshotRefreshMessage, totalCos, total
 		errMsg := fmt.Sprintf("Finalize MOPs failed: %v", err)
 		w.publishError(req.JobID, errMsg)
 		w.db.FailJob(ctx, req.JobID, err.Error())
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 
 	if err := w.db.UpdateProductionOrdersFromMOs(ctx); err != nil {
 		errMsg := fmt.Sprintf("Finalize MOs failed: %v", err)
 		w.publishError(req.JobID, errMsg)
 		w.db.FailJob(ctx, req.JobID, err.Error())
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 
 	// Phase 4: Parallel Detection via NATS
@@ -1152,7 +1152,7 @@ func (w *SnapshotWorker) publishDetectorJobs(req SnapshotRefreshMessage, totalCo
 			errMsg := fmt.Sprintf("Failed to publish %s detector job: %v", detectorName, err)
 			w.publishError(req.JobID, errMsg)
 			w.db.FailJob(ctx, req.JobID, err.Error())
-			return fmt.Errorf(errMsg)
+			return errors.New(errMsg)
 		}
 		log.Printf("Published detector job: %s", detectorName)
 	}
@@ -1258,10 +1258,10 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 	})
 
 	if err != nil {
-		errMsg := fmt.Sprintf("failed to subscribe to detector starts: %w", err)
+		errMsg := fmt.Sprintf("failed to subscribe to detector starts: %v", err)
 		w.publishError(req.JobID, errMsg)
 		w.db.FailJob(ctx, req.JobID, errMsg)
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 	defer startSub.Unsubscribe()
 
@@ -1289,7 +1289,7 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 				failedDetectors++
 
 				errMsg := fmt.Sprintf("Detector %s failed: %s", completion.DetectorName, completion.Error)
-				log.Printf(errMsg)
+				log.Print(errMsg)
 
 				// Persist detector failure to database
 				if err := w.db.FailRefreshJobDetector(dbCtx, req.JobID, completion.DetectorName, completion.Error, completion.DurationMs); err != nil {
@@ -1345,10 +1345,10 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 	})
 
 	if err != nil {
-		errMsg := fmt.Sprintf("failed to subscribe to detector completions: %w", err)
+		errMsg := fmt.Sprintf("failed to subscribe to detector completions: %v", err)
 		w.publishError(req.JobID, errMsg)
 		w.db.FailJob(ctx, req.JobID, errMsg)
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 	defer subscription.Unsubscribe()
 
@@ -1366,7 +1366,7 @@ func (w *SnapshotWorker) waitForDetectorJobs(req SnapshotRefreshMessage, totalDe
 				errMsg := fmt.Sprintf("timeout waiting for detector jobs (completed %d/%d)", completed, totalDetectors)
 				w.publishError(req.JobID, errMsg)
 				w.db.FailJob(ctx, req.JobID, errMsg)
-				return fmt.Errorf(errMsg)
+				return errors.New(errMsg)
 			}
 		case <-ticker.C:
 			mu.Lock()
@@ -1521,7 +1521,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 		errMsg := fmt.Sprintf("failed to subscribe to detector starts: %v", err)
 		w.publishError(req.JobID, errMsg)
 		w.db.FailDetectionJob(ctx, req.JobID, errMsg)
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 	defer startSub.Unsubscribe()
 
@@ -1581,7 +1581,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 		errMsg := fmt.Sprintf("failed to subscribe to detector completions: %v", err)
 		w.publishError(req.JobID, errMsg)
 		w.db.FailDetectionJob(ctx, req.JobID, errMsg)
-		return fmt.Errorf(errMsg)
+		return errors.New(errMsg)
 	}
 	defer subscription.Unsubscribe()
 
@@ -1599,7 +1599,7 @@ func (w *SnapshotWorker) coordinateManualDetection(req DetectorCoordinatorMessag
 				errMsg := fmt.Sprintf("timeout waiting for detector jobs (completed %d/%d)", completed, req.TotalDetectors)
 				w.publishError(req.JobID, errMsg)
 				w.db.FailDetectionJob(ctx, req.JobID, errMsg)
-				return fmt.Errorf(errMsg)
+				return errors.New(errMsg)
 			}
 		case <-ticker.C:
 			mu.Lock()

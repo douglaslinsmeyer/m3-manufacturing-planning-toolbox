@@ -25,6 +25,11 @@ CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
 # Build stage - create production bundle
 FROM base AS builder
 
+# Vite freezes import.meta.env.VITE_* at build time — the deployed API URL
+# must be supplied here as a build-arg (see .github/workflows/deploy.yml).
+ARG VITE_API_URL
+ENV VITE_API_URL=${VITE_API_URL}
+
 # Build production bundle
 RUN npm run build
 

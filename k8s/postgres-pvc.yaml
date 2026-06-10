@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data-2fbf6226
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "postgres"
+    contact_person: "douglasl_at_ping_com"
+    pvc-config-hash: "2fbf6226"
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: azurefile-nfs-premium  # Azure Files NFS — platform standard for PostgreSQL
+  resources:
+    requests:
+      storage: 10Gi

@@ -1,0 +1,204 @@
+name: Build and Deploy
+
+# Adapted from the Launchpad golden-path workflow for a two-image app:
+#   backend  — Go API + NATS workers (backend/Dockerfile)
+#   frontend — React (Vite) static bundle served by nginx (frontend/Dockerfile)
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  ACR_NAME: pingsiiplatformacr
+  IMAGE_BASE: lp-manufacturing-planning-toolbox
+  AKS_CLUSTER: sii-kubernetes-westus2
+  AKS_RESOURCE_GROUP: rg-sii-platform-westus2
+  NAMESPACE: lp-manufacturing-planning-toolbox
+  APP_URL: https://lp-manufacturing-planning-toolbox.sii.ping.com
+
+jobs:
+  lint:
+    # TODO: tighten — imported codebase predates golangci-lint; failures
+    # are reported but do not block while lint debt is paid down.
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.61
+          working-directory: backend
+          args: ./...
+
+  test:
+    name: Test (go vet + go test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+      - run: go vet ./...
+        working-directory: backend
+      - run: go test ./...
+        working-directory: backend
+
+  scan:
+    name: Trivy image scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build images (no push) for scanning
+        run: |
+          docker build -t scan-backend ./backend
+          docker build -t scan-frontend ./frontend
+      # Install trivy from its official apt repo rather than via the
+      # GitHub Action wrapper — the wrapper is on the Launchpad
+      # supply-chain blocklist (CVE-2026-33634).
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+      - name: Trivy vuln scan (HIGH/CRITICAL only)
+        run: |
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed scan-backend
+          trivy image --severity HIGH,CRITICAL --exit-code 1 --ignore-unfixed scan-frontend
+
+  pr-build:
+    # PR-time build smoke test — no Azure token, no ACR push.
+    name: PR build smoke test
+    if: github.event_name == 'pull_request'
+    needs: [test, scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker build (no push)
+        run: |
+          docker build -t pr-smoke-backend ./backend
+          docker build --build-arg VITE_API_URL=$APP_URL -t pr-smoke-frontend ./frontend
+
+  build:
+    name: Build & Push Images
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    needs: [test, scan]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and push images
+        # Tags are <git-sha> pinned — no :latest (Sprint 9 A.3).
+        # VITE_API_URL is frozen into the Vite bundle at build time, so it
+        # must be passed here as a build-arg, not at deploy time.
+        run: |
+          az acr login --name $ACR_NAME
+          docker build -t $ACR_NAME.azurecr.io/$IMAGE_BASE/backend:${{ github.sha }} ./backend
+          docker build --build-arg VITE_API_URL=$APP_URL \
+            -t $ACR_NAME.azurecr.io/$IMAGE_BASE/frontend:${{ github.sha }} ./frontend
+          docker push $ACR_NAME.azurecr.io/$IMAGE_BASE/backend:${{ github.sha }}
+          docker push $ACR_NAME.azurecr.io/$IMAGE_BASE/frontend:${{ github.sha }}
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign images with cosign (keyless)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign sign --yes $ACR_NAME.azurecr.io/$IMAGE_BASE/backend:${{ github.sha }}
+          cosign sign --yes $ACR_NAME.azurecr.io/$IMAGE_BASE/frontend:${{ github.sha }}
+
+  deploy:
+    name: Deploy to AKS
+    needs: build
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on:
+      group: Azure-SII-Runner
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group $AKS_RESOURCE_GROUP --name $AKS_CLUSTER
+      - name: Materialize Postgres secret
+        # #488 contract — no Secret manifest in git. POSTGRES_PASSWORD is a
+        # GitHub Actions secret; this projects it into the postgres-credentials
+        # K8s Secret the manifests reference.
+        run: |
+          kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f -
+          kubectl create secret generic postgres-credentials -n $NAMESPACE \
+            --from-literal=POSTGRES_USER=appuser \
+            --from-literal=POSTGRES_PASSWORD="${{ secrets.POSTGRES_PASSWORD }}" \
+            --from-literal=POSTGRES_DB=lp_manufacturing_planning_toolbox \
+            --from-literal=DATABASE_URL="postgres://appuser:${{ secrets.POSTGRES_PASSWORD }}@postgres:5432/lp_manufacturing_planning_toolbox?sslmode=disable" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Materialize app secrets
+        # Runtime credentials for the backend. Keys not yet set as GitHub
+        # secrets materialize as empty strings until provided.
+        run: |
+          kubectl create secret generic app-secrets -n $NAMESPACE \
+            --from-literal=SESSION_SECRET="${{ secrets.SESSION_SECRET }}" \
+            --from-literal=ENTRA_TENANT_ID="${{ secrets.ENTRA_TENANT_ID }}" \
+            --from-literal=ENTRA_CLIENT_ID="${{ secrets.ENTRA_CLIENT_ID }}" \
+            --from-literal=ENTRA_CLIENT_SECRET="${{ secrets.ENTRA_CLIENT_SECRET }}" \
+            --from-literal=TRN_CLIENT_ID="${{ secrets.TRN_CLIENT_ID }}" \
+            --from-literal=TRN_CLIENT_SECRET="${{ secrets.TRN_CLIENT_SECRET }}" \
+            --from-literal=PRD_CLIENT_ID="${{ secrets.PRD_CLIENT_ID }}" \
+            --from-literal=PRD_CLIENT_SECRET="${{ secrets.PRD_CLIENT_SECRET }}" \
+            --from-literal=TRN_IONAPI="${{ secrets.TRN_IONAPI }}" \
+            --from-literal=PRD_IONAPI="${{ secrets.PRD_IONAPI }}" \
+            --dry-run=client -o yaml | kubectl apply -f -
+      - name: Apply manifests
+        # Staged apply with --server-side --force-conflicts (Sprint 17 N2):
+        # provision_namespace pre-created some resources under a different
+        # field manager; CI is the canonical writer for everything it ships.
+        run: |
+          mkdir -p /tmp/k8s-deploy
+          cp k8s/*.yaml /tmp/k8s-deploy/
+          sed -i "s|:__GIT_SHA__|:${{ github.sha }}|g" /tmp/k8s-deploy/*.yaml
+          kubectl apply \
+            --server-side \
+            --force-conflicts \
+            --field-manager=lp-manufacturing-planning-toolbox-ci \
+            -f /tmp/k8s-deploy/ \
+            -n $NAMESPACE
+      - name: Wait for rollouts
+        run: |
+          kubectl rollout status deployment/postgres -n $NAMESPACE --timeout=180s
+          kubectl rollout status deployment/nats -n $NAMESPACE --timeout=120s
+          kubectl rollout status deployment/backend -n $NAMESPACE --timeout=180s
+          kubectl rollout status deployment/backend-worker -n $NAMESPACE --timeout=180s
+          kubectl rollout status deployment/frontend -n $NAMESPACE --timeout=120s
+      - name: Verify database connectivity (app credentials)
+        # #509 gate: authenticate as the app user — readiness alone can
+        # mask a stale PVC bootstrap password vs a rotated secret.
+        run: |
+          kubectl -n $NAMESPACE wait --for=condition=available deploy/postgres --timeout=180s
+          kubectl -n $NAMESPACE run dbcheck-${{ github.run_id }} --rm -i --restart=Never \
+            --image=postgres:17-alpine \
+            --overrides='{"spec":{"containers":[{"name":"dbcheck-${{ github.run_id }}","image":"postgres:17-alpine","command":["psql","-h","postgres","-U","appuser","-d","lp_manufacturing_planning_toolbox","-c","SELECT 1"],"env":[{"name":"PGPASSWORD","valueFrom":{"secretKeyRef":{"name":"postgres-credentials","key":"POSTGRES_PASSWORD"}}}]}]}}' \
+            || { echo '::error::Database auth check FAILED — app credentials rejected by postgres (#509: likely stale PVC bootstrap password vs rotated secret).'; exit 1; }

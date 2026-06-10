@@ -1,0 +1,63 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "postgres"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: postgres
+        group: "ERP-MIS"
+        app_name: "postgres"
+        contact_person: "douglasl_at_ping_com"
+      annotations:
+        # PVC name is derived from a hash of (storageClass, size, accessModes);
+        # surfaced here so `kubectl describe` explains claimName changes.
+        pvc-config-hash: "2fbf6226"
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:17-alpine
+        ports:
+        - containerPort: 5432
+        envFrom:
+        - secretRef:
+            # Materialized by the deploy workflow from the POSTGRES_PASSWORD
+            # GitHub Actions secret — never committed to git (#488 contract).
+            name: postgres-credentials
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+          subPath: pgdata
+        livenessProbe:
+          exec:
+            command: ["pg_isready", "-U", "appuser"]
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          exec:
+            command: ["pg_isready", "-U", "appuser"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: postgres-data
+        persistentVolumeClaim:
+          claimName: postgres-data-2fbf6226

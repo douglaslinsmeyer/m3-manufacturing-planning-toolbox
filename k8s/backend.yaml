@@ -1,0 +1,143 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "manufacturing-planning-toolbox"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+        group: "ERP-MIS"
+        app_name: "manufacturing-planning-toolbox"
+        contact_person: "douglasl_at_ping_com"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: backend
+        image: pingsiiplatformacr.azurecr.io/lp-manufacturing-planning-toolbox/backend:__GIT_SHA__
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+        env:
+        - name: APP_ENV
+          value: "production"
+        - name: APP_PORT
+          value: "8080"
+        - name: FRONTEND_URL
+          value: "https://lp-manufacturing-planning-toolbox.sii.ping.com"
+        - name: OAUTH_REDIRECT_URI
+          value: "https://lp-manufacturing-planning-toolbox.sii.ping.com/api/auth/callback"
+        - name: OAUTH_SCOPES
+          value: "openid profile"
+        - name: CORS_ALLOWED_ORIGINS
+          value: "https://lp-manufacturing-planning-toolbox.sii.ping.com"
+        - name: CORS_ALLOW_CREDENTIALS
+          value: "true"
+        - name: NATS_URL
+          value: "nats://nats:4222"
+        - name: RUN_MIGRATIONS
+          value: "true"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: LOG_FORMAT
+          value: "json"
+        - name: TRN_TENANT_ID
+          value: "XK3JRT8CJCAF9GWY_TRN"
+        - name: TRN_INSTANCE_ID
+          value: "6fd9051e-60a7-46ad-ad39-78d31bde6bec"
+        - name: TRN_AUTH_ENDPOINT
+          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_TRN/as/authorization.oauth2"
+        - name: TRN_TOKEN_ENDPOINT
+          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_TRN/as/token.oauth2"
+        - name: TRN_API_BASE_URL
+          value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_TRN/"
+        - name: TRN_COMPASS_BASE_URL
+          value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_TRN/DATAFABRIC/compass/v2/"
+        - name: PRD_TENANT_ID
+          value: "XK3JRT8CJCAF9GWY_PRD"
+        - name: PRD_INSTANCE_ID
+          value: "20233849-6dca-4bd1-bf9f-13972ace238f"
+        - name: PRD_AUTH_ENDPOINT
+          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_PRD/as/authorization.oauth2"
+        - name: PRD_TOKEN_ENDPOINT
+          value: "https://mingle-sso.inforcloudsuite.com:443/XK3JRT8CJCAF9GWY_PRD/as/token.oauth2"
+        - name: PRD_API_BASE_URL
+          value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_PRD/"
+        - name: PRD_COMPASS_BASE_URL
+          value: "https://mingle-ionapi.inforcloudsuite.com/XK3JRT8CJCAF9GWY_PRD/DATAFABRIC/compass/v2/"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: postgres-credentials
+              key: DATABASE_URL
+        envFrom:
+        - secretRef:
+            # Materialized by the deploy workflow from GitHub Actions secrets:
+            # SESSION_SECRET, ENTRA_*, TRN_/PRD_ client credentials, *_IONAPI.
+            name: app-secrets
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "256Mi"
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 30
+          timeoutSeconds: 2
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+      volumes:
+      - name: tmp
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "manufacturing-planning-toolbox"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  selector:
+    app: backend
+  ports:
+  - port: 8080
+    targetPort: 8080
+  type: ClusterIP

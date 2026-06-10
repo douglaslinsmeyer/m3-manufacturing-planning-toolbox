@@ -25,3 +25,6 @@ go.work
 # Environment
 .env
 .env.local
+
+# Compiled server binary (accidentally tracked pre-Launchpad)
+/server

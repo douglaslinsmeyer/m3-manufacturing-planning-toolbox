@@ -1,0 +1,61 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-with-allowlist
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    app_name: "manufacturing-planning-toolbox"
+    group: "ERP-MIS"
+    app.kubernetes.io/managed-by: ping-launchpad
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  egress:
+  # 1. DNS — restricted to kube-dns pods in kube-system on UDP/TCP 53.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  # 2. Intra-namespace pod-to-pod traffic (backend -> Postgres/NATS, etc.).
+  - to:
+    - podSelector: {}
+  # 3. Egress to the NGINX Gateway namespace.
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: nginx-gateway
+  # 4. TCP/443/1433/5432 to anywhere EXCEPT RFC1918 — Entra ID, ACR,
+  #    GitHub, Infor CloudSuite (mingle-ionapi / mingle-sso).
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 1433
+    - protocol: TCP
+      port: 5432
+  ingress:
+  # 5. Ingress from the NGINX Gateway namespace.
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: nginx-gateway
+  # 6. Intra-namespace pod-to-pod traffic.
+  - from:
+    - podSelector: {}

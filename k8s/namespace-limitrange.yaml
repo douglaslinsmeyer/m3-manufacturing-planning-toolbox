@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    app_name: "manufacturing-planning-toolbox"
+    group: "ERP-MIS"
+    app.kubernetes.io/managed-by: ping-launchpad
+spec:
+  limits:
+  - type: Container
+    min:
+      cpu: "50m"
+      memory: "64Mi"
+    max:
+      cpu: "1000m"
+      memory: "1Gi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+    default:
+      cpu: "500m"
+      memory: "512Mi"

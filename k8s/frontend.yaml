@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "manufacturing-planning-toolbox"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        group: "ERP-MIS"
+        app_name: "manufacturing-planning-toolbox"
+        contact_person: "douglasl_at_ping_com"
+    spec:
+      containers:
+      - name: frontend
+        image: pingsiiplatformacr.azurecr.io/lp-manufacturing-planning-toolbox/frontend:__GIT_SHA__
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 80
+        securityContext:
+          allowPrivilegeEscalation: false
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "128Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 2
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "manufacturing-planning-toolbox"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  selector:
+    app: frontend
+  ports:
+  - port: 80
+    targetPort: 80
+  type: ClusterIP

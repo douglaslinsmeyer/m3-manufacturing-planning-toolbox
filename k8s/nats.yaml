@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "nats"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+        group: "ERP-MIS"
+        app_name: "nats"
+        contact_person: "douglasl_at_ping_com"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: nats
+        image: nats:2.10-alpine
+        args: ["--http_port", "8222"]
+        ports:
+        - containerPort: 4222
+          name: client
+        - containerPort: 8222
+          name: monitor
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: true
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "200m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8222
+          initialDelaySeconds: 5
+          periodSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 8222
+          initialDelaySeconds: 2
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: lp-manufacturing-planning-toolbox
+  labels:
+    group: "ERP-MIS"
+    app_name: "nats"
+    contact_person: "douglasl_at_ping_com"
+spec:
+  selector:
+    app: nats
+  ports:
+  - port: 4222
+    targetPort: 4222
+    name: client
+  - port: 8222
+    targetPort: 8222
+    name: monitor
+  type: ClusterIP
